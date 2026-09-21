@@ -577,8 +577,25 @@ function genericValue(field: MasterField, i: number): unknown {
   // Field Force + Month + Year selected would never match any seeded row.
   {
     const key = field.key.toLowerCase();
-    if (key === "month" || key === "frommonth" || key === "tomonth") return REPORT_MONTHS[i % 12];
-    if (key === "year" || key === "fromyear" || key === "toyear") return String(2023 + (i % 4));
+    // Month and Year used to be generated independently (i % 12 vs.
+    // 2023 + i % 4), so almost no seeded row's Month+Year pair ever
+    // matched what an admin would actually pick while live-testing (e.g.
+    // filtering by the CURRENT month/year, September 2026, returned
+    // "No records found" even though 10 rows existed -- none of them
+    // happened to land on that exact combination). Correlate both to the
+    // same rolling offset from *today* instead, so row i=0 is always the
+    // current month/year and every later row steps one calendar month
+    // further into the past with month/year staying internally
+    // consistent (rolling the year back whenever the month wraps past
+    // January).
+    if (key === "month" || key === "frommonth" || key === "tomonth" || key === "year" || key === "fromyear" || key === "toyear") {
+      const now = new Date();
+      const totalMonthIndex = now.getUTCMonth() - i; // 0-based, can go negative
+      const monthIdx = ((totalMonthIndex % 12) + 12) % 12;
+      const year = now.getUTCFullYear() + Math.floor(totalMonthIndex / 12);
+      if (key === "month" || key === "frommonth" || key === "tomonth") return REPORT_MONTHS[monthIdx];
+      return String(year);
+    }
   }
 
   if (field.sourceMaster && field.sourceField) {

@@ -311,7 +311,21 @@ mastersRouter.post(
     // nothing at all — neither is the intended "does this exact request
     // already exist" check. Only compare on keyFields the client actually
     // sends.
-    const dupeCheckFields = config.keyFields.filter((k) => !config.fields.find((f) => f.key === k)?.computed);
+    // Approval-queue screens (TP/DCR/Leave/Listed Dr Addition &
+    // Deactivation Approval, etc.) represent individual SUBMITTED
+    // REQUESTS, not a unique master record per person -- the same SF Name
+    // legitimately submits many Tour Plans, DCRs, and leave requests over
+    // time (that's the whole point of an approval queue). Once `hq`/
+    // `designation` are `computed` (and so dropped from dupeCheckFields
+    // above), the remaining key was often "sfName" alone, which wrongly
+    // blocked a second, unrelated request for anyone who already had ANY
+    // row on the screen -- exactly what happened once the queue was
+    // seeded with one row per employee. Skip the dupe check entirely for
+    // approval queues; it stays in place for real one-record-per-person
+    // masters (Employee, Doctor Mapping, Target Master, etc.).
+    const dupeCheckFields = config.uiKind === "approvalQueue"
+      ? []
+      : config.keyFields.filter((k) => !config.fields.find((f) => f.key === k)?.computed);
     let existing = null;
     if (dupeCheckFields.length) {
       const keyFilter: Record<string, unknown> = { tenantSlug };
