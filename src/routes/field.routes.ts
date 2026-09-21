@@ -23,11 +23,61 @@ import { syncPayrollStatuses } from "../utils/payroll.js";
 import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { DoctorVisitExceptionModel, DOCTOR_EXCEPTION_REASONS } from "../models/doctor-visit-exception.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { getMasterModel } from "../models/master-record.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
 // the frontend dropdown and backend validation never drift apart.
 export const GIFT_ITEM_TYPES = ["Pen", "Calendar", "Notepad", "Literature", "Diary", "Mug", "Visiting Card Holder", "Other"] as const;
+
+// ── Admin "Activities > Approvals" mirror ──────────────────────────────
+// The admin portal's Approvals screens (TP/DCR/Leave) and the Expense
+// Approval report each read from their own generic masters collection
+// (src/masters/registry.ts, getMasterModel), completely separate from the
+// real TourPlan/Dcr/LeaveApplication/ExpenseClaim collections these field
+// endpoints write to. Without this, a real MR submission never showed up
+// for the admin to approve at all. These helpers create/update the
+// matching masters row right after the real submission succeeds, so the
+// admin's Approvals tabs reflect real field-force activity. Failures here
+// are logged but never fail the field-force request itself — the real
+// submission (Tour Plan / DCR / Leave / Expense Claim) already succeeded
+// and must not be rolled back over a mirroring problem.
+async function mirrorApprovalRow(masterKey: string, tenantSlug: string, doc: Record<string, unknown>) {
+  try {
+    const Model = getMasterModel(masterKey);
+    await Model.create({ tenantSlug, approvalStatus: "Pending", ...doc });
+  } catch (err) {
+    console.error(`[mirrorApprovalRow] failed to mirror into ${masterKey}:`, err);
+  }
+}
+
+async function mirrorExpenseApprovalRow(tenantSlug: string, employeeName: string, month: string, amountRs: number) {
+  try {
+    const [year, monthNum] = month.split("-");
+    const monthName = new Date(Date.UTC(Number(year), Number(monthNum) - 1, 1)).toLocaleString("en-US", { month: "long" });
+    const Model = getMasterModel("expenseApprovalActive");
+    const existing = await Model.findOne({ tenantSlug, fieldForceName: employeeName, month: monthName, year });
+    if (existing) {
+      const currentClaimed = Number((existing as any).claimedAmount) || 0;
+      await Model.updateOne(
+        { _id: existing._id },
+        { $set: { claimedAmount: currentClaimed + amountRs, status: "Pending", submissionDate: new Date().toISOString().slice(0, 10) } }
+      );
+    } else {
+      await Model.create({
+        tenantSlug,
+        fieldForceName: employeeName,
+        month: monthName,
+        year,
+        status: "Pending",
+        submissionDate: new Date().toISOString().slice(0, 10),
+        claimedAmount: amountRs
+      });
+    }
+  } catch (err) {
+    console.error("[mirrorExpenseApprovalRow] failed:", err);
+  }
+}
 
 // New "Leave Apply" tab — fixed dropdown of leave reasons shown on the
 // FieldRepo Leave Apply form. Kept as a constant (mirrors GIFT_ITEM_TYPES
@@ -301,6 +351,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     tenantSlug, employeeCode: employee.employeeCode,
     overVisitFlag, overrideAcknowledged: body.overrideOverVisitWarning ?? false
   });
+  await mirrorApprovalRow("approvalDcr", tenantSlug, { sfName: employee.name });
   await notifyReportingManager(
     tenantSlug,
     employee,
@@ -518,6 +569,7 @@ fieldRouter.post("/tour-plans", asyncHandler(async (req, res) => {
   );
 
   await audit("FIELD_TOUR_PLAN_SUBMITTED", "TourPlan", String(created._id), { tenantSlug, employeeCode: employee.employeeCode, tpId: created.tpId });
+  await mirrorApprovalRow("approvalTp", tenantSlug, { sfName: employee.name });
   await notifyReportingManager(
     tenantSlug,
     employee,
@@ -627,6 +679,7 @@ fieldRouter.post("/expense-claims", asyncHandler(async (req, res) => {
   await audit("FIELD_EXPENSE_CLAIM_SUBMITTED", "ExpenseClaim", String(created._id), {
     tenantSlug, employeeCode: employee.employeeCode, claimId: created.claimId, tpId: tp.tpId, amountRs: body.amountRs
   });
+  await mirrorExpenseApprovalRow(tenantSlug, employee.name, tp.month, body.amountRs);
   await notifyReportingManager(
     tenantSlug,
     employee,
@@ -714,6 +767,12 @@ fieldRouter.post("/leave-applications", asyncHandler(async (req, res) => {
   });
 
   await audit("FIELD_LEAVE_APPLIED", "LeaveApplication", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, days: body.days, reason: leaveType });
+  await mirrorApprovalRow("approvalLeave", tenantSlug, {
+    fieldForceName: employee.name,
+    fromDate: from.toISOString().slice(0, 10),
+    toDate: to.toISOString().slice(0, 10),
+    leaveDays: body.days
+  });
 
   // "it should be send an notification like leave submitted for manager
   // approval" — same reporting-manager notifier every other field-force
