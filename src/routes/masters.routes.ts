@@ -193,7 +193,7 @@ async function syncDoctorMappingToDoctor(tenantSlug: string, record: Record<stri
 mastersRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json({ data: MASTERS.map(({ key, title, fields, keyFields }) => ({ key, title, fields, keyFields })) });
+    res.json({ data: MASTERS.map(({ key, title, fields, keyFields, uiKind }) => ({ key, title, fields, keyFields, uiKind })) });
   })
 );
 

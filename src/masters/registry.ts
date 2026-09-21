@@ -40,6 +40,13 @@ export type MasterField = {
 export type MasterConfig = {
   key: string; // collection name
   title: string; // human title shown in the admin UI
+  // Optional UI hint for screens that need a non-tabular shape: "approvalQueue"
+  // renders a pending-request list with a "Click Here to Approve" action
+  // (matching sanpharma.info's Approvals screens exactly); "reportFilter"
+  // renders Field Force Name / Month / Year dropdown filters above the
+  // results table (matching sanpharma.info's report screens). Omitted/
+  // "table" keeps the existing generic Add/Edit/Deactivate console.
+  uiKind?: "table" | "approvalQueue" | "reportFilter";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -1125,6 +1132,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "approvalListedDrAddition",
     title: "Listed Dr Addition",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1137,6 +1145,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "approvalListedDrDeactivation",
     title: "Listed Dr Deactivation",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1149,6 +1158,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "approvalTp",
     title: "TP Approval",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1161,6 +1171,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "approvalDcr",
     title: "DCR Approval",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1173,6 +1184,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "approvalLeave",
     title: "Leave Approval",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1185,6 +1197,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "expenseApprovalActive",
     title: "Expense Approval (Active)",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1197,6 +1210,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "expenseApprovalVacantResigned",
     title: "Expense Approval (Vacant/Resigned)",
+    uiKind: "approvalQueue",
     keyFields: ["fieldForceName", "requestDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1209,6 +1223,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "activitiesExpenseAnalysis",
     title: "Expense Analysis",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1221,6 +1236,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "activitiesExpenseConsolidatedView",
     title: "Expense Consolidated View",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1233,6 +1249,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "sampleDispatchView",
     title: "Sample Dispatch - View",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1245,6 +1262,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "sampleDispatchStatus",
     title: "Sample Dispatch - Status",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1257,6 +1275,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "inputDispatchView",
     title: "Input Dispatch - View",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1269,6 +1288,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "inputDispatchStatus",
     title: "Input Dispatch - Status",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1281,6 +1301,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "msisView",
     title: "MSIS - View",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1293,6 +1314,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "loginDetailsManager",
     title: "Login Details - Manager",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1305,6 +1327,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "loginDetailsFieldrepo",
     title: "Login Details - Fieldrepo",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1363,6 +1386,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "activityStatus",
     title: "Activity - Status",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1385,6 +1409,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "managerMissedCallView",
     title: "Manager Missed Call - View",
+    uiKind: "reportFilter",
     keyFields: ["managerName", "month", "year"],
     fields: [
       { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
@@ -2042,6 +2067,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "leaveStatusOptions",
     title: "Leave Status",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
