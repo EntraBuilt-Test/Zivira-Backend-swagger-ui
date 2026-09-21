@@ -1237,6 +1237,28 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Live-verified against sanpharma.info (Activities > Approvals > Order
+    // Booking Approval, MGR/OrderBooking_Approval_Admin.aspx), 2026-09-21 --
+    // confirmed empty ("No Data found for Approval's") at crawl time, same
+    // queue pattern as DCR/Leave approval screens (escalated by a manager,
+    // approved/rejected by admin). Column set mirrors the DCR Approval
+    // screen's shape (S.No | SF Name | HQ | Designation | Approve) since no
+    // live pending row was available to confirm exact wording.
+    key: "approvalOrderBooking",
+    title: "Order Booking Approval",
+    uiKind: "approvalQueue",
+    keyFields: ["sfName", "hq"],
+    fields: [
+      { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "designation", label: "Designation", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
+    ],
+    approvalActionColumnLabel: "Approve",
+    approvalLinkText: "Click here to Approve",
+    approvalLinkDateSuffix: true
+  },
+  {
     // EXACT live-confirmed headers from sanpharma.info "Expense Approval (Active)"
     // (crawled 2026-09-21, Field Force picker + Month/Year + Go flow):
     // Emp Code | Fieldforce Name | Designation | Head Quater | Region | State |
@@ -1397,6 +1419,92 @@ export const MASTERS: MasterConfig[] = [
       { key: "year", label: "Year" },
       { key: "remarks", label: "Remarks" },
       { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    // NOT YET LIVE-CONFIRMED with exact result columns -- sanpharma.info's
+    // "Leave Entitlement > Entry" (ActivityReports/Leave_Entitlement_New.aspx)
+    // filters by Fieldforce Name + Year to set that employee's annual leave
+    // entitlement. Best-effort field set based on standard Indian leave
+    // types (CL/PL/SL/LOP) used elsewhere on the live site (Leave Setup).
+    key: "leaveEntitlementEntry",
+    title: "Leave Entitlement - Entry",
+    uiKind: "reportFilter",
+    keyFields: ["fieldForceName", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "year", label: "Year" },
+      { key: "cl", label: "CL", type: "number" },
+      { key: "pl", label: "PL", type: "number" },
+      { key: "sl", label: "SL", type: "number" },
+      { key: "lop", label: "LOP", type: "number" }
+    ]
+  },
+  {
+    // NOT YET LIVE-CONFIRMED with exact result columns -- sanpharma.info's
+    // "Leave Entitlement > View" (ActivityReports/Leave_Entitleent_view.aspx,
+    // titled "Leave Status View") filters by Fieldforce Name + From/To Month
+    // to show leave taken/balance for the period. Best-effort field set.
+    key: "leaveEntitlementView",
+    title: "Leave Entitlement - View",
+    uiKind: "reportFilter",
+    keyFields: ["fieldForceName", "fromMonth", "toMonth"],
+    fields: [
+      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "fromMonth", label: "From Month" },
+      { key: "fromYear", label: "From Year" },
+      { key: "toMonth", label: "To Month" },
+      { key: "toYear", label: "To Year" },
+      { key: "leaveType", label: "Leave Type", options: ["CL", "PL", "SL", "LOP"] },
+      { key: "taken", label: "Taken", type: "number" },
+      { key: "balance", label: "Balance", type: "number" }
+    ]
+  },
+  {
+    // NOT YET LIVE-CONFIRMED with exact result columns (JS execution was
+    // blocked by a picker popup mid-crawl) -- sanpharma.info's "Audit Report"
+    // (ActivityReports/Audit_View.aspx) filters by Filed Force Name (226
+    // entries, includes inactive/resigned) + Month + Year + a Mode dropdown
+    // with 11 tracked report-access types (All, Call Average, Missed Call,
+    // Doctorwise Periodically, Analysis-DCR, Coverage Analysis, Secondary
+    // Sale, Tour Plan, DCR View, Product Exposure Analysis, Sample Issued
+    // FieldForce) -- it's a report-access audit trail. Best-effort field set.
+    key: "auditReport",
+    title: "Audit Report",
+    uiKind: "reportFilter",
+    keyFields: ["fieldForceName", "month", "year", "mode"],
+    fields: [
+      { key: "fieldForceName", label: "Filed Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "mode", label: "Mode", options: ["All", "Call Average", "Missed Call", "Doctorwise Periodically", "Analysis-DCR", "Coverage Analysis", "Secondary Sale", "Tour Plan", "DCR View", "Product Exposure Analysis", "Sample Issued FieldForce"] },
+      { key: "accessDate", label: "Access Date", type: "date" },
+      { key: "reportAccessed", label: "Report Accessed" },
+      { key: "ipAddress", label: "IP Address" }
+    ]
+  },
+  {
+    // sanpharma.info's live "Order Booking View" (MR/Order_Booking_View.aspx)
+    // throws an unhandled ASP.NET server error for this account ("'ddlStock'
+    // has a SelectedValue which is invalid...", Order_Booking_View.aspx.cs
+    // line 186) -- a confirmed defect in the third-party product itself, not
+    // something to replicate. Using reasonable, non-buggy Order Booking
+    // report columns instead, consistent with the Order Booking Setup
+    // module (MasterFiles/Order_booking_setuppage.aspx) seen elsewhere.
+    key: "orderBookingView",
+    title: "Order Booking - View",
+    uiKind: "reportFilter",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "orderDate", label: "Order Date", type: "date" },
+      { key: "stockistName", label: "Stockist Name" },
+      { key: "productName", label: "Product Name" },
+      { key: "quantity", label: "Quantity", type: "number" },
+      { key: "orderValue", label: "Order Value", type: "number" },
+      { key: "status", label: "Status", options: ["Pending", "Confirmed", "Delivered", "Cancelled"] }
     ]
   },
   {
