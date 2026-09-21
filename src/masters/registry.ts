@@ -1121,6 +1121,991 @@ export const MASTERS: MasterConfig[] = [
       { key: "month", label: "Month" },
       { key: "status", label: "Status", options: ACTIVE_INACTIVE }
     ]
+  },
+  {
+    key: "approvalListedDrAddition",
+    title: "Listed Dr Addition",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "approvalListedDrDeactivation",
+    title: "Listed Dr Deactivation",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "approvalTp",
+    title: "TP Approval",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "approvalDcr",
+    title: "DCR Approval",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "approvalLeave",
+    title: "Leave Approval",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "expenseApprovalActive",
+    title: "Expense Approval (Active)",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "expenseApprovalVacantResigned",
+    title: "Expense Approval (Vacant/Resigned)",
+    keyFields: ["fieldForceName", "requestDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "requestDate", label: "Request Date", type: "date" },
+      { key: "details", label: "Details" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "activitiesExpenseAnalysis",
+    title: "Expense Analysis",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "activitiesExpenseConsolidatedView",
+    title: "Expense Consolidated View",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "sampleDispatchView",
+    title: "Sample Dispatch - View",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "sampleDispatchStatus",
+    title: "Sample Dispatch - Status",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "inputDispatchView",
+    title: "Input Dispatch - View",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "inputDispatchStatus",
+    title: "Input Dispatch - Status",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "msisView",
+    title: "MSIS - View",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "loginDetailsManager",
+    title: "Login Details - Manager",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "loginDetailsFieldrepo",
+    title: "Login Details - Fieldrepo",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "loginIntoFieldforce",
+    title: "Login Into Fieldforce",
+    keyFields: ["fieldForceName", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "taskModeCreation",
+    title: "Task Management - Mode Creation",
+    keyFields: ["shortName"],
+    fields: [
+      { key: "shortName", label: "Short Name" },
+      { key: "taskName", label: "Task Name" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "taskAssign",
+    title: "Task Management - Task Assign",
+    keyFields: ["fieldForceName", "task"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "task", label: "Task" },
+      { key: "dueDate", label: "Due Date", type: "date" },
+      { key: "status", label: "Status", options: ["New", "Pending", "Completed", "Closed", "ReOpen", "On Hold"] },
+      { key: "remarks", label: "Remarks" }
+    ]
+  },
+  {
+    key: "activityMasterScreenCreation",
+    title: "Activity - Master & Screen Creation",
+    keyFields: ["shortName"],
+    fields: [
+      { key: "shortName", label: "Activity Short Name" },
+      { key: "activityName", label: "Activity Name" },
+      { key: "mode", label: "Mode", options: ["MR", "MGR", "MR & MGR"] },
+      { key: "forField", label: "For" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "activityStatus",
+    title: "Activity - Status",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "managerMissedCallSetup",
+    title: "Manager Missed Call - Setup",
+    keyFields: ["managerName"],
+    fields: [
+      { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "baseLevelTagging", label: "Base Level Tagging" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "managerMissedCallView",
+    title: "Manager Missed Call - View",
+    keyFields: ["managerName", "month", "year"],
+    fields: [
+      { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "missedCallCount", label: "Missed Call Count", type: "number" }
+    ]
+  },
+  {
+    key: "optionsDashboardWidget",
+    title: "Options - Dashboard",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "passwordChangeLog",
+    title: "Change Password",
+    keyFields: ["performedBy", "performedDate"],
+    fields: [
+      { key: "performedBy", label: "Changed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Changed On", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Completed"] }
+    ]
+  },
+  {
+    key: "vacantMrLoginAccess",
+    title: "Vacant MR Login - Access",
+    keyFields: ["managerName"],
+    fields: [
+      { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "accessLevel", label: "Access Level", options: ["Full", "View Only", "Restricted"] },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "vacantMrLoginPermission",
+    title: "Vacant MR Login - Permission for Managers",
+    keyFields: ["managerName"],
+    fields: [
+      { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "permission", label: "Permission", options: ["Grant", "Revoke"] },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "doctorCampaignMap",
+    title: "Doctor - Campaign Map",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "updateDeleteTpDelete",
+    title: "TP Delete",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteDcrEdit",
+    title: "DCR Edit",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteMsisEdit",
+    title: "MSIS Edit",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteMailDelete",
+    title: "Mail Delete",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteLeaveCancellation",
+    title: "Leave Cancellation",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteMobAppDeviceIdDeletion",
+    title: "Mob App - Device Id Deletion",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteTpDeviationRelease",
+    title: "TP Deviation - Release",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteDrsUniNoGeneration",
+    title: "Drs UNI No - Generation",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteChemistBusinessRelease",
+    title: "Chemist Business - Release",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteChemBusMonthRelease",
+    title: "Chem Bus-Month Release",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "updateDeleteAutoMailReports",
+    title: "Auto Mail Reports",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "basicSetupScreenAccessRights",
+    title: "Screen Access Rights",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupBaseLevel",
+    title: "Base Level",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupManagers",
+    title: "Managers",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupApprovalMandatory",
+    title: "Approval Mandatory",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupManagerwiseCoreDoctorMap",
+    title: "Managerwise Core Doctor Map",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupScreenwiseAccess",
+    title: "Screenwise Access",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupMailFolderCreation",
+    title: "Mail Folder Creation",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupOtherSetup",
+    title: "Other Setup",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupHomepageDashboardDisplay",
+    title: "Homepage Dashboard Display",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupLeaveSetup",
+    title: "Leave Setup",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupLeavePolicySetup",
+    title: "Leave Policy Setup",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupDeviceLock",
+    title: "Device Lock",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "basicSetupOrderBookingSetup",
+    title: "Order Booking Setup",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "appSetupCallFeedback",
+    title: "Call Feedback",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "appSetupCallRemarksTemplates",
+    title: "Call Remarks Templates",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "appSetupNotificationMessage",
+    title: "Notification Message",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "appSetupGpsGeofenceTaggDeletion",
+    title: "Gps/Geofence & Tagg Deletion",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "appSetupDynamicAppLink",
+    title: "Dynamic App Link",
+    keyFields: ["name"],
+    fields: [
+      { key: "name", label: "Name" },
+      { key: "value", label: "Value" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "mailBox",
+    title: "Mail Box",
+    keyFields: ["subject", "sentDate"],
+    fields: [
+      { key: "subject", label: "Subject" },
+      { key: "sentTo", label: "Sent To", sourceMaster: "employees", sourceField: "name" },
+      { key: "sentDate", label: "Sent Date", type: "date" },
+      { key: "status", label: "Status", options: ["Sent", "Draft", "Read"] }
+    ]
+  },
+  {
+    key: "customerUploadListedDoctor",
+    title: "Customer Upload - Listed Doctor",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "customerUploadChemist",
+    title: "Customer Upload - Chemist",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "customerUploadSample",
+    title: "Customer Upload - Sample",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "customerUploadInput",
+    title: "Customer Upload - Input",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "customerUploadTarget",
+    title: "Customer Upload - Target",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "informationUploadFlashNews",
+    title: "Information Upload - Flash News",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "informationUploadNoticeBoard",
+    title: "Information Upload - Notice Board",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "informationUploadQuoteForTheWeek",
+    title: "Information Upload - Quote for the Week",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "informationUploadTalkToUs",
+    title: "Information Upload - Talk to Us",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "informationUploadFileCircularDesigWise",
+    title: "Information Upload - File/Circular (Desig.Wise)",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "informationUploadUserManualUpload",
+    title: "Information Upload - User Manual Upload",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadFieldForce",
+    title: "Upload - Field Force",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadStockist",
+    title: "Upload - Stockist",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadProduct",
+    title: "Upload - Product",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadProductRate",
+    title: "Upload - Product Rate",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadSlidesUpload",
+    title: "Upload - Slides Upload",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadHolidayFixation",
+    title: "Upload - Holiday Fixation",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "bulkUploadLeaveBulkUpload",
+    title: "Upload - Leave-Bulk Upload",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "transactionUpload",
+    title: "Transaction Upload",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "imageUploadHomePageCommonForAll",
+    title: "Image Upload - Home Page (Common For All)",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "imageUploadHomePageFieldforcewise",
+    title: "Image Upload - Home Page (FieldForcewise)",
+    keyFields: ["fileName", "uploadDate"],
+    fields: [
+      { key: "fileName", label: "File Name" },
+      { key: "uploadedBy", label: "Uploaded By", sourceMaster: "employees", sourceField: "name" },
+      { key: "uploadDate", label: "Upload Date", type: "date" },
+      { key: "recordCount", label: "Record Count", type: "number" },
+      { key: "status", label: "Status", options: ["Success", "Failed", "Processing"] }
+    ]
+  },
+  {
+    key: "leaveStatusOptions",
+    title: "Leave Status",
+    keyFields: ["fieldForceName", "month", "year"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "leaveBalance", label: "Leave Balance", type: "number" },
+      { key: "leaveTaken", label: "Leave Taken", type: "number" }
+    ]
+  },
+  {
+    key: "transferMasterDetails",
+    title: "Transfers - Master Details",
+    keyFields: ["fieldForceName", "transferDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "fromTerritory", label: "From Territory", sourceMaster: "territoryHqMaster", sourceField: "headquartersName" },
+      { key: "toTerritory", label: "To Territory", sourceMaster: "territoryHqMaster", sourceField: "headquartersName" },
+      { key: "transferDate", label: "Transfer Date", type: "date" },
+      { key: "status", label: "Status", options: ["Pending", "Approved", "Completed"] }
+    ]
+  },
+  {
+    key: "convertUnlistedDrsListedDrs",
+    title: "Convert Unlisted Drs - Listed Drs",
+    keyFields: ["referenceId", "performedDate"],
+    fields: [
+      { key: "referenceId", label: "Reference / Record" },
+      { key: "performedBy", label: "Performed By", sourceMaster: "employees", sourceField: "name" },
+      { key: "performedDate", label: "Performed Date", type: "date" },
+      { key: "remarks", label: "Remarks" },
+      { key: "status", label: "Status", options: ["Pending", "Completed"] }
+    ]
+  },
+  {
+    key: "releaseMissingDatesDelay",
+    title: "Release - Missing Dates / Delay",
+    keyFields: ["fieldForceName", "performedDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "missingDate", label: "Missing Date", type: "date" },
+      { key: "reason", label: "Reason" },
+      { key: "status", label: "Status", options: ["Pending", "Released"] }
+    ]
+  },
+  {
+    key: "quizMaster",
+    title: "Quiz",
+    keyFields: ["quizName"],
+    fields: [
+      { key: "quizName", label: "Quiz Name" },
+      { key: "category", label: "Category" },
+      { key: "totalQuestions", label: "Total Questions", type: "number" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
+  },
+  {
+    key: "quizCategory",
+    title: "Quiz Category",
+    keyFields: ["categoryName"],
+    fields: [
+      { key: "categoryName", label: "Category Name" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+    ]
   }
 ];
 
