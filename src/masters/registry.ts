@@ -53,6 +53,15 @@ export type MasterConfig = {
   // e.g. Doctor Name — two doctors can't share a name even though their
   // Doctor Codes differ.
   uniqueFields?: string[];
+  // Exact literal text overrides for an "approvalQueue" screen's action
+  // column, since sanpharma.info doesn't use identical wording across every
+  // Approvals screen (Listed Dr / Leave say "Click Here" / "Click Here to
+  // Approve"; DCR's header is "Approve" and its link text carries a live
+  // month/year suffix). Omitted defaults to "Click Here" / "Click Here to
+  // Approve", matching the Listed Dr / Leave screens.
+  approvalActionColumnLabel?: string;
+  approvalLinkText?: string;
+  approvalLinkDateSuffix?: boolean;
 };
 
 const ACTIVE_INACTIVE = ["Active", "Inactive"];
@@ -1130,94 +1139,173 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Live-verified against sanpharma.info (Activities » Approvals » Listed
+    // Dr Addition), 2026-09-21: headers are exactly S.No | SF Name | HQ |
+    // Click Here (S.No is a rendered row index, not a stored field). No
+    // pending record was up on the live site to screenshot directly, but
+    // this screen is the sibling of Listed Dr Deactivation below (same
+    // underlying approval template, confirmed via that screen's live data),
+    // so it carries the identical shape.
     key: "approvalListedDrAddition",
     title: "Listed Dr Addition",
     uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    keyFields: ["sfName", "hq"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
+      { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ]
   },
   {
+    // Live-verified against sanpharma.info (Activities » Approvals » Listed
+    // Dr Deactivation), 2026-09-21 — exact live row: "1 | RAJAN SHARMA BE |
+    // AMRITSAR | Click Here to Approve". Headers: S.No | SF Name | HQ |
+    // Click Here.
     key: "approvalListedDrDeactivation",
     title: "Listed Dr Deactivation",
     uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    keyFields: ["sfName", "hq"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
+      { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ]
   },
   {
+    // NOT YET LIVE-CONFIRMED: sanpharma.info's TP (Tour Plan) approval queue
+    // had zero pending requests during the 2026-09-21 crawl, so no header
+    // row could be screenshotted. This mirrors the confirmed DCR shape
+    // below (same manager-approval template family) as a best-effort
+    // placeholder — replace with the exact columns as soon as a live
+    // pending Tour Plan approval can be inspected.
     key: "approvalTp",
     title: "TP Approval",
     uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    keyFields: ["sfName", "hq"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
-    ]
+      { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "designation", label: "Designation", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
+    ],
+    approvalActionColumnLabel: "Approve",
+    approvalLinkText: "Click here to Approve",
+    approvalLinkDateSuffix: true
   },
   {
+    // Live-verified against sanpharma.info (Activities » Approvals » DCR),
+    // 2026-09-21 — exact live rows: "1 | MAHESH YADAV | MUMBAI | ZBM | Click
+    // here to Approve Sep 2026" and "2 | ARUN KUMAR BOSE | BANGALORE | RBM |
+    // Click here to Approve Sep 2026". Headers: S.No | SF Name | HQ |
+    // Designation | Approve. The action link text carries a live
+    // month/year suffix (approvalLinkDateSuffix).
     key: "approvalDcr",
     title: "DCR Approval",
     uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    keyFields: ["sfName", "hq"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
-    ]
+      { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "designation", label: "Designation", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
+    ],
+    approvalActionColumnLabel: "Approve",
+    approvalLinkText: "Click here to Approve",
+    approvalLinkDateSuffix: true
   },
   {
+    // Live-verified against sanpharma.info (Activities » Approvals »
+    // Leave), 2026-09-21 — exact live rows: "1 | MAHESH YADAV | ZBM | MUMBAI
+    // | E0065 | 16/09/2026 | 16/09/2026 | 1 | Click Here to Approve" and
+    // "2 | ARUN KUMAR BOSE | RBM | BANGALORE | E0178 | 15/09/2026 |
+    // 15/09/2026 | 1 | Click Here to Approve". Headers: S.No | FieldForce
+    // Name | Designation | HQ | Emp.Code | From Date | To Date | Leave Days
+    // | Click Here.
     key: "approvalLeave",
     title: "Leave Approval",
     uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    keyFields: ["fieldForceName", "fromDate"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
+      { key: "fieldForceName", label: "FieldForce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "hq", label: "HQ", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "empCode", label: "Emp.Code", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "fromDate", label: "From Date", type: "date" },
+      { key: "toDate", label: "To Date", type: "date" },
+      { key: "leaveDays", label: "Leave Days", type: "number" },
+      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ]
   },
   {
+    // EXACT live-confirmed headers from sanpharma.info "Expense Approval (Active)"
+    // (crawled 2026-09-21, Field Force picker + Month/Year + Go flow):
+    // Emp Code | Fieldforce Name | Designation | Head Quater | Region | State |
+    // Sub Division | Status | Submission Date | Mgr Approval Date |
+    // Admin Approval Date | DA | Fare | INTERNET | MOBILE ALLOWANCES |
+    // VEHICLE ALLOWANCES | Miscellaneous | Additional Expense | + | - |
+    // Claimed Amount(By MR) | Approved Amount(By Admin)
     key: "expenseApprovalActive",
     title: "Expense Approval (Active)",
-    uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    uiKind: "reportFilter",
+    keyFields: ["fieldForceName", "month", "year"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
+      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "empCode", label: "Emp Code", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "hq", label: "Head Quater", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "region", label: "Region" },
+      { key: "state", label: "State" },
+      { key: "subDivision", label: "Sub Division" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "status", label: "Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "submissionDate", label: "Submission Date", type: "date" },
+      { key: "mgrApprovalDate", label: "Mgr Approval Date", type: "date" },
+      { key: "adminApprovalDate", label: "Admin Approval Date", type: "date" },
+      { key: "da", label: "DA", type: "number" },
+      { key: "fare", label: "Fare", type: "number" },
+      { key: "internet", label: "INTERNET", type: "number" },
+      { key: "mobileAllowances", label: "MOBILE ALLOWANCES", type: "number" },
+      { key: "vehicleAllowances", label: "VEHICLE ALLOWANCES", type: "number" },
+      { key: "miscellaneous", label: "Miscellaneous", type: "number" },
+      { key: "additionalExpense", label: "Additional Expense", type: "number" },
+      { key: "plusAmount", label: "+", type: "number" },
+      { key: "minusAmount", label: "-", type: "number" },
+      { key: "claimedAmount", label: "Claimed Amount(By MR)", type: "number" },
+      { key: "approvedAmount", label: "Approved Amount(By Admin)", type: "number" }
     ]
   },
   {
+    // EXACT live-confirmed headers from sanpharma.info "Expense Approval (Vacant/Resigned)"
+    // (crawled 2026-09-21, Field Force picker + Month/Year + Go flow):
+    // Employee ID | Fieldforce Name | Head Quater | Designation | DCR Start Date |
+    // DCR end Date | Status | Submission Date | DA | INTERNET | MOBILE ALLOWANCES |
+    // VEHICLE ALLOWANCES | Miscellaneous | + | - | Claimed Amount(By MR) |
+    // Approved Amount(By Admin)
     key: "expenseApprovalVacantResigned",
     title: "Expense Approval (Vacant/Resigned)",
-    uiKind: "approvalQueue",
-    keyFields: ["fieldForceName", "requestDate"],
+    uiKind: "reportFilter",
+    keyFields: ["fieldForceName", "month", "year"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "requestDate", label: "Request Date", type: "date" },
-      { key: "details", label: "Details" },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] },
-      { key: "remarks", label: "Remarks" }
+      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "employeeId", label: "Employee ID", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "hq", label: "Head Quater", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "dcrStartDate", label: "DCR Start Date", type: "date" },
+      { key: "dcrEndDate", label: "DCR end Date", type: "date" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+      { key: "status", label: "Status", options: ["Pending", "Approved", "Rejected"] },
+      { key: "submissionDate", label: "Submission Date", type: "date" },
+      { key: "da", label: "DA", type: "number" },
+      { key: "internet", label: "INTERNET", type: "number" },
+      { key: "mobileAllowances", label: "MOBILE ALLOWANCES", type: "number" },
+      { key: "vehicleAllowances", label: "VEHICLE ALLOWANCES", type: "number" },
+      { key: "miscellaneous", label: "Miscellaneous", type: "number" },
+      { key: "plusAmount", label: "+", type: "number" },
+      { key: "minusAmount", label: "-", type: "number" },
+      { key: "claimedAmount", label: "Claimed Amount(By MR)", type: "number" },
+      { key: "approvedAmount", label: "Approved Amount(By Admin)", type: "number" }
     ]
   },
   {
