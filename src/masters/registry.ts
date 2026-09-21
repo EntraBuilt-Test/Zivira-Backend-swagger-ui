@@ -1357,68 +1357,106 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "Sample Despatch >
+    // View" (sampleproduct.aspx) filters by Fieldforce Name + From/To
+    // Month-Year range to show samples despatched to that rep in the
+    // period. Result columns not live-confirmed (automation blockage).
     key: "sampleDispatchView",
     title: "Sample Dispatch - View",
     uiKind: "reportFilter",
-    keyFields: ["fieldForceName", "month", "year"],
+    keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "month", label: "Month" },
-      { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
-      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+      { key: "fromMonth", label: "From Month" },
+      { key: "fromYear", label: "From Year" },
+      { key: "toMonth", label: "To Month" },
+      { key: "toYear", label: "To Year" },
+      { key: "productName", label: "Product Name" },
+      { key: "quantity", label: "Quantity", type: "number" },
+      { key: "despatchDate", label: "Despatch Date", type: "date" },
+      { key: "remarks", label: "Remarks" }
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "Sample Despatch >
+    // Status" (samplestatus_New.aspx) filters by Fieldforce Name + From/To
+    // Month-Year range to show delivery/acknowledgement status of that
+    // despatch. Result columns not live-confirmed (automation blockage).
     key: "sampleDispatchStatus",
     title: "Sample Dispatch - Status",
     uiKind: "reportFilter",
-    keyFields: ["fieldForceName", "month", "year"],
+    keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "month", label: "Month" },
-      { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
-      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+      { key: "fromMonth", label: "From Month" },
+      { key: "fromYear", label: "From Year" },
+      { key: "toMonth", label: "To Month" },
+      { key: "toYear", label: "To Year" },
+      { key: "despatchDate", label: "Despatch Date", type: "date" },
+      { key: "acknowledgedDate", label: "Acknowledged Date", type: "date" },
+      { key: "status", label: "Status", options: ["Pending", "Delivered", "Acknowledged"] }
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "Input Despatch >
+    // View" (inputproduct.aspx) — identical pattern to Sample Despatch,
+    // for promotional Input items instead of drug samples. Result columns
+    // not live-confirmed (automation blockage).
     key: "inputDispatchView",
     title: "Input Dispatch - View",
     uiKind: "reportFilter",
-    keyFields: ["fieldForceName", "month", "year"],
+    keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "month", label: "Month" },
-      { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
-      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+      { key: "fromMonth", label: "From Month" },
+      { key: "fromYear", label: "From Year" },
+      { key: "toMonth", label: "To Month" },
+      { key: "toYear", label: "To Year" },
+      { key: "itemName", label: "Item Name" },
+      { key: "quantity", label: "Quantity", type: "number" },
+      { key: "despatchDate", label: "Despatch Date", type: "date" },
+      { key: "remarks", label: "Remarks" }
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "Input Despatch >
+    // Status" (Inputstatus_New.aspx) — identical pattern to Sample Despatch
+    // Status, for promotional Input items. Result columns not
+    // live-confirmed (automation blockage).
     key: "inputDispatchStatus",
     title: "Input Dispatch - Status",
     uiKind: "reportFilter",
-    keyFields: ["fieldForceName", "month", "year"],
+    keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "month", label: "Month" },
-      { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
-      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+      { key: "fromMonth", label: "From Month" },
+      { key: "fromYear", label: "From Year" },
+      { key: "toMonth", label: "To Month" },
+      { key: "toYear", label: "To Year" },
+      { key: "despatchDate", label: "Despatch Date", type: "date" },
+      { key: "acknowledgedDate", label: "Acknowledged Date", type: "date" },
+      { key: "status", label: "Status", options: ["Pending", "Delivered", "Acknowledged"] }
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "MSIS View"
+    // (MSIS_View.aspx) filters by Fieldforce Name + From Month/Year + a
+    // Report Type toggle (Monthwise / Periodically) -> Monthly Sales
+    // Information Statement report. Result columns not live-confirmed
+    // (automation blockage). Report Type modeled via the generic "mode"
+    // filter field.
     key: "msisView",
     title: "MSIS - View",
     uiKind: "reportFilter",
-    keyFields: ["fieldForceName", "month", "year"],
+    keyFields: ["fieldForceName", "fromMonth", "fromYear", "mode"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "month", label: "Month" },
-      { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
-      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+      { key: "fromMonth", label: "From Month" },
+      { key: "fromYear", label: "From Year" },
+      { key: "mode", label: "Report Type", options: ["Monthwise", "Periodically"] },
+      { key: "productName", label: "Product Name" },
+      { key: "sales", label: "Sales", type: "number" },
+      { key: "remarks", label: "Remarks" }
     ]
   },
   {
@@ -1508,6 +1546,11 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "Login Details"
+    // (Login_Details.aspx) filters by Filed Force (226) + Month + Year +
+    // "Without Vacant" / "Not logged in more than N days" -> a
+    // login-compliance/inactivity report. Result columns not
+    // live-confirmed (automation blockage).
     key: "loginDetailsManager",
     title: "Login Details - Manager",
     uiKind: "reportFilter",
@@ -1516,11 +1559,15 @@ export const MASTERS: MasterConfig[] = [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
       { key: "month", label: "Month" },
       { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
+      { key: "lastLoginDate", label: "Last Login Date", type: "date" },
+      { key: "daysSinceLogin", label: "Days Since Login", type: "number" },
       { key: "status", label: "Status", options: ["Active", "Inactive"] }
     ]
   },
   {
+    // Same pattern as Login Details > Manager (Login_Details.aspx) --
+    // sanpharma.info doesn't distinguish the two by a different result
+    // shape, only by which Field Force subset is shown.
     key: "loginDetailsFieldrepo",
     title: "Login Details - Fieldrepo",
     uiKind: "reportFilter",
@@ -1529,7 +1576,8 @@ export const MASTERS: MasterConfig[] = [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
       { key: "month", label: "Month" },
       { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
+      { key: "lastLoginDate", label: "Last Login Date", type: "date" },
+      { key: "daysSinceLogin", label: "Days Since Login", type: "number" },
       { key: "status", label: "Status", options: ["Active", "Inactive"] }
     ]
   },
@@ -1580,16 +1628,22 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Best-effort field set from sanpharma.info notes: "Activity > Status"
+    // (Activity_Master_Creation_Status.aspx, titled "DCR Activity Status")
+    // filters by Filed Force Name + Mode (Common Activity /
+    // Drs-Chm-Stk-UnlstDrs-Hos-CIP) + Month + Year -> completion status of
+    // custom activities. Result columns not live-confirmed.
     key: "activityStatus",
     title: "Activity - Status",
     uiKind: "reportFilter",
-    keyFields: ["fieldForceName", "month", "year"],
+    keyFields: ["fieldForceName", "mode", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "mode", label: "Mode", options: ["Common Activity", "Doctors", "Chemist", "Stockist", "Unlisted Doctors", "Hospital", "CIP"] },
       { key: "month", label: "Month" },
       { key: "year", label: "Year" },
-      { key: "remarks", label: "Remarks" },
-      { key: "status", label: "Status", options: ["Active", "Inactive"] }
+      { key: "activityName", label: "Activity Name" },
+      { key: "status", label: "Status", options: ["Completed", "Pending"] }
     ]
   },
   {
