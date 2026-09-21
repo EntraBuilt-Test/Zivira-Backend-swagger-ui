@@ -250,8 +250,15 @@ mastersRouter.post(
     const config = requireConfig(req.params.key);
     const tenantSlug = req.auth!.tenantSlug;
 
+    // A `computed` field (e.g. HQ/Designation/Emp.Code auto-derived from a
+    // selected SF/Field Force Name) is display-only — the frontend never
+    // includes it in the create payload, so it can never satisfy a
+    // required-field check here. Skip those even if a screen also lists
+    // them in keyFields (some approval screens do, to describe the
+    // logical identity of a row), or every "Add Request" on that screen
+    // would fail with a false "Missing required field(s)" error.
     const missing = config.fields
-      .filter((f) => config.keyFields.includes(f.key))
+      .filter((f) => config.keyFields.includes(f.key) && !f.computed)
       .filter((f) => req.body[f.key] === undefined || req.body[f.key] === null || req.body[f.key] === "");
     if (missing.length) {
       throw new HttpError(400, `Missing required field(s): ${missing.map((f) => f.label).join(", ")}`);
@@ -296,11 +303,23 @@ mastersRouter.post(
     }
 
     const Model = getMasterModel(config.key);
-    const keyFilter: Record<string, unknown> = { tenantSlug };
-    for (const k of config.keyFields) keyFilter[k] = req.body[k];
-    const existing = await Model.findOne(keyFilter);
+    // Same reasoning as the required-field check above: a `computed`
+    // keyField (like HQ, derived from SF Name) is never present in the
+    // create payload, so including it here would either silently drop out
+    // of the Mongo filter (Mongoose strips `undefined` values) and widen
+    // the duplicate check to match on the remaining keys alone, or match
+    // nothing at all — neither is the intended "does this exact request
+    // already exist" check. Only compare on keyFields the client actually
+    // sends.
+    const dupeCheckFields = config.keyFields.filter((k) => !config.fields.find((f) => f.key === k)?.computed);
+    let existing = null;
+    if (dupeCheckFields.length) {
+      const keyFilter: Record<string, unknown> = { tenantSlug };
+      for (const k of dupeCheckFields) keyFilter[k] = req.body[k];
+      existing = await Model.findOne(keyFilter);
+    }
     if (existing) {
-      throw new HttpError(409, `A record with this ${config.keyFields.join(" + ")} already exists`);
+      throw new HttpError(409, `A record with this ${dupeCheckFields.join(" + ")} already exists`);
     }
 
     for (const uf of config.uniqueFields ?? []) {

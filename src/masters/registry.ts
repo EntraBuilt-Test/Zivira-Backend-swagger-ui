@@ -1237,28 +1237,6 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
-    // Live-verified against sanpharma.info (Activities > Approvals > Order
-    // Booking Approval, MGR/OrderBooking_Approval_Admin.aspx), 2026-09-21 --
-    // confirmed empty ("No Data found for Approval's") at crawl time, same
-    // queue pattern as DCR/Leave approval screens (escalated by a manager,
-    // approved/rejected by admin). Column set mirrors the DCR Approval
-    // screen's shape (S.No | SF Name | HQ | Designation | Approve) since no
-    // live pending row was available to confirm exact wording.
-    key: "approvalOrderBooking",
-    title: "Order Booking Approval",
-    uiKind: "approvalQueue",
-    keyFields: ["sfName", "hq"],
-    fields: [
-      { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
-      { key: "designation", label: "Designation", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
-      { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
-    ],
-    approvalActionColumnLabel: "Approve",
-    approvalLinkText: "Click here to Approve",
-    approvalLinkDateSuffix: true
-  },
-  {
     // EXACT live-confirmed headers from sanpharma.info "Expense Approval (Active)"
     // (crawled 2026-09-21, Field Force picker + Month/Year + Go flow):
     // Emp Code | Fieldforce Name | Designation | Head Quater | Region | State |
