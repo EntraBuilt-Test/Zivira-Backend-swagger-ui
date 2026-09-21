@@ -565,8 +565,21 @@ const cache = new Map<string, Record<string, unknown>[]>();
 
 function pick<T>(arr: T[], i: number): T { return arr[i % arr.length]; }
 
+const REPORT_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 function genericValue(field: MasterField, i: number): unknown {
   if (field.computed) return undefined; // derived client-side — never stored
+
+  // ReportFilterView's Month/Year (and From/To Month-Year) dropdowns filter
+  // client-side by exact string match against a real month name / 4-digit
+  // year, so a seeded row has to carry one of those, not a generic
+  // "Month 1" / "Year 1" placeholder — otherwise "View" with a real
+  // Field Force + Month + Year selected would never match any seeded row.
+  {
+    const key = field.key.toLowerCase();
+    if (key === "month" || key === "frommonth" || key === "tomonth") return REPORT_MONTHS[i % 12];
+    if (key === "year" || key === "fromyear" || key === "toyear") return String(2023 + (i % 4));
+  }
 
   if (field.sourceMaster && field.sourceField) {
     const source = cache.get(field.sourceMaster);
@@ -1005,6 +1018,33 @@ async function seedRemainingGenericMasters() {
   }
 }
 
+// The Activities menu's own tabs (Approvals, Expense, Sample/Input
+// Dispatch, MSIS, Leave Entitlement, Audit Report, Login Details, Login
+// Into Fieldforce, Task Management, Order Booking View, Activity, Manager
+// Missed Call) -- added/corrected against the sanpharma.info live crawl.
+// Every sourceMaster reference (sfName/fieldForceName -> employees) here
+// resolves against the same 10 canonical employees seeded above, exactly
+// like every other cross-linked tab in this file.
+const ACTIVITIES_KEYS = [
+  "approvalListedDrAddition", "approvalListedDrDeactivation", "approvalTp", "approvalDcr", "approvalLeave",
+  "expenseApprovalActive", "expenseApprovalVacantResigned", "activitiesExpenseAnalysis", "activitiesExpenseConsolidatedView",
+  "sampleDispatchView", "sampleDispatchStatus", "inputDispatchView", "inputDispatchStatus",
+  "msisView", "leaveEntitlementEntry", "leaveEntitlementView", "auditReport",
+  "loginDetailsManager", "loginDetailsFieldrepo", "loginIntoFieldforce",
+  "taskModeCreation", "taskAssign", "orderBookingView",
+  "activityMasterScreenCreation", "activityStatus",
+  "managerMissedCallSetup", "managerMissedCallView"
+];
+
+async function seedActivitiesMasters() {
+  console.log("\n── Generic masters registry — Activities menu tabs ──");
+  for (const key of ACTIVITIES_KEYS) {
+    const config = MASTERS.find((m) => m.key === key);
+    if (!config) { console.warn(`  [!!] Registry key not found: ${key}`); continue; }
+    await seedMasterGeneric(config);
+  }
+}
+
 async function verifyAllMastersHaveExactly10() {
   console.log("\n── Verification ──");
   let allGood = true;
@@ -1048,6 +1088,7 @@ export async function runExactTenSeed() {
   await seedIdentityMasters();
   await seedSalesAndReportingMasters();
   await seedRemainingGenericMasters();
+  await seedActivitiesMasters();
   await ensureDemoLoginsExist();
   await verifyAllMastersHaveExactly10();
 
