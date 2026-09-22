@@ -143,7 +143,7 @@ async function computeWidgetData(
   category: string,
   dimension: string,
   fieldForceCode?: string
-): Promise<{ labels: string[]; values: number[]; total: number; note?: string }> {
+): Promise<{ labels: string[]; values: number[]; total: number; note?: string; fieldForceSupported: boolean }> {
   // Special-cased leaf: Holiday x Month has no plain field to $group by —
   // it's derived from otherHolidayDate.
   if (category === "Holiday" && dimension === "Month") {
@@ -161,7 +161,8 @@ async function computeWidgetData(
       labels,
       values,
       total: values.reduce((a, b) => a + b, 0),
-      note: "Holiday has no per-rep association — Field Force filter is ignored for this leaf."
+      note: "Holiday has no per-rep association — Field Force filter is ignored for this leaf.",
+      fieldForceSupported: false
     };
   }
 
@@ -169,6 +170,8 @@ async function computeWidgetData(
   if (!source) {
     throw new HttpError(400, `Unknown category/dimension combination: ${category} / ${dimension}`);
   }
+
+  const fieldForceSupported = source.fieldForce.kind !== "none";
 
   const filter: Record<string, unknown> = { tenantSlug };
 
@@ -200,7 +203,7 @@ async function computeWidgetData(
   const labels = rows.map((r) => String(r._id));
   const values = rows.map((r) => Number(r.count));
 
-  return { labels, values, total: values.reduce((a, b) => a + b, 0), note: source.note };
+  return { labels, values, total: values.reduce((a, b) => a + b, 0), note: source.note, fieldForceSupported };
 }
 
 dashboardsRouter.get(
@@ -330,6 +333,42 @@ dashboardsRouter.delete(
     await dashboard.save();
 
     await audit("DASHBOARD_WIDGET_REMOVED", "dashboard", String(dashboard._id), { tenantSlug, index });
+    res.json({ data: serializeDocument(dashboard) });
+  })
+);
+
+const updateWidgetSchema = z.object({
+  chartType: z.enum(["pie", "donut", "bar", "line", "area", "funnel", "table"]).optional(),
+  widgetName: z.string().min(1).optional()
+});
+
+// Widget "settings" gear on the dashboard tile — currently the only thing
+// meaningfully editable in place is chartType (re-render the same aggregated
+// data as a different chart) and widgetName. category/dimension/splitBy are
+// not editable here; removing+re-adding covers changing those.
+dashboardsRouter.patch(
+  "/:id/widgets/:widgetIndex",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const index = Number(req.params.widgetIndex);
+    const body = updateWidgetSchema.parse(req.body);
+
+    if (!body.chartType && !body.widgetName) {
+      throw new HttpError(400, "Provide at least one of chartType or widgetName to update");
+    }
+
+    const dashboard = await DashboardModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!dashboard) throw new HttpError(404, "Dashboard not found");
+    if (!Number.isInteger(index) || index < 0 || index >= dashboard.widgets.length) {
+      throw new HttpError(404, "Widget not found");
+    }
+
+    const widget = dashboard.widgets[index] as any;
+    if (body.chartType) widget.chartType = body.chartType;
+    if (body.widgetName) widget.widgetName = body.widgetName;
+    await dashboard.save();
+
+    await audit("DASHBOARD_WIDGET_UPDATED", "dashboard", String(dashboard._id), { tenantSlug, index, update: body });
     res.json({ data: serializeDocument(dashboard) });
   })
 );
