@@ -28,6 +28,7 @@ const MANAGER_ROLES = ["NBH", "BH", "RBM", "ZBM", "ABM"];
 const changePasswordSchema = z.object({
   employeeCode: z.string().min(1).optional(),
   fieldForceName: z.string().min(1).optional(),
+  oldPassword: z.string().min(1),
   newPassword: z.string().min(6)
 }).refine((v) => v.employeeCode || v.fieldForceName, { message: "employeeCode or fieldForceName is required" });
 
@@ -48,6 +49,18 @@ mastersActionsRouter.post(
     const users = await UserModel.find({ tenantSlug, employeeCode });
     if (!users.length) {
       throw new HttpError(404, "This employee has no login account yet (no FIELD_FORCE/EMPLOYEE user record found)");
+    }
+
+    // Old Password must be the employee's REAL current password on at
+    // least one of their login accounts — a real bcrypt.compare against
+    // that account's stored passwordHash, the exact same pattern
+    // auth.routes.ts's own /auth/login and /auth/change-password use.
+    // Nothing is changed unless this passes.
+    const oldPasswordMatches = await Promise.all(
+      users.map((u) => bcrypt.compare(body.oldPassword, u.passwordHash))
+    );
+    if (!oldPasswordMatches.some(Boolean)) {
+      throw new HttpError(401, "Old Password is incorrect");
     }
 
     const passwordHash = await bcrypt.hash(body.newPassword, 12);
