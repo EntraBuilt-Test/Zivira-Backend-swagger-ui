@@ -632,6 +632,35 @@ function genericValue(field: MasterField, i: number): unknown {
   }
 
   const key = field.key.toLowerCase();
+
+  // Detail-only fields on the Approvals screens (approvalTp / approvalDcr /
+  // approvalLeave) used to fall all the way through to the generic
+  // "${label} ${i+1}" placeholder below (e.g. "TP ID 1", "Manager (ABM) 1",
+  // "Work Type 1") -- not blank, but not a value that reads as real demo
+  // data either. These give each of those fields its own realistic value,
+  // consistent with the conventions used for the exact same concept
+  // elsewhere in this file (Tour Plan IDs, DCR work types, leave types,
+  // divisions).
+  if (key === "tpid") {
+    const mrs = EMPLOYEES.filter((e) => e.role === "MR" || e.role === "SR_MR");
+    const mr = pick(mrs, i);
+    const now = new Date();
+    const monthStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    return `TP-${monthStr}-${mr.code}-${String((i % 3) + 1).padStart(3, "0")}`;
+  }
+  if (key === "managername") {
+    const managers = EMPLOYEES.filter((e) => e.role === "ABM" || e.role === "RBM");
+    return pick(managers.length ? managers : EMPLOYEES, i).name;
+  }
+  if (key === "targetlocations") {
+    return `${pick(TERRITORIES, i).city}, ${pick(TERRITORIES, i + 1).city}`;
+  }
+  if (key === "worktype") return pick(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"], i);
+  if (key === "hospital" || key === "hospitalclinic") return `${pick(TERRITORIES, i).city} General Hospital`;
+  if (key === "leavetype") return pick(["Casual Leave", "Sick Leave", "Earned Leave", "Comp-Off", "Loss of Pay"], i);
+  if (key === "reasonforleave") return pick(["Personal work", "Family function", "Medical treatment", "Out of station travel", "Festival"], i);
+  if (key === "division") return pick(DIVISIONS_3, i);
+
   if (key.includes("email")) return `demo.${key}${i + 1}@zivira-labs-demo.in`;
   if (key.includes("mobile") || key.includes("phone") || key.includes("whatsapp") || key.includes("contact")) return `9${(400000000 + i * 111111).toString().slice(0, 9)}`;
   if (key === "gst" || key.includes("gstno") || key.includes("gstnumber")) return BRANCHES[i % BRANCHES.length].gst;
@@ -1047,18 +1076,76 @@ const ACTIVITIES_KEYS = [
   "expenseApprovalActive", "expenseApprovalVacantResigned", "activitiesExpenseAnalysis", "activitiesExpenseConsolidatedView",
   "sampleDispatchView", "sampleDispatchStatus", "inputDispatchView", "inputDispatchStatus",
   "msisView", "leaveEntitlementEntry", "leaveEntitlementView", "auditReport",
-  "loginDetailsManager", "loginDetailsFieldrepo", "loginIntoFieldforce",
+  "loginDetailsManager", "loginDetailsFieldrepo", "loginIntoFieldforce", "loginAsEmployee",
   "taskModeCreation", "taskAssign", "orderBookingView",
   "activityMasterScreenCreation", "activityStatus",
   "managerMissedCallSetup", "managerMissedCallView"
 ];
+
+// GET /company/masters/approvalDcr/bulk?sfName=<name>&month=<YYYY-MM> (added
+// in masters.routes.ts to mirror sanpharma.info's DCR_Bulk_Approval.aspx)
+// groups every approvalDcr row for one rep in one calendar month into a
+// single approve/reject grid, matched with a Mongo Date range query
+// (`activityDate: { $gte: rangeStart, $lt: rangeEnd }`). Two problems with
+// the plain generic engine here:
+//   1. genericValue()'s `type: "date"` branch returns an ISO STRING
+//      (isoDate()), and getMasterModel() schemas are `strict: false` with
+//      no cast, so that string is stored as a string, not a BSON Date --
+//      a $gte/$lt Date-range query against a string field never matches,
+//      so the bulk endpoint would return zero rows for every seeded record
+//      no matter what sfName/month was picked.
+//   2. Even with a real Date, the generic loop gives every one of the 10
+//      rows a DIFFERENT sfName (round-robin over the 10 canonical
+//      employees, and 10 rows / 10 employees means no repeats) -- every
+//      sfName+month combination would have exactly one row, so the bulk
+//      grid never actually demonstrates the "approve several dates at
+//      once" workflow it exists for.
+// Fixed here by post-processing the generically generated rows: casting
+// every activityDate to a real Date, then re-pointing 3 of the 10 rows onto
+// the SAME rep (MR-001) and the SAME current calendar month on 3 distinct
+// dates. The other 7 rows are untouched, so the ordinary single-row
+// approval queue still sees a realistic spread of different reps/months.
+async function seedApprovalDcrWithBulkDemo(config: MasterConfig) {
+  const rows: Record<string, unknown>[] = [];
+  const mr = EMPLOYEES.find((e) => e.code === "MR-001") ?? EMPLOYEES.filter((e) => e.role === "MR")[0];
+  const now = new Date();
+  const clusterDates = [3, 10, 17].map((d) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), d)));
+
+  for (let i = 0; i < N; i++) {
+    const doc: Record<string, unknown> = { tenantSlug: TENANT, status: "Active" };
+    for (const field of config.fields) {
+      const value = genericValue(field, i);
+      if (value !== undefined) doc[field.key] = value;
+    }
+    // Cast activityDate (an ISO string from genericValue's date branch) to
+    // a real Date so it's a valid operand for the bulk route's $gte/$lt
+    // range query -- for every row, not just the clustered ones below.
+    if (typeof doc.activityDate === "string") doc.activityDate = new Date(doc.activityDate);
+
+    if (i < clusterDates.length) {
+      doc.sfName = mr.name;
+      doc.activityDate = clusterDates[i];
+    }
+    rows.push(doc);
+  }
+
+  const Model = getMasterModel(config.key);
+  await Model.deleteMany({ tenantSlug: TENANT });
+  await Model.insertMany(rows);
+  cache.set(config.key, rows);
+  console.log(`  [OK] ${config.title} (${config.key}): ${rows.length} records (${clusterDates.length} clustered onto ${mr.name} in the current month for DCR Bulk Approval demo)`);
+}
 
 async function seedActivitiesMasters() {
   console.log("\n── Generic masters registry — Activities menu tabs ──");
   for (const key of ACTIVITIES_KEYS) {
     const config = MASTERS.find((m) => m.key === key);
     if (!config) { console.warn(`  [!!] Registry key not found: ${key}`); continue; }
-    await seedMasterGeneric(config);
+    if (key === "approvalDcr") {
+      await seedApprovalDcrWithBulkDemo(config);
+    } else {
+      await seedMasterGeneric(config);
+    }
   }
 }
 
@@ -1074,13 +1161,13 @@ const OPTIONS_KEYS = [
   "tpDeviationRelease", "drUniqueNoGeneration", "chemistReleaseLock", "chemistReleaseLockMonthwise", "autoMailSetup",
   "approvalMandatorySetup", "baseLevelSetup", "managerSetup", "managerwiseCoreDoctorMap", "orderBookingSetup",
   "homepageDashboardDisplay", "leavePolicySetup", "leaveTypeSetup", "screenAccessSetup", "screenwiseLock",
-  "deviceLock", "mailFolderCreation", "otherSetup",
+  "deviceLock", "mailFolderCreation", "otherSetup", "appSetupDynamicAppLink",
   "gpsGeoFenceAllocation", "geoTagDeletion", "callFeedbackCreation", "callRemarksTemplates", "menuCreation", "notificationMessage",
   "mailBoxLog",
   "listedDoctorUploadLog", "chemistUploadLog", "sampleDespatchUploadLog", "inputDespatchUploadLog", "targetUploadLog",
   "flashNewsSetup", "noticeBoardSetup", "quoteOfTheWeek", "talkToUsSetup", "fileUploadDesignationwise", "userManualUpload",
   "salesforceUploadLog", "stockistUploadLog", "productUploadLog", "productRateUploadLog", "slideUploadEDetailing",
-  "holidayFixationUploadLog", "leaveBulkUploadLog",
+  "holidayFixationUploadLog", "leaveBulkUploadLog", "transactionUpload",
   "homepageImageUpload", "homepageImageFieldForcewise",
   "leaveStatusReport",
   "transferMasterDetails", "unlistedToListedDrConversion",
