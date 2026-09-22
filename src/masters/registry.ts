@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2969,6 +2969,10 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "quizList",
     title: "Quiz List",
+    // Real quiz authoring + scoring (Quiz/QuizAttempt models, quiz.routes.ts
+    // mounted at /company/quiz) replaces the old headers-only generic-master
+    // log this master used to be — see quiz-authoring-panel.tsx.
+    uiKind: "quizAuthoring",
     keyFields: ["quizTitle"],
     fields: [
       { key: "quizTitle", label: "Quiz Title" },
