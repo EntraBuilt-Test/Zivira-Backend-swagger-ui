@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "notificationSend" | "upload";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "notificationSend" | "upload" | "mailBox";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2190,7 +2190,12 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "mailBoxLog",
     title: "Mail Box",
+    uiKind: "mailBox",
     keyFields: ["folder", "subject"],
+    // The actual data behind this screen is the real InternalMailModel via
+    // /company/mail (mail.routes.ts), not this masters collection — these
+    // fields exist only so /company/masters/mailBoxLog/schema still
+    // describes something sane for tooling that lists every master.
     fields: [
       { key: "folder", label: "Folder", options: ["Inbox", "Sent Mails", "Viewed Mails", "Admin", "Others", "Campaign", "PMT", "Managers"] },
       { key: "subject", label: "Subject" },
