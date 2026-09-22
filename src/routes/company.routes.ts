@@ -4,6 +4,9 @@ import { z } from "zod";
 import { asyncHandler } from "../http/async-handler.js";
 import { requireAuth, requireCompanyAdmin } from "../http/auth.js";
 import { mastersRouter } from "./masters.routes.js";
+import { uploadsRouter } from "./uploads.routes.js";
+import { mailRouter } from "./mail.routes.js";
+import { mastersActionsRouter } from "./masters-actions.routes.js";
 import { MASTERS } from "../masters/registry.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { HttpError } from "../http/errors.js";
@@ -133,6 +136,9 @@ export const companyRouter = Router();
 
 companyRouter.use(requireAuth, requireCompanyAdmin);
 companyRouter.use("/masters", mastersRouter);
+companyRouter.use("/masters", uploadsRouter);
+companyRouter.use("/masters", mastersActionsRouter);
+companyRouter.use("/mail", mailRouter);
 
 companyRouter.get(
   "/dashboard",

@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "notificationSend" | "upload";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -1757,6 +1757,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "optionsChangePassword",
     title: "Change Password",
+    uiKind: "changePassword",
     keyFields: ["fieldForceName", "lastChangedOn"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1768,6 +1769,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "vacantMrLoginAccess",
     title: "Vacant MR Login - Access",
+    uiKind: "vacantMrLogin",
     keyFields: ["fieldForceName"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2138,6 +2140,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "notificationMessage",
     title: "Notification Message",
+    uiKind: "notificationSend",
     keyFields: ["filterBy", "effectiveFrom"],
     fields: [
       { key: "filterBy", label: "Filter By", options: ["FieldForce Base wise", "HQ wise", "Zone wise", "State wise", "Designation wise"] },
@@ -2199,6 +2202,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "listedDoctorUploadLog",
     title: "Listed Doctor Upload Tool",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadedOn"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2210,6 +2214,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "chemistUploadLog",
     title: "Chemists Upload Tool",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadedOn"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2221,6 +2226,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "sampleDespatchUploadLog",
     title: "Sample Despatch Upload",
+    uiKind: "upload",
     keyFields: ["month", "year", "fileName"],
     fields: [
       { key: "month", label: "Month" },
@@ -2233,6 +2239,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "inputDespatchUploadLog",
     title: "Input Despatch Upload",
+    uiKind: "upload",
     keyFields: ["month", "year", "fileName"],
     fields: [
       { key: "month", label: "Month" },
@@ -2245,6 +2252,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "targetUploadLog",
     title: "Target Upload",
+    uiKind: "upload",
     keyFields: ["financialYear", "fileName"],
     fields: [
       { key: "financialYear", label: "Financial Year" },
@@ -2295,6 +2303,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "fileUploadDesignationwise",
     title: "File Upload (Designation-wise)",
+    uiKind: "upload",
     keyFields: ["subject", "designation"],
     fields: [
       { key: "subject", label: "Subject" },
@@ -2306,6 +2315,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "userManualUpload",
     title: "User Manual Upload",
+    uiKind: "upload",
     keyFields: ["subject", "fileName"],
     fields: [
       { key: "subject", label: "Subject" },
@@ -2316,6 +2326,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "salesforceUploadLog",
     title: "Salesforce Upload",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadedOn"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2327,6 +2338,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "stockistUploadLog",
     title: "Stockist Upload",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadedOn"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2338,6 +2350,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "productUploadLog",
     title: "Product Upload",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadedOn"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2349,6 +2362,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "productRateUploadLog",
     title: "Product Rate",
+    uiKind: "upload",
     keyFields: ["stateName", "fileName"],
     fields: [
       { key: "stateName", label: "State Name", options: ["ALL", ...INDIAN_STATES] },
@@ -2359,6 +2373,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "slideUploadEDetailing",
     title: "Slide Upload - E-Detailing",
+    uiKind: "upload",
     keyFields: ["division", "subDivision", "fileName"],
     fields: [
       { key: "division", label: "Division" },
@@ -2371,6 +2386,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "holidayFixationUploadLog",
     title: "Holiday Fixation Bulk Upload",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadedOn"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2381,6 +2397,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "leaveBulkUploadLog",
     title: "Leave Upload",
+    uiKind: "upload",
     keyFields: ["financialYear", "fileName"],
     fields: [
       { key: "financialYear", label: "Financial Year" },
@@ -2391,6 +2408,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "transactionUpload",
     title: "Transaction Upload",
+    uiKind: "upload",
     keyFields: ["fileName", "uploadDate"],
     fields: [
       { key: "fileName", label: "File Name" },
@@ -2403,6 +2421,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "homepageImageUpload",
     title: "Home Page Image Upload (Common)",
+    uiKind: "upload",
     keyFields: ["subject", "fileName"],
     fields: [
       { key: "subject", label: "Subject" },
@@ -2413,6 +2432,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "homepageImageFieldForcewise",
     title: "Home Page - FieldForcewise",
+    uiKind: "upload",
     keyFields: ["fieldForceName"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
