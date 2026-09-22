@@ -1149,14 +1149,16 @@ async function seedActivitiesMasters() {
   }
 }
 
-// The Options menu's 62 screens (Dashboard, Change Password, Vacant MR
-// Login, Update/Delete, Basic Setup, App Setup, Mail Box, Customer Upload,
-// Information Upload, Upload, Image Upload, Leave Status, Transfers,
-// Release, Quiz) — same fully-generic seeding as the Activities menu tabs,
-// every sourceMaster/computed reference resolving against the identity
-// masters already seeded above.
+// The Options menu's 65 screens (Dashboard, Change Password, Vacant MR
+// Login [including its "Login Into FieldForce" sub-screen, registry key
+// loginAsEmployee — previously missing from this list, so that one screen
+// stayed unseeded], Update/Delete, Basic Setup, App Setup, Mail Box,
+// Customer Upload, Information Upload, Upload, Image Upload, Leave Status,
+// Transfers, Release, Quiz) — same fully-generic seeding as the Activities
+// menu tabs, every sourceMaster/computed reference resolving against the
+// identity masters already seeded above.
 const OPTIONS_KEYS = [
-  "optionsDashboardWidget", "optionsChangePassword", "vacantMrLoginAccess", "vacantMrLoginPermission", "doctorCampaignMap",
+  "optionsDashboardWidget", "optionsChangePassword", "vacantMrLoginAccess", "vacantMrLoginPermission", "loginAsEmployee", "doctorCampaignMap",
   "tpDeleteSetup", "dcrEditSetup", "msisEditApproval", "mailDeleteLog", "leaveCancellation", "deviceIdDeletion",
   "tpDeviationRelease", "drUniqueNoGeneration", "chemistReleaseLock", "chemistReleaseLockMonthwise", "autoMailSetup",
   "approvalMandatorySetup", "baseLevelSetup", "managerSetup", "managerwiseCoreDoctorMap", "orderBookingSetup",
