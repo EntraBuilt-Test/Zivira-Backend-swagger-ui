@@ -1496,17 +1496,31 @@ export const MASTERS: MasterConfig[] = [
     // filters by Fieldforce Name + Year to set that employee's annual leave
     // entitlement. Best-effort field set based on standard Indian leave
     // types (CL/PL/SL/LOP) used elsewhere on the live site (Leave Setup).
+    // Live-verified against sanpharma.info (Master » Leave Entitlement -
+    // Entry): S.No | Field Force Name | HQ | Designation | Employee Code |
+    // Date of Joining | Leave Balance (CL/PL/SL/LOP) | Leave Eligibility
+    // (CL/PL/SL/LOP) -- two separate groups of the same four leave types,
+    // Balance being what's left and Eligibility the yearly entitlement the
+    // admin sets.
     key: "leaveEntitlementEntry",
     title: "Leave Entitlement - Entry",
     uiKind: "reportFilter",
     keyFields: ["fieldForceName", "year"],
     fields: [
-      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "employeeCode", label: "Employee Code", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "dateOfJoining", label: "Date of Joining", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "joinDate" } },
       { key: "year", label: "Year" },
-      { key: "cl", label: "CL", type: "number" },
-      { key: "pl", label: "PL", type: "number" },
-      { key: "sl", label: "SL", type: "number" },
-      { key: "lop", label: "LOP", type: "number" }
+      { key: "balanceCl", label: "Balance CL", type: "number" },
+      { key: "balancePl", label: "Balance PL", type: "number" },
+      { key: "balanceSl", label: "Balance SL", type: "number" },
+      { key: "balanceLop", label: "Balance LOP", type: "number" },
+      { key: "cl", label: "Eligibility CL", type: "number" },
+      { key: "pl", label: "Eligibility PL", type: "number" },
+      { key: "sl", label: "Eligibility SL", type: "number" },
+      { key: "lop", label: "Eligibility LOP", type: "number" }
     ]
   },
   {
@@ -1514,19 +1528,37 @@ export const MASTERS: MasterConfig[] = [
     // "Leave Entitlement > View" (ActivityReports/Leave_Entitleent_view.aspx,
     // titled "Leave Status View") filters by Fieldforce Name + From/To Month
     // to show leave taken/balance for the period. Best-effort field set.
+    // Live-verified against sanpharma.info (Activity Reports » Leave Status
+    // View / Leave Entitlement View): S.No | Employee id | FieldForce Name |
+    // Designation | HQ | Joining Date | Leave Eligibility (CL/PL/SL/LOP) |
+    // <selected month> Leave Taken (CL/PL/SL/LOP) | Leave Balance
+    // (CL/PL/SL/LOP), filtered by Field Force Name + From/To Month-Year.
     key: "leaveEntitlementView",
     title: "Leave Entitlement - View",
     uiKind: "reportFilter",
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
-      { key: "fieldForceName", label: "Fieldforce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "employeeId", label: "Employee id", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "fieldForceName", label: "FieldForce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "hq", label: "HQ", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "joiningDate", label: "Joining Date", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "joinDate" } },
       { key: "fromMonth", label: "From Month" },
       { key: "fromYear", label: "From Year" },
       { key: "toMonth", label: "To Month" },
       { key: "toYear", label: "To Year" },
-      { key: "leaveType", label: "Leave Type", options: ["CL", "PL", "SL", "LOP"] },
-      { key: "taken", label: "Taken", type: "number" },
-      { key: "balance", label: "Balance", type: "number" }
+      { key: "eligibilityCl", label: "Eligibility CL", type: "number" },
+      { key: "eligibilityPl", label: "Eligibility PL", type: "number" },
+      { key: "eligibilitySl", label: "Eligibility SL", type: "number" },
+      { key: "eligibilityLop", label: "Eligibility LOP", type: "number" },
+      { key: "takenCl", label: "Leave Taken CL", type: "number" },
+      { key: "takenPl", label: "Leave Taken PL", type: "number" },
+      { key: "takenSl", label: "Leave Taken SL", type: "number" },
+      { key: "takenLop", label: "Leave Taken LOP", type: "number" },
+      { key: "balanceCl", label: "Balance CL", type: "number" },
+      { key: "balancePl", label: "Balance PL", type: "number" },
+      { key: "balanceSl", label: "Balance SL", type: "number" },
+      { key: "balanceLop", label: "Balance LOP", type: "number" }
     ]
   },
   {
@@ -1538,18 +1570,22 @@ export const MASTERS: MasterConfig[] = [
     // Doctorwise Periodically, Analysis-DCR, Coverage Analysis, Secondary
     // Sale, Tour Plan, DCR View, Product Exposure Analysis, Sample Issued
     // FieldForce) -- it's a report-access audit trail. Best-effort field set.
+    // Live-verified against sanpharma.info (Manager_Audit_Report.aspx):
+    // S No | Login FieldForce Name | Emp Id | Mode of Report | Selected
+    // Month | Viewed On | Selected Fieldforce -- a log of which manager
+    // viewed which report, for which fieldforce/month, and when.
     key: "auditReport",
     title: "Audit Report",
     uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year", "mode"],
     fields: [
-      { key: "fieldForceName", label: "Filed Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "month", label: "Month" },
+      { key: "fieldForceName", label: "Login FieldForce Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "empId", label: "Emp Id", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "mode", label: "Mode of Report", options: ["All", "Call Average", "Missed Call", "Doctorwise Periodically", "Analysis-DCR", "Coverage Analysis", "Secondary Sale", "Tour Plan", "DCR View", "Product Exposure Analysis", "Sample Issued FieldForce"] },
+      { key: "month", label: "Selected Month" },
       { key: "year", label: "Year" },
-      { key: "mode", label: "Mode", options: ["All", "Call Average", "Missed Call", "Doctorwise Periodically", "Analysis-DCR", "Coverage Analysis", "Secondary Sale", "Tour Plan", "DCR View", "Product Exposure Analysis", "Sample Issued FieldForce"] },
-      { key: "accessDate", label: "Access Date", type: "date" },
-      { key: "reportAccessed", label: "Report Accessed" },
-      { key: "ipAddress", label: "IP Address" }
+      { key: "viewedOn", label: "Viewed On", type: "date" },
+      { key: "selectedFieldforce", label: "Selected Fieldforce", sourceMaster: "employees", sourceField: "name" }
     ]
   },
   {
