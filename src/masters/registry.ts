@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "notificationSend" | "upload" | "mailBox";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -1787,6 +1787,18 @@ export const MASTERS: MasterConfig[] = [
       { key: "fieldForceType", label: "Field Force Type", options: ["Team", "Advanced"] },
       { key: "grantedOn", label: "Granted On", type: "date" },
       { key: "status", label: "Status", options: ACTIVE_INACTIVE }
+    ]
+  },
+  {
+    key: "loginAsEmployee",
+    title: "Login Into FieldForce",
+    uiKind: "loginAsEmployee",
+    keyFields: ["employeeName"],
+    fields: [
+      { key: "employeeName", label: "Employee Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "loggedInAs", label: "Logged In As", computed: { fromField: "employeeName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "lastLoginOn", label: "Last Login On", type: "date" },
+      { key: "loggedInBy", label: "Logged In By" }
     ]
   },
   {

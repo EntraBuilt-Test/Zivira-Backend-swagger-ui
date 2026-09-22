@@ -157,6 +157,90 @@ mastersActionsRouter.post(
   })
 );
 
+// ── 2b. Login Into FieldForce (any ACTIVE employee, MR or Manager) ─────
+// POST /masters/loginAsEmployee/action/login
+// The general-purpose "Login Into FieldForce" support tool: unlike Vacant
+// MR Login (gated on a permission grant, meant for a genuinely vacant
+// position), this works for ANY currently-Active employee and needs no
+// permission row — any Company Admin can impersonate any active employee
+// for support/debugging, exactly like sanpharma.info's real feature.
+// Issues the exact same signToken() claim shape as /auth/login and the
+// Vacant MR Login handler above, so the token works unmodified against
+// every /api/field/* and /api/manager/* route (the middleware there tells
+// field-rep vs manager apart by `role`, not by a distinct portal value —
+// both use portal: "FIELD_FORCE").
+const loginAsEmployeeSchema = z.object({
+  employeeCode: z.string().min(1)
+});
+
+mastersActionsRouter.post(
+  "/loginAsEmployee/action/login",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = loginAsEmployeeSchema.parse(req.body);
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: body.employeeCode });
+    if (!employee) throw new HttpError(404, "Employee not found");
+    if (employee.status !== "ACTIVE") {
+      throw new HttpError(403, "This employee is not Active — Login Into FieldForce is only available for currently-active employees");
+    }
+
+    const user = await UserModel.findOne({ tenantSlug, employeeCode: employee.employeeCode, portal: "FIELD_FORCE" });
+    if (!user) throw new HttpError(404, "This employee has no FIELD_FORCE/Manager login account to log into");
+    if (!user.active) throw new HttpError(403, "This employee's login account is inactive");
+
+    const token = signToken({
+      sub: String(user._id),
+      role: user.role,
+      portal: user.portal,
+      tenantSlug,
+      employeeCode: user.employeeCode ?? undefined
+    });
+
+    const portalType = MANAGER_ROLES.includes(user.role) ? "manager" : "field";
+    const adminUsername = req.auth?.sub ?? "Admin";
+
+    const LogModel = getMasterModel("loginAsEmployee");
+    const logRow = await LogModel.findOneAndUpdate(
+      { tenantSlug, employeeName: employee.name },
+      {
+        $set: {
+          tenantSlug,
+          employeeName: employee.name,
+          lastLoginOn: new Date(),
+          loggedInBy: adminUsername
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    await audit("ADMIN_LOGIN_AS_EMPLOYEE", "loginAsEmployee", String(logRow._id), {
+      tenantSlug,
+      employeeCode: employee.employeeCode,
+      role: user.role,
+      portal: user.portal,
+      portalType,
+      loggedInBy: adminUsername
+    });
+
+    res.status(201).json({
+      data: {
+        success: true,
+        token,
+        portalType,
+        employee: {
+          employeeCode: employee.employeeCode,
+          name: employee.name,
+          designation: employee.designation,
+          role: user.role,
+          portal: user.portal
+        },
+        log: serializeDocument(logRow)
+      }
+    });
+  })
+);
+
 // ── 3. Notification Message ─────────────────────────────────────────
 // POST /masters/notificationMessage/action/send
 // Resolves filterBy/filterValue against the real EmployeeModel and
