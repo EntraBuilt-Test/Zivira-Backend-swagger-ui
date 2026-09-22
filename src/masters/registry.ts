@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2171,7 +2171,15 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "optionsDashboardWidget",
     title: "Options - Dashboard",
+    uiKind: "dashboardBuilder",
     keyFields: ["name"],
+    // Real behavior lives behind /company/dashboards (see dashboard.routes.ts /
+    // dashboard.model.ts) — this generic-masters entry now exists only so
+    // /company/masters/optionsDashboardWidget/schema still resolves (e.g. for
+    // any legacy caller) and MasterScreen can look up its uiKind. The fields
+    // below are never rendered as a table anymore; OptionsDashboardPanel
+    // (uiKind: "dashboardBuilder") replaces the old Name/Value/Description/
+    // Status generic-table UI entirely.
     fields: [
       { key: "name", label: "Name" },
       { key: "value", label: "Value" },

@@ -8,6 +8,7 @@ import { uploadsRouter } from "./uploads.routes.js";
 import { mailRouter } from "./mail.routes.js";
 import { mastersActionsRouter } from "./masters-actions.routes.js";
 import { quizRouter } from "./quiz.routes.js";
+import { dashboardsRouter } from "./dashboard.routes.js";
 import { MASTERS } from "../masters/registry.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { HttpError } from "../http/errors.js";
@@ -141,6 +142,7 @@ companyRouter.use("/masters", uploadsRouter);
 companyRouter.use("/masters", mastersActionsRouter);
 companyRouter.use("/mail", mailRouter);
 companyRouter.use("/quiz", quizRouter);
+companyRouter.use("/dashboards", dashboardsRouter);
 
 companyRouter.get(
   "/dashboard",
