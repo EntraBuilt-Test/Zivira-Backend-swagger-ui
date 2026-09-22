@@ -1062,6 +1062,42 @@ async function seedActivitiesMasters() {
   }
 }
 
+// The Options menu's 62 screens (Dashboard, Change Password, Vacant MR
+// Login, Update/Delete, Basic Setup, App Setup, Mail Box, Customer Upload,
+// Information Upload, Upload, Image Upload, Leave Status, Transfers,
+// Release, Quiz) — same fully-generic seeding as the Activities menu tabs,
+// every sourceMaster/computed reference resolving against the identity
+// masters already seeded above.
+const OPTIONS_KEYS = [
+  "optionsDashboardWidget", "optionsChangePassword", "vacantMrLoginAccess", "vacantMrLoginPermission", "doctorCampaignMap",
+  "tpDeleteSetup", "dcrEditSetup", "msisEditApproval", "mailDeleteLog", "leaveCancellation", "deviceIdDeletion",
+  "tpDeviationRelease", "drUniqueNoGeneration", "chemistReleaseLock", "chemistReleaseLockMonthwise", "autoMailSetup",
+  "approvalMandatorySetup", "baseLevelSetup", "managerSetup", "managerwiseCoreDoctorMap", "orderBookingSetup",
+  "homepageDashboardDisplay", "leavePolicySetup", "leaveTypeSetup", "screenAccessSetup", "screenwiseLock",
+  "deviceLock", "mailFolderCreation", "otherSetup",
+  "gpsGeoFenceAllocation", "geoTagDeletion", "callFeedbackCreation", "callRemarksTemplates", "menuCreation", "notificationMessage",
+  "mailBoxLog",
+  "listedDoctorUploadLog", "chemistUploadLog", "sampleDespatchUploadLog", "inputDespatchUploadLog", "targetUploadLog",
+  "flashNewsSetup", "noticeBoardSetup", "quoteOfTheWeek", "talkToUsSetup", "fileUploadDesignationwise", "userManualUpload",
+  "salesforceUploadLog", "stockistUploadLog", "productUploadLog", "productRateUploadLog", "slideUploadEDetailing",
+  "holidayFixationUploadLog", "leaveBulkUploadLog",
+  "homepageImageUpload", "homepageImageFieldForcewise",
+  "leaveStatusReport",
+  "transferMasterDetails", "unlistedToListedDrConversion",
+  "delayedRelease",
+  "quizList", "quizCategoryList"
+];
+
+async function seedOptionsMasters() {
+  console.log("\n── Generic masters registry — Options menu tabs ──");
+  for (const key of OPTIONS_KEYS) {
+    const config = MASTERS.find((m) => m.key === key);
+    if (!config) { console.warn(`  [!!] Registry key not found: ${key}`); continue; }
+    await seedMasterGeneric(config);
+  }
+}
+
+
 async function verifyAllMastersHaveExactly10() {
   console.log("\n── Verification ──");
   let allGood = true;
@@ -1106,6 +1142,7 @@ export async function runExactTenSeed() {
   await seedSalesAndReportingMasters();
   await seedRemainingGenericMasters();
   await seedActivitiesMasters();
+  await seedOptionsMasters();
   await ensureDemoLoginsExist();
   await verifyAllMastersHaveExactly10();
 
