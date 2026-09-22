@@ -35,6 +35,14 @@ export type MasterField = {
   // up `sourceMaster` for a record where `lookupField` equals the current
   // value of `fromField`, then displaying that record's `displayField`.
   computed?: { fromField: string; sourceMaster: string; lookupField: string; displayField: string };
+  // Approval-queue screens: sanpharma.info's own pending-request list only
+  // shows a few identifying columns (SF Name / HQ / Designation) -- the
+  // rest of a request's detail only appears once the admin actually opens
+  // "Click Here to Approve". A field marked `detailOnly` is still part of
+  // the record (and still shown in the Add Request / Edit modal), but is
+  // left out of the outer approval-queue table and shown only inside the
+  // per-request detail popup.
+  detailOnly?: boolean;
 };
 
 export type MasterConfig = {
@@ -1146,6 +1154,13 @@ export const MASTERS: MasterConfig[] = [
     // this screen is the sibling of Listed Dr Deactivation below (same
     // underlying approval template, confirmed via that screen's live data),
     // so it carries the identical shape.
+    // Live-verified list columns: S.No | SF Name | HQ | Click Here. The
+    // sanpharma "Click Here to Approve" link on this screen opens a page
+    // listing the actual DOCTORS this SF Name is requesting to add (S.No |
+    // Listed Doctor Name | Speciality | Category | Qualification | Class |
+    // Territory) -- so the request also needs to carry which doctor it's
+    // about, sourced straight from Doctor Master / Doctor Classification
+    // the same way every other SF-Name-driven computed column works here.
     key: "approvalListedDrAddition",
     title: "Listed Dr Addition",
     uiKind: "approvalQueue",
@@ -1153,6 +1168,12 @@ export const MASTERS: MasterConfig[] = [
     fields: [
       { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
       { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "doctorCode", label: "Listed Doctor Name", sourceMaster: "doctorMaster", sourceField: "doctorCode", detailOnly: true },
+      { key: "speciality", label: "Speciality", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "specialty" }, detailOnly: true },
+      { key: "category", label: "Category", computed: { fromField: "doctorCode", sourceMaster: "doctorClassification", lookupField: "doctorCode", displayField: "doctorCategory" }, detailOnly: true },
+      { key: "qualification", label: "Qualification", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "qualification" }, detailOnly: true },
+      { key: "classField", label: "Class", computed: { fromField: "doctorCode", sourceMaster: "doctorClassification", lookupField: "doctorCode", displayField: "potential" }, detailOnly: true },
+      { key: "territory", label: "Territory", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" }, detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ]
   },
@@ -1168,6 +1189,12 @@ export const MASTERS: MasterConfig[] = [
     fields: [
       { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
       { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "doctorCode", label: "Listed Doctor Name", sourceMaster: "doctorMaster", sourceField: "doctorCode", detailOnly: true },
+      { key: "speciality", label: "Speciality", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "specialty" }, detailOnly: true },
+      { key: "category", label: "Category", computed: { fromField: "doctorCode", sourceMaster: "doctorClassification", lookupField: "doctorCode", displayField: "doctorCategory" }, detailOnly: true },
+      { key: "qualification", label: "Qualification", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "qualification" }, detailOnly: true },
+      { key: "classField", label: "Class", computed: { fromField: "doctorCode", sourceMaster: "doctorClassification", lookupField: "doctorCode", displayField: "potential" }, detailOnly: true },
+      { key: "territory", label: "Territory", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" }, detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ]
   },
@@ -1186,6 +1213,13 @@ export const MASTERS: MasterConfig[] = [
       { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
       { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
       { key: "designation", label: "Designation", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      // Detail-only -- shown on "Click Here to Approve" (same shape as the
+      // Manager Portal's own Tour Plan review: TP ID / Month / Target
+      // Locations / Manager), not on the outer pending-request list.
+      { key: "tpId", label: "TP ID", detailOnly: true },
+      { key: "month", label: "Month", detailOnly: true },
+      { key: "targetLocations", label: "Target Locations", detailOnly: true },
+      { key: "managerName", label: "Manager (ABM)", detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ],
     approvalActionColumnLabel: "Approve",
@@ -1207,6 +1241,19 @@ export const MASTERS: MasterConfig[] = [
       { key: "sfName", label: "SF Name", sourceMaster: "employees", sourceField: "name" },
       { key: "hq", label: "HQ", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
       { key: "designation", label: "Designation", computed: { fromField: "sfName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      // Detail-only -- shown on "Click Here to Approve". sanpharma's own
+      // DCR_Bulk_Approval.aspx groups a WHOLE MONTH of an MR's visit-level
+      // DCR rows (one row per activity date) into a single approve/reject
+      // grid with per-row Approve/Reject checkboxes -- that's a materially
+      // bigger feature (grouping many DCR submissions into one review
+      // page) than a single request's detail popup. This surfaces the real
+      // fields from the single DCR submission that triggered this request
+      // as an interim step; the full multi-date grid is tracked as a
+      // separate follow-up.
+      { key: "activityDate", label: "Activity Date", type: "date", detailOnly: true },
+      { key: "workType", label: "Work Type", detailOnly: true },
+      { key: "hospitalClinic", label: "Hospitals Met", detailOnly: true },
+      { key: "remarks", label: "Remarks", detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ],
     approvalActionColumnLabel: "Approve",
@@ -1233,6 +1280,12 @@ export const MASTERS: MasterConfig[] = [
       { key: "fromDate", label: "From Date", type: "date" },
       { key: "toDate", label: "To Date", type: "date" },
       { key: "leaveDays", label: "Leave Days", type: "number" },
+      // Detail-only -- shown on "Click Here to Approve", matching
+      // sanpharma.info's own Leave Application Form (Type of Leave /
+      // Reason For Leave), not the outer pending-request list.
+      { key: "leaveType", label: "Type of Leave", detailOnly: true },
+      { key: "reasonForLeave", label: "Reason For Leave", detailOnly: true },
+      { key: "division", label: "Division Name", detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ]
   },
@@ -1625,12 +1678,20 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Live-verified against sanpharma.info (Master » Manager Missed Call -
+    // Setup): SNO | Manager Name | HQ | Design | Base Level Tagging, where
+    // HQ/Design are read off the picked Manager (same computed-field
+    // pattern as every other SF-Name-driven screen) and Base Level Tagging
+    // is itself another employee picked from a dropdown (the manager this
+    // row's missed calls escalate to), not free text.
     key: "managerMissedCallSetup",
     title: "Manager Missed Call - Setup",
     keyFields: ["managerName"],
     fields: [
       { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "baseLevelTagging", label: "Base Level Tagging" },
+      { key: "hq", label: "HQ", computed: { fromField: "managerName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "designation", label: "Design", computed: { fromField: "managerName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
+      { key: "baseLevelTagging", label: "Base Level Tagging", sourceMaster: "employees", sourceField: "name" },
       { key: "status", label: "Status", options: ["Active", "Inactive"] }
     ]
   },

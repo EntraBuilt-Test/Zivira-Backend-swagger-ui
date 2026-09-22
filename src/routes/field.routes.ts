@@ -351,7 +351,13 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     tenantSlug, employeeCode: employee.employeeCode,
     overVisitFlag, overrideAcknowledged: body.overrideOverVisitWarning ?? false
   });
-  await mirrorApprovalRow("approvalDcr", tenantSlug, { sfName: employee.name });
+  await mirrorApprovalRow("approvalDcr", tenantSlug, {
+    sfName: employee.name,
+    activityDate: dcr.visitDate,
+    workType: body.hospitalClinic ? "Field Work" : "Admin Work",
+    hospitalClinic: body.hospitalClinic ?? "",
+    remarks: body.notes ?? ""
+  });
   await notifyReportingManager(
     tenantSlug,
     employee,
@@ -569,7 +575,13 @@ fieldRouter.post("/tour-plans", asyncHandler(async (req, res) => {
   );
 
   await audit("FIELD_TOUR_PLAN_SUBMITTED", "TourPlan", String(created._id), { tenantSlug, employeeCode: employee.employeeCode, tpId: created.tpId });
-  await mirrorApprovalRow("approvalTp", tenantSlug, { sfName: employee.name });
+  await mirrorApprovalRow("approvalTp", tenantSlug, {
+    sfName: employee.name,
+    tpId: created.tpId,
+    month: created.month,
+    targetLocations: body.locations.map((l) => `${l.town} (${l.area})`).filter(Boolean).join(", "),
+    managerName: employee.reportingManager ?? ""
+  });
   await notifyReportingManager(
     tenantSlug,
     employee,
@@ -771,7 +783,10 @@ fieldRouter.post("/leave-applications", asyncHandler(async (req, res) => {
     fieldForceName: employee.name,
     fromDate: from.toISOString().slice(0, 10),
     toDate: to.toISOString().slice(0, 10),
-    leaveDays: body.days
+    leaveDays: body.days,
+    leaveType,
+    reasonForLeave: leaveType,
+    division: "Zivira Labs Pvt Ltd"
   });
 
   // "it should be send an notification like leave submitted for manager
