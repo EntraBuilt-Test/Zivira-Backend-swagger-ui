@@ -566,3 +566,123 @@ mastersRouter.post(
     res.json({ data: { success: true, deletedCount: result.deletedCount } });
   })
 );
+
+// ══════════════════════════════════════════════════════════════════════
+// DCR Bulk Approval — sanpharma.info's DCR_Bulk_Approval.aspx shows a
+// manager one row per activity DATE for a chosen field rep + month, with
+// checkboxes to approve/reject many dates in one shot, instead of the
+// single-row "Click Here to Approve" detail popup the existing
+// `approvalDcr` ApprovalQueueTable renders one request at a time (see the
+// registry.ts comment on the `approvalDcr` master). This is an ADDITIONAL
+// view over the exact same `approvalDcr` master collection/rows the
+// single-row queue already reads and writes — it does not replace that
+// screen or its route, so anything still using the single-row flow keeps
+// working exactly as before.
+//
+// `setApprovalStatus` below is the same read-modify-write PUT /:key/:id
+// above performs when the only field being changed is `approvalStatus`
+// (Model.findOneAndUpdate + audit + broadcastNotice) — pulled into a
+// named function so the new bulk-action endpoint reuses this exact
+// approve/reject write instead of re-implementing it inline. The generic
+// PUT handler itself is left untouched (it also has to serve every other
+// master's full-record edit), so this is a shared helper for the new
+// bulk path, not a refactor of the existing single-row route.
+// ══════════════════════════════════════════════════════════════════════
+const BULK_APPROVAL_MASTERS = new Set(["approvalDcr"]);
+
+async function setApprovalStatus(
+  config: ReturnType<typeof requireConfig>,
+  tenantSlug: string,
+  id: string,
+  status: "Approved" | "Rejected"
+) {
+  const Model = getMasterModel(config.key);
+  const updated = await Model.findOneAndUpdate(
+    { _id: id, tenantSlug },
+    { $set: { approvalStatus: status } },
+    { new: true }
+  );
+  if (!updated) throw new HttpError(404, `${config.title} record not found`);
+  await audit(`MASTER_${config.key.toUpperCase()}_UPDATED`, config.key, String(updated._id), { tenantSlug, approvalStatus: status });
+  await broadcastNotice({
+    tenantSlug,
+    audience: "ALL",
+    title: `${config.title} updated`,
+    message: `A ${config.title.toLowerCase()} record was updated by Admin.`
+  });
+  return updated;
+}
+
+// GET /masters/:key/bulk?sfName=<name>&month=<YYYY-MM> — every approvalDcr
+// row for one field rep in one calendar month, one row per activity date,
+// oldest first. `activityDate` is stored as a real Date (mirrorApprovalRow
+// in field.routes.ts assigns `dcr.visitDate` directly, not a string), so
+// the month is matched with a UTC date range rather than a string prefix.
+mastersRouter.get(
+  "/:key/bulk",
+  asyncHandler(async (req, res) => {
+    const config = requireConfig(req.params.key);
+    if (!BULK_APPROVAL_MASTERS.has(config.key)) {
+      throw new HttpError(403, `${config.title} does not support bulk approval`);
+    }
+    const tenantSlug = req.auth!.tenantSlug!;
+
+    const sfName = typeof req.query.sfName === "string" ? req.query.sfName.trim() : "";
+    const month = typeof req.query.month === "string" ? req.query.month.trim() : "";
+    if (!sfName || !/^\d{4}-\d{2}$/.test(month)) {
+      throw new HttpError(400, "sfName and month (YYYY-MM) query params are required");
+    }
+    const [year, monthNum] = month.split("-").map(Number);
+    const rangeStart = new Date(Date.UTC(year, monthNum - 1, 1));
+    const rangeEnd = new Date(Date.UTC(year, monthNum, 1));
+
+    const Model = getMasterModel(config.key);
+    const records = await Model.find({
+      tenantSlug,
+      sfName,
+      activityDate: { $gte: rangeStart, $lt: rangeEnd }
+    }).sort({ activityDate: 1 });
+
+    res.json({ data: records.map(serializeDocument), schema: config });
+  })
+);
+
+// POST /masters/:key/bulk-action — body { ids: string[], status: "Approved" | "Rejected" }.
+// Applies the same single-row approve/reject write to every id, one at a
+// time (a plain loop, not a Mongo multi-document transaction — this
+// deployment's Mongo isn't guaranteed to run as a replica set, and each
+// row's approval is independently meaningful, so a partial success is
+// reported back rather than treated as a failure needing rollback). Any
+// row that fails (already gone, wrong tenant) is reported per-id instead
+// of aborting the rest of the batch.
+mastersRouter.post(
+  "/:key/bulk-action",
+  asyncHandler(async (req, res) => {
+    const config = requireConfig(req.params.key);
+    if (!BULK_APPROVAL_MASTERS.has(config.key)) {
+      throw new HttpError(403, `${config.title} does not support bulk approval`);
+    }
+    const tenantSlug = req.auth!.tenantSlug!;
+
+    const status = req.body?.status;
+    if (status !== "Approved" && status !== "Rejected") {
+      throw new HttpError(400, "status must be 'Approved' or 'Rejected'");
+    }
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((v: unknown) => typeof v === "string" && v.trim()) : [];
+    if (!ids.length) {
+      throw new HttpError(400, "ids must be a non-empty array of record ids");
+    }
+
+    const results: { id: string; ok: boolean; error?: string }[] = [];
+    for (const id of ids) {
+      try {
+        await setApprovalStatus(config, tenantSlug, id, status);
+        results.push({ id, ok: true });
+      } catch (err) {
+        results.push({ id, ok: false, error: err instanceof Error ? err.message : "Failed to update" });
+      }
+    }
+
+    res.json({ data: { results, updatedCount: results.filter((r) => r.ok).length } });
+  })
+);
