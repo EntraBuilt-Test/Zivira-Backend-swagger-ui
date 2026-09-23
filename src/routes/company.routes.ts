@@ -380,12 +380,8 @@ const dcrWorkTypeSchema = z.object({
   workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"])
 });
 
-// PATCH /company/dcrs/:id/work-type — "Update/Delete > DCR Edit", matching
-// sanpharma.info's own DCR Edit dropdown exactly. Edits the REAL Dcr
-// document — the same collection the MR's own DCR history and the
-// manager's DCR review queue both read from — so the change is
-// immediately visible in both portals. Notifies both the MR and their
-// reporting manager.
+// PATCH /company/dcrs/:id/work-type — kept for backward compatibility with
+// any caller that only wants to change Work Type.
 companyRouter.patch(
   "/dcrs/:id/work-type",
   asyncHandler(async (req, res) => {
@@ -427,6 +423,110 @@ companyRouter.patch(
     res.json({ data: serializeDocument(dcr) });
   })
 );
+
+// PATCH /company/dcrs/:id — "Update/Delete > DCR Edit" full-row edit. The
+// Admin DCR Edit screen's Edit button opens every editable field on the
+// row (not just Work Type) — visit date, hospital/clinic, work type,
+// notes, check-in/out time and follow-up — and saves them all against the
+// REAL Dcr document that the field-force MR's own history and the
+// manager's review queue both read from, so the change is immediately
+// visible in both portals. Notifies both the MR and their manager with a
+// summary of what changed.
+const dcrFullEditSchema = z.object({
+  workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"]).optional(),
+  visitDate: z.string().optional(),
+  hospitalClinic: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  checkInTime: z.string().nullable().optional(),
+  checkOutTime: z.string().nullable().optional(),
+  followUpRequired: z.boolean().optional(),
+  followUpDate: z.string().nullable().optional(),
+  prescriptionInterest: z.enum(["HIGH", "MEDIUM", "LOW", "NONE"]).nullable().optional()
+});
+
+companyRouter.patch(
+  "/dcrs/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = dcrFullEditSchema.parse(req.body);
+    const dcr = await DcrModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!dcr) throw new HttpError(404, "DCR not found");
+
+    const changes: string[] = [];
+    if (body.workType !== undefined && body.workType !== dcr.workType) {
+      changes.push(`Work Type: ${dcr.workType} → ${body.workType}`);
+      dcr.workType = body.workType;
+    }
+    if (body.visitDate !== undefined) {
+      const parsed = new Date(body.visitDate);
+      if (!isNaN(parsed.getTime()) && parsed.getTime() !== dcr.visitDate.getTime()) {
+        changes.push(`Visit Date: ${dcr.visitDate.toDateString()} → ${parsed.toDateString()}`);
+        dcr.visitDate = parsed;
+      }
+    }
+    if (body.hospitalClinic !== undefined && body.hospitalClinic !== dcr.hospitalClinic) {
+      changes.push(`Hospital/Clinic updated`);
+      dcr.hospitalClinic = body.hospitalClinic;
+    }
+    if (body.notes !== undefined && body.notes !== dcr.notes) {
+      changes.push(`Notes updated`);
+      dcr.notes = body.notes ?? undefined;
+    }
+    if (body.checkInTime !== undefined && body.checkInTime !== dcr.checkInTime) {
+      changes.push(`Check-In Time: ${dcr.checkInTime ?? "-"} → ${body.checkInTime ?? "-"}`);
+      dcr.checkInTime = body.checkInTime;
+    }
+    if (body.checkOutTime !== undefined && body.checkOutTime !== dcr.checkOutTime) {
+      changes.push(`Check-Out Time: ${dcr.checkOutTime ?? "-"} → ${body.checkOutTime ?? "-"}`);
+      dcr.checkOutTime = body.checkOutTime;
+    }
+    if (body.followUpRequired !== undefined && body.followUpRequired !== dcr.followUpRequired) {
+      changes.push(`Follow-Up Required: ${body.followUpRequired ? "Yes" : "No"}`);
+      dcr.followUpRequired = body.followUpRequired;
+    }
+    if (body.followUpDate !== undefined) {
+      const parsed = body.followUpDate ? new Date(body.followUpDate) : null;
+      dcr.followUpDate = parsed;
+      changes.push(`Follow-Up Date updated`);
+    }
+    if (body.prescriptionInterest !== undefined && body.prescriptionInterest !== dcr.prescriptionInterest) {
+      changes.push(`Prescription Interest: ${body.prescriptionInterest ?? "-"}`);
+      dcr.prescriptionInterest = body.prescriptionInterest;
+    }
+
+    await dcr.save();
+    await audit("ADMIN_DCR_EDITED", "Dcr", String(dcr._id), { tenantSlug, employeeCode: dcr.employeeCode, changes });
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: dcr.employeeCode }).lean();
+    const manager = employee?.reportingManager
+      ? await EmployeeModel.findOne({ tenantSlug, employeeCode: employee.reportingManager }).lean()
+      : null;
+    const summary = changes.length ? changes.join("; ") : "minor details updated";
+
+    await notifyFieldRep({
+      tenantSlug,
+      employeeCode: dcr.employeeCode,
+      employeeEmail: employee?.email,
+      employeeName: employee?.name,
+      title: "DCR edited by Admin",
+      message: `Your DCR dated ${dcr.visitDate.toDateString()} was updated by Admin. ${summary}.`
+    });
+
+    if (manager) {
+      await notifyManager({
+        tenantSlug,
+        managerEmployeeCode: manager.employeeCode,
+        managerEmail: manager.email,
+        managerName: manager.name,
+        title: "DCR edited by Admin",
+        message: `${employee?.name ?? dcr.employeeCode}'s DCR dated ${dcr.visitDate.toDateString()} was updated by Admin. ${summary}.`
+      });
+    }
+
+    res.json({ data: serializeDocument(dcr) });
+  })
+);
+
 
 companyRouter.get(
   "/manager-activity",

@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2283,6 +2283,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "msisEditApproval",
     title: "MSIS Edit (Approval)",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2294,6 +2295,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "mailDeleteLog",
     title: "Mail Delete",
+    uiKind: "mailDelete",
     keyFields: ["fieldForceName", "deletedOn"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2307,6 +2309,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "leaveCancellation",
     title: "Leave Cancellation (After Approval)",
+    uiKind: "leaveCancellation",
     keyFields: ["fieldForceName", "fromDate"],
     fields: [
       { key: "employeeId", label: "Employee Id", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
@@ -2317,12 +2320,17 @@ export const MASTERS: MasterConfig[] = [
       { key: "fromDate", label: "From Date", type: "date" },
       { key: "toDate", label: "To Date", type: "date" },
       { key: "noOfDays", label: "No of Days", type: "number" },
-      { key: "approvedBy", label: "Approved By" }
+      { key: "approvedBy", label: "Approved By" },
+      // Tracks the sanpharma-style Cancel Leave action on this screen —
+      // absent/"Active" means still approved and standing; "Cancelled"
+      // means Admin cancelled it via the Cancel All / Cancel Leave flow.
+      { key: "status", label: "Status", options: ["Active", "Cancelled"] }
     ]
   },
   {
     key: "deviceIdDeletion",
     title: "Mobile App - Device Id Deletion",
+    uiKind: "deviceIdDeletion",
     keyFields: ["fieldForceName", "deviceId"],
     fields: [
       { key: "employeeId", label: "Employee Id", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
@@ -2336,6 +2344,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "tpDeviationRelease",
     title: "TP Deviation - Release",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2347,6 +2356,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "drUniqueNoGeneration",
     title: "Drs UNI No - Generation",
+    uiKind: "drUniqueNoGeneration",
     keyFields: ["doctorCode"],
     fields: [
       { key: "doctorCode", label: "Doctor Code", sourceMaster: "doctorMaster", sourceField: "doctorCode" },
@@ -2359,6 +2369,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "chemistReleaseLock",
     title: "Chemist - Release/Lock",
+    uiKind: "reportFilter",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2373,6 +2384,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "chemistReleaseLockMonthwise",
     title: "Chemist - Release/Lock (Month-wise)",
+    uiKind: "chemistReleaseLockMonthwise",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },

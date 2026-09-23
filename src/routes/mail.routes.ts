@@ -94,6 +94,15 @@ mailRouter.get(
     const filter: Record<string, unknown> = { tenantSlug };
 
     if (typeof req.query.folder === "string" && req.query.folder.trim()) filter.folder = req.query.folder.trim();
+    // Admin "Update/Delete > Mail Delete" screen filters by Field Force
+    // Name — a mail's real owner is whichever side of it is the employee
+    // (recipient in Inbox/Viewed Mails, sender's own Sent Mails copy has
+    // toEmployeeCode set to the same employee too, since sendMail() writes
+    // both copies with toEmployeeCode = the employee), so matching on
+    // toEmployeeCode alone covers every system folder.
+    if (typeof req.query.toEmployeeCode === "string" && req.query.toEmployeeCode.trim()) {
+      filter.toEmployeeCode = req.query.toEmployeeCode.trim();
+    }
     if (typeof req.query.search === "string" && req.query.search.trim()) {
       const escaped = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       filter.subject = new RegExp(escaped, "i");

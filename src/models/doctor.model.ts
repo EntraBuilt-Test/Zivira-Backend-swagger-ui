@@ -28,7 +28,13 @@ const doctorSchema = new Schema(
     phone: { type: String, trim: true, default: null },
     email: { type: String, trim: true, lowercase: true, default: null },
     grade: { type: String, trim: true, default: null },
-    status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
+    status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true },
+    // Admin "Update/Delete > Drs UNI No - Generation" screen (matches
+    // sanpharma.info's own Unique_Doc_Slno.aspx exactly): a unique
+    // sequential serial number assigned to each doctor, allocated by mode
+    // (All Listed Drs / Specialty Wise / Subdivision-HQ Wise) and cleared
+    // by Reset. null/absent means "not allocated yet".
+    uniqueSlNo: { type: String, trim: true, default: null, index: true }
   },
   { timestamps: true }
 );

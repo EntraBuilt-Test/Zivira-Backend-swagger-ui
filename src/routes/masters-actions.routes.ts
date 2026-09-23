@@ -7,6 +7,7 @@ import { signToken } from "../http/auth.js";
 import { UserModel } from "../models/user.model.js";
 import { ensureEmployeeLoginAccount } from "../utils/credentials.js";
 import { EmployeeModel } from "../models/employee.model.js";
+import { DoctorModel } from "../models/doctor.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { audit } from "../utils/audit.js";
 import { notifyFieldRep, notifyManager } from "../utils/notify.js";
@@ -401,5 +402,128 @@ mastersActionsRouter.post(
     });
 
     res.status(201).json({ data: { success: true, matched: employees.length, notified, row: serializeDocument(row) } });
+  })
+);
+
+// ── 4. Drs UNI No - Generation ─────────────────────────────────────
+// Matches sanpharma.info's own Unique_Doc_Slno.aspx exactly: a Mode
+// dropdown (All Listed Drs / Specialty Wise / Subdivision-HQ Wise) with
+// counters for how many doctors have a unique serial number allocated vs
+// not, an "Allocate Slno" button that assigns a real, persisted
+// uniqueSlNo to every ACTIVE doctor according to the chosen mode, and a
+// "Reset" button that clears every doctor's uniqueSlNo back to
+// unallocated. This writes directly to the real DoctorModel collection
+// (see doctor.model.ts's `uniqueSlNo` field) — the same collection every
+// other Doctor screen reads — so a regenerated code is immediately
+// reflected everywhere doctor records are shown.
+function slugifyForCode(value: string): string {
+  const cleaned = (value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return (cleaned.slice(0, 3) || "GEN").padEnd(3, "X");
+}
+
+mastersActionsRouter.get(
+  "/drUniqueNoGeneration/action/summary",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const [total, allocated] = await Promise.all([
+      DoctorModel.countDocuments({ tenantSlug, status: "ACTIVE" }),
+      DoctorModel.countDocuments({ tenantSlug, status: "ACTIVE", uniqueSlNo: { $ne: null, $exists: true } })
+    ]);
+    res.json({ data: { total, allocated, notAllocated: total - allocated } });
+  })
+);
+
+const uniNoModeSchema = z.object({
+  mode: z.enum(["All Listed Drs", "Specialty Wise", "Subdivision - HQ Wise"])
+});
+
+mastersActionsRouter.post(
+  "/drUniqueNoGeneration/action/allocate",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = uniNoModeSchema.parse(req.body);
+
+    const doctors = await DoctorModel.find({ tenantSlug, status: "ACTIVE" }).sort({ name: 1 });
+
+    if (body.mode === "All Listed Drs") {
+      let seq = 1;
+      for (const doc of doctors) {
+        doc.uniqueSlNo = `UNI-${String(seq).padStart(4, "0")}`;
+        await doc.save();
+        seq++;
+      }
+    } else if (body.mode === "Specialty Wise") {
+      const groups = new Map<string, typeof doctors>();
+      for (const doc of doctors) {
+        const key = doc.specialty || "GENERAL";
+        if (!groups.has(key)) groups.set(key, [] as typeof doctors);
+        groups.get(key)!.push(doc);
+      }
+      for (const [specialty, group] of groups) {
+        const prefix = slugifyForCode(specialty);
+        let seq = 1;
+        for (const doc of group) {
+          doc.uniqueSlNo = `${prefix}-${String(seq).padStart(4, "0")}`;
+          await doc.save();
+          seq++;
+        }
+      }
+    } else {
+      // Subdivision - HQ Wise — grouped by territory (the field the rest
+      // of this codebase already uses as the HQ/subdivision value).
+      const groups = new Map<string, typeof doctors>();
+      for (const doc of doctors) {
+        const key = doc.territory || "GENERAL";
+        if (!groups.has(key)) groups.set(key, [] as typeof doctors);
+        groups.get(key)!.push(doc);
+      }
+      for (const [territory, group] of groups) {
+        const prefix = slugifyForCode(territory);
+        let seq = 1;
+        for (const doc of group) {
+          doc.uniqueSlNo = `${prefix}-${String(seq).padStart(4, "0")}`;
+          await doc.save();
+          seq++;
+        }
+      }
+    }
+
+    await audit("DR_UNIQUE_SLNO_ALLOCATED", "drUniqueNoGeneration", "ALL", { tenantSlug, mode: body.mode, count: doctors.length });
+
+    const [total, allocated] = await Promise.all([
+      DoctorModel.countDocuments({ tenantSlug, status: "ACTIVE" }),
+      DoctorModel.countDocuments({ tenantSlug, status: "ACTIVE", uniqueSlNo: { $ne: null, $exists: true } })
+    ]);
+    res.json({ data: { success: true, mode: body.mode, total, allocated, notAllocated: total - allocated } });
+  })
+);
+
+mastersActionsRouter.post(
+  "/drUniqueNoGeneration/action/reset",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const result = await DoctorModel.updateMany({ tenantSlug }, { $set: { uniqueSlNo: null } });
+    await audit("DR_UNIQUE_SLNO_RESET", "drUniqueNoGeneration", "ALL", { tenantSlug, modifiedCount: result.modifiedCount });
+
+    const total = await DoctorModel.countDocuments({ tenantSlug, status: "ACTIVE" });
+    res.json({ data: { success: true, total, allocated: 0, notAllocated: total } });
+  })
+);
+
+mastersActionsRouter.get(
+  "/drUniqueNoGeneration/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const doctors = await DoctorModel.find({ tenantSlug, status: "ACTIVE" }).sort({ name: 1 }).lean();
+    res.json({
+      data: doctors.map((d) => ({
+        doctorCode: d.doctorCode,
+        doctorName: d.name,
+        specialty: d.specialty,
+        territory: d.territory,
+        uniqueSlNo: d.uniqueSlNo ?? null,
+        allocated: d.uniqueSlNo ? "Yes" : "No"
+      }))
+    });
   })
 );

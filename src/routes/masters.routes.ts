@@ -547,6 +547,32 @@ mastersRouter.post(
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// DELETE /masters/:key/:id — real hard delete for the handful of screens
+// where sanpharma.info's own UI is a literal "Delete" action, not a
+// deactivate: Mobile App - Device Id Deletion and Mail Delete. Every
+// other master keeps its existing soft-deactivate/reactivate behavior;
+// this is deliberately restricted the same way clear-all is below.
+// ══════════════════════════════════════════════════════════════════════
+const HARD_DELETABLE_MASTERS = new Set(["deviceIdDeletion", "mailDeleteLog"]);
+
+mastersRouter.delete(
+  "/:key/:id",
+  asyncHandler(async (req, res) => {
+    const config = requireConfig(req.params.key);
+    if (!HARD_DELETABLE_MASTERS.has(config.key)) {
+      throw new HttpError(403, `${config.title} does not support delete`);
+    }
+    const tenantSlug = req.auth!.tenantSlug;
+    const Model = getMasterModel(config.key);
+    const deleted = await Model.findOneAndDelete({ _id: req.params.id, tenantSlug });
+    if (!deleted) throw new HttpError(404, `${config.title} record not found`);
+
+    await audit(`MASTER_${config.key.toUpperCase()}_DELETED`, config.key, String(deleted._id), { tenantSlug });
+    res.json({ data: { success: true, id: req.params.id } });
+  })
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // POST /masters/:key/clear-all — hard-delete every record of one master
 // for the current tenant. Client request: "remove all the datas in the
 // sales tab (Target Master, Primary Sales, Secondary Sales, Claims
