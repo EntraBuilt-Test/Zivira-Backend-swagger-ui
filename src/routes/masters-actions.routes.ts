@@ -5,6 +5,7 @@ import { asyncHandler } from "../http/async-handler.js";
 import { HttpError } from "../http/errors.js";
 import { signToken } from "../http/auth.js";
 import { UserModel } from "../models/user.model.js";
+import { ensureEmployeeLoginAccount } from "../utils/credentials.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { audit } from "../utils/audit.js";
@@ -121,7 +122,27 @@ mastersActionsRouter.post(
     const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: body.employeeCode });
     if (!employee) throw new HttpError(404, "Field force employee not found");
 
-    const user = await UserModel.findOne({ tenantSlug, employeeCode: employee.employeeCode, portal: "FIELD_FORCE" });
+    let user = await UserModel.findOne({ tenantSlug, employeeCode: employee.employeeCode, portal: "FIELD_FORCE" });
+    if (!user) {
+      // Every employee is supposed to already have a Field/Manager portal
+      // account under the standing credential convention (see
+      // src/utils/credentials.ts) — but an employee created before that
+      // convention existed, or one the migration endpoint hasn't been run
+      // for yet, can still be missing one. Rather than blocking Vacant MR
+      // Login on a separate manual migration step succeeding, provision
+      // it right here, on demand, with the exact same convention. The
+      // admin's password field is already pre-filled with that same
+      // value, so this is transparent — it does not bypass the real
+      // bcrypt.compare just below, which still runs against whatever
+      // password ends up in that account.
+      await ensureEmployeeLoginAccount({
+        employeeCode: employee.employeeCode,
+        name: employee.name,
+        role: employee.role,
+        tenantSlug
+      });
+      user = await UserModel.findOne({ tenantSlug, employeeCode: employee.employeeCode, portal: "FIELD_FORCE" });
+    }
     if (!user) throw new HttpError(404, "This employee has no FIELD_FORCE login account to log into");
     if (!user.active) throw new HttpError(403, "This employee's login account is inactive");
 
