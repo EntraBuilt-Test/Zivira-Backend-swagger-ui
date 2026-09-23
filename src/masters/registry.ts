@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2238,15 +2238,20 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "doctorCampaignMap",
     title: "Doctor - Campaign Map",
+    uiKind: "doctorCampaignFilter",
     keyFields: ["doctorCode"],
     fields: [
-      { key: "doctorCode", label: "Doctor Code", sourceMaster: "doctorMaster", sourceField: "doctorCode" },
-      { key: "doctorName", label: "Doctor Name", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "doctorName" } },
+      { key: "doctorCode", label: "Unique Dr Code", sourceMaster: "doctorMaster", sourceField: "doctorCode" },
+      { key: "doctorName", label: "ListedDr Name", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "doctorName" } },
       { key: "qualification", label: "Qualification", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "qualification" } },
       { key: "speciality", label: "Speciality", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "specialty" } },
       { key: "category", label: "Category", computed: { fromField: "doctorCode", sourceMaster: "doctorClassification", lookupField: "doctorCode", displayField: "doctorCategory" } },
+      // Real "Doctor Class" filter value — same doctorClassification.potential
+      // field already used as "Class" on the Doctor - Mapping screen (see
+      // classField above), not a fabricated column.
+      { key: "classField", label: "Class", computed: { fromField: "doctorCode", sourceMaster: "doctorClassification", lookupField: "doctorCode", displayField: "potential" } },
       { key: "territory", label: "Territory" },
-      { key: "campaignSubCategory", label: "Campaign Sub Category" },
+      { key: "campaignSubCategory", label: "Mapped Campaign" },
       { key: "hq", label: "HQ", sourceMaster: "territoryHqMaster", sourceField: "headquartersName" }
     ]
   },

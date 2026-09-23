@@ -23,6 +23,17 @@ async function defaultPasswordHash(): Promise<string> {
 // by `role`, not by a distinct `portal` enum value — so every employee
 // account here is portal: "FIELD_FORCE", matching the existing convention
 // used across auth.routes.ts, masters-actions.routes.ts and exact-10.ts.
+// EmployeeModel's role enum includes "OTHER" (for a role UserModel's own
+// enum doesn't recognize as a portal role) — map that to UserModel's
+// "EMPLOYEE" so this never fails validation for an otherwise-normal
+// employee record; every other role passes through unchanged.
+const USER_ROLE_ENUM = new Set([
+  "SUPER_ADMIN", "COMPANY_ADMIN", "NBH", "BH", "RBM", "ZBM", "ABM", "SR_MR", "MR", "EMPLOYEE"
+]);
+function toUserRole(role: string): string {
+  return USER_ROLE_ENUM.has(role) ? role : "EMPLOYEE";
+}
+
 export async function ensureEmployeeLoginAccount(employee: {
   employeeCode: string;
   name: string;
@@ -37,7 +48,7 @@ export async function ensureEmployeeLoginAccount(employee: {
         username: employee.employeeCode.toLowerCase(),
         passwordHash,
         displayName: employee.name,
-        role: employee.role,
+        role: toUserRole(employee.role),
         portal: "FIELD_FORCE",
         tenantSlug: employee.tenantSlug,
         active: true
@@ -56,15 +67,25 @@ export async function ensureAllEmployeeCredentials(tenantSlug: string) {
   const { EmployeeModel } = await import("../models/employee.model.js");
   const employees = await EmployeeModel.find({ tenantSlug }).lean();
   let count = 0;
+  const failed: { employeeCode: string; error: string }[] = [];
+  // One employee's write failing (a bad/legacy role value, a missing
+  // field) must never stop every OTHER employee's account from being
+  // created — the earlier version aborted the whole loop on the first
+  // error, which is exactly the kind of bug that silently leaves most
+  // employees with no login account at all.
   for (const e of employees) {
     if (!e.employeeCode || !e.name || !e.role) continue;
-    await ensureEmployeeLoginAccount({
-      employeeCode: e.employeeCode,
-      name: e.name,
-      role: e.role,
-      tenantSlug
-    });
-    count += 1;
+    try {
+      await ensureEmployeeLoginAccount({
+        employeeCode: e.employeeCode,
+        name: e.name,
+        role: e.role,
+        tenantSlug
+      });
+      count += 1;
+    } catch (err) {
+      failed.push({ employeeCode: e.employeeCode, error: err instanceof Error ? err.message : String(err) });
+    }
   }
-  return count;
+  return { count, failed };
 }

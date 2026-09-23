@@ -127,10 +127,11 @@ seedRouter.post("/ensure-credentials", asyncHandler(async (req, res) => {
   }
 
   const tenantSlug = typeof req.query.tenantSlug === "string" ? req.query.tenantSlug : "zivira-labs";
-  const count = await ensureAllEmployeeCredentials(tenantSlug);
+  const { count, failed } = await ensureAllEmployeeCredentials(tenantSlug);
   res.json({
     success: true,
-    message: `Login accounts ensured for ${count} employees (username: employee code, password: ${DEFAULT_EMPLOYEE_PASSWORD}).`
+    message: `Login accounts ensured for ${count} employees (username: employee code, password: ${DEFAULT_EMPLOYEE_PASSWORD}).`,
+    failed
   });
 }));
 
