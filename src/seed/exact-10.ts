@@ -30,8 +30,8 @@
 // (deleteMany + insertMany) so the result is always exactly 10 rows, never
 // 11, never duplicated.
 
-import bcrypt from "bcryptjs";
 import { connectMongo } from "../db.js";
+import { ensureEmployeeLoginAccount, DEFAULT_EMPLOYEE_PASSWORD } from "../utils/credentials.js";
 
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
@@ -1198,20 +1198,15 @@ async function verifyAllMastersHaveExactly10() {
 }
 
 async function ensureDemoLoginsExist() {
-  // Doesn't touch existing users beyond making sure the 10 canonical
-  // employees above are reachable via the existing login pattern already
-  // used elsewhere in this repo (seed.ts / seed.routes.ts): username =
-  // lowercased employee code, password = 'ziviramumbai'.
-  const passwordHash = await bcrypt.hash("ziviramumbai", 12);
+  // Standing convention (see src/utils/credentials.ts): username =
+  // lowercased employee code, password = "Zivirachennai" for every
+  // employee — supersedes the older "ziviramumbai" default so Vacant MR
+  // Login - Access (and any employee's own portal login) works with a
+  // single known, documented password.
   for (const e of EMPLOYEES) {
-    const portal = e.role === "MR" || e.role === "SR_MR" ? "FIELD_FORCE" : "FIELD_FORCE"; // managers keep portal=FIELD_FORCE — see PRD 8.1
-    await UserModel.updateOne(
-      { username: e.code.toLowerCase() },
-      { username: e.code.toLowerCase(), passwordHash, displayName: e.name, role: e.role, portal, tenantSlug: TENANT, active: true },
-      { upsert: true }
-    );
+    await ensureEmployeeLoginAccount({ employeeCode: e.code, name: e.name, role: e.role, tenantSlug: TENANT });
   }
-  console.log(`\n── Login accounts ensured for all ${EMPLOYEES.length} employees (username: employee code lowercased, password: ziviramumbai) ──`);
+  console.log(`\n── Login accounts ensured for all ${EMPLOYEES.length} employees (username: employee code lowercased, password: ${DEFAULT_EMPLOYEE_PASSWORD}) ──`);
 }
 
 // Exported so src/routes/seed.routes.ts can trigger the exact same logic

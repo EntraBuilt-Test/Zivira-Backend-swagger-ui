@@ -8,6 +8,7 @@ import { runBaseSeed } from "../seed/base.js";
 import { runDataCorrections } from "../seed/fix-data-corrections.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { LeaveTypeModel } from "../models/leave-type.model.js";
+import { ensureAllEmployeeCredentials, DEFAULT_EMPLOYEE_PASSWORD } from "../utils/credentials.js";
 
 export const seedRouter = Router();
 
@@ -106,6 +107,33 @@ seedRouter.post("/exact-10", asyncHandler(async (req, res) => {
 // re-run any time (every write is an upsert).
 //
 //   curl -X POST https://<backend>/api/seed/base -H "x-seed-secret: <SEED_SECRET>"
+// Resets (or creates) a Field/Manager portal login account for EVERY
+// employee currently in the tenant's Employee Master — not just the fixed
+// canonical seed list — to the standing convention: username = Employee
+// Code (lowercased), password = "Zivirachennai" for every employee. Run
+// this once against the live database so Vacant MR Login - Access, and
+// every employee's own portal login, work with that known password
+// immediately; every employee created afterwards gets this automatically
+// (see masters.routes.ts's employees POST handler). Safe to re-run any
+// time (every write is an upsert/update, never a delete).
+//
+//   curl -X POST "https://<backend>/api/seed/ensure-credentials?tenantSlug=zivira-labs" \
+//        -H "x-seed-secret: <SEED_SECRET>"
+seedRouter.post("/ensure-credentials", asyncHandler(async (req, res) => {
+  const secret = req.headers["x-seed-secret"];
+  if (!secret || secret !== process.env.SEED_SECRET) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const tenantSlug = typeof req.query.tenantSlug === "string" ? req.query.tenantSlug : "zivira-labs";
+  const count = await ensureAllEmployeeCredentials(tenantSlug);
+  res.json({
+    success: true,
+    message: `Login accounts ensured for ${count} employees (username: employee code, password: ${DEFAULT_EMPLOYEE_PASSWORD}).`
+  });
+}));
+
 seedRouter.post("/base", asyncHandler(async (req, res) => {
   const secret = req.headers["x-seed-secret"];
   if (!secret || secret !== process.env.SEED_SECRET) {

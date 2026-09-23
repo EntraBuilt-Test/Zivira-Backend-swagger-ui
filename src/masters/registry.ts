@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2214,6 +2214,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "vacantMrLoginPermission",
     title: "Vacant MR Login - Permission for MR",
+    uiKind: "vacantMrPermission",
     keyFields: ["userName"],
     fields: [
       { key: "userName", label: "User Name", sourceMaster: "employees", sourceField: "name" },

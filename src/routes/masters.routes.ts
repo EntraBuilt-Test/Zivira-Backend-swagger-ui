@@ -8,6 +8,7 @@ import { broadcastNotice } from "../utils/notify.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
+import { ensureEmployeeLoginAccount } from "../utils/credentials.js";
 
 export const mastersRouter = Router();
 
@@ -291,6 +292,18 @@ mastersRouter.post(
         reportingManager: req.body.reportingManager || null,
         status: "ACTIVE"
       });
+      // A new MR/Manager gets a real Field/Manager portal login account
+      // immediately, using the same standing credential convention as
+      // every other employee (username = Employee Code, password = the
+      // fixed default) — so they can log in (or Admin can Vacant-MR-Login
+      // into them) right away, with no separate manual seeding step.
+      await ensureEmployeeLoginAccount({
+        employeeCode: created.employeeCode,
+        name: created.name,
+        role,
+        tenantSlug: tenantSlug!
+      });
+
       await audit("MASTER_EMPLOYEES_CREATED", "employees", String(created._id), { tenantSlug });
       await broadcastNotice({
         tenantSlug: tenantSlug!,

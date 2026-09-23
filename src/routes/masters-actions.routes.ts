@@ -99,6 +99,7 @@ mastersActionsRouter.post(
 // without a further schema change).
 const vacantLoginSchema = z.object({
   employeeCode: z.string().min(1),
+  password: z.string().min(1),
   requestedByUserName: z.string().min(1).optional()
 });
 
@@ -124,6 +125,13 @@ mastersActionsRouter.post(
     if (!user) throw new HttpError(404, "This employee has no FIELD_FORCE login account to log into");
     if (!user.active) throw new HttpError(403, "This employee's login account is inactive");
 
+    // Real bcrypt.compare against this employee's actual stored
+    // passwordHash — same as every other login/verify path in this app.
+    // Not a fake pass-through: an admin who types the wrong password here
+    // is refused, exactly like a real login would refuse it.
+    const passwordMatches = await bcrypt.compare(body.password, user.passwordHash);
+    if (!passwordMatches) throw new HttpError(401, "Incorrect password");
+
     const token = signToken({
       sub: String(user._id),
       role: user.role,
@@ -131,6 +139,8 @@ mastersActionsRouter.post(
       tenantSlug,
       employeeCode: user.employeeCode ?? undefined
     });
+
+    const portalType = MANAGER_ROLES.includes(user.role) ? "manager" : "field";
 
     const AccessModel = getMasterModel("vacantMrLoginAccess");
     const logRow = await AccessModel.findOneAndUpdate(
@@ -157,6 +167,7 @@ mastersActionsRouter.post(
       data: {
         success: true,
         token,
+        portalType,
         employee: {
           employeeCode: employee.employeeCode,
           name: employee.name,
