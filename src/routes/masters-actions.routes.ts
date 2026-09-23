@@ -12,6 +12,8 @@ import { getMasterModel } from "../models/master-record.model.js";
 import { audit } from "../utils/audit.js";
 import { notifyFieldRep, notifyManager } from "../utils/notify.js";
 import { serializeDocument } from "../utils/serialize.js";
+import { CompanyConfigModel, getConfigValue } from "../models/company-config.model.js";
+import { MailAutoRuleModel } from "../models/mail-auto-rule.model.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -525,5 +527,110 @@ mastersActionsRouter.get(
         allocated: d.uniqueSlNo ? "Yes" : "No"
       }))
     });
+  })
+);
+
+
+// ── 5. Admin Settings (Base Level Setup / Manager Setup / Auto Mail Setup
+// admin-tab config) ────────────────────────────────────────────────
+// These are single-document-per-tenant config blobs — sanpharma's own Base
+// Level Setup / Manager Setup / Auto Mail Setup screens are one big form,
+// not a list of records — so rather than force them into the generic
+// masters list-of-records shape, each is stored as one JSON value under
+// CompanyConfigModel (key = "adminSettings:<kind>"), the same generic
+// per-tenant settings store company-config.model.ts already exists for.
+const ADMIN_SETTING_KINDS = new Set(["baseLevelSetup", "managerSetup", "autoMailSetupAdmin"]);
+
+function adminSettingConfigKey(kind: string): string {
+  return `adminSettings:${kind}`;
+}
+
+mastersActionsRouter.get(
+  "/admin-settings/:kind",
+  asyncHandler(async (req, res) => {
+    const kind = req.params.kind;
+    if (!ADMIN_SETTING_KINDS.has(kind)) throw new HttpError(404, "Unknown admin setting");
+    const tenantSlug = req.auth!.tenantSlug!;
+    const value = await getConfigValue(tenantSlug, adminSettingConfigKey(kind));
+    res.json({ data: value ?? null });
+  })
+);
+
+mastersActionsRouter.put(
+  "/admin-settings/:kind",
+  asyncHandler(async (req, res) => {
+    const kind = req.params.kind;
+    if (!ADMIN_SETTING_KINDS.has(kind)) throw new HttpError(404, "Unknown admin setting");
+    const tenantSlug = req.auth!.tenantSlug!;
+    const value = req.body?.value;
+    if (value === undefined) throw new HttpError(400, "value is required");
+    await CompanyConfigModel.findOneAndUpdate(
+      { tenantSlug, key: adminSettingConfigKey(kind) },
+      { $set: { value } },
+      { upsert: true, new: true }
+    );
+    await audit(`ADMIN_SETTING_${kind.toUpperCase()}_SAVED`, "adminSettings", kind, { tenantSlug });
+    res.json({ data: value });
+  })
+);
+
+// ── 6. Auto Mail Setup — Fieldforce tab mail rules ──────────────────────
+// A real, growable list (sanpharma's "Create Rule" flow), unlike the fixed
+// 12-report Admin tab above — so it gets its own small collection
+// (MailAutoRuleModel) with normal list/create/update/delete semantics.
+const mailAutoRuleSchema = z.object({
+  ruleName: z.string().min(1),
+  reportName: z.string().min(1),
+  subdivisions: z.array(z.string()).default([]),
+  states: z.array(z.string()).default([]),
+  designations: z.array(z.string()).default([]),
+  fieldforces: z.array(z.string()).default([]),
+  startDate: z.string().min(1),
+  repeats: z.string().min(1),
+  gracePeriod: z.coerce.number().default(0),
+  endDate: z.string().min(1),
+  emailSubject: z.string().optional().default(""),
+  emailBody: z.string().optional().default("")
+});
+
+mastersActionsRouter.get(
+  "/mail-auto-rules",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const rules = await MailAutoRuleModel.find({ tenantSlug }).sort({ createdAt: -1 }).lean();
+    res.json({ data: rules.map((r) => serializeDocument(r)) });
+  })
+);
+
+mastersActionsRouter.post(
+  "/mail-auto-rules",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = mailAutoRuleSchema.parse(req.body);
+    const created = await MailAutoRuleModel.create({ tenantSlug, ...body });
+    await audit("MAIL_AUTO_RULE_CREATED", "mailAutoRule", String(created._id), { tenantSlug, ruleName: body.ruleName });
+    res.status(201).json({ data: serializeDocument(created) });
+  })
+);
+
+mastersActionsRouter.patch(
+  "/mail-auto-rules/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const patch = mailAutoRuleSchema.partial().extend({ status: z.enum(["Active", "Inactive"]).optional() }).parse(req.body);
+    const updated = await MailAutoRuleModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, { $set: patch }, { new: true });
+    if (!updated) throw new HttpError(404, "Mail rule not found");
+    res.json({ data: serializeDocument(updated) });
+  })
+);
+
+mastersActionsRouter.delete(
+  "/mail-auto-rules/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const deleted = await MailAutoRuleModel.findOneAndDelete({ _id: req.params.id, tenantSlug });
+    if (!deleted) throw new HttpError(404, "Mail rule not found");
+    await audit("MAIL_AUTO_RULE_DELETED", "mailAutoRule", req.params.id, { tenantSlug });
+    res.json({ data: { success: true, id: req.params.id } });
   })
 );

@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2398,6 +2398,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "autoMailSetup",
     title: "Auto Mail Setup",
+    uiKind: "autoMailSetup",
     keyFields: ["reportName"],
     fields: [
       { key: "reportName", label: "Report Name", options: ["Coverage Analysis", "Missed Call Report", "Visit - Drs", "Daywise DCR - Dump", "Call wise DCR - Dump", "Call Average", "Sample Issued - FieldForce wise", "Input Issued - FieldForce wise", "Visit at a glance", "Campaign Dr Visit Dump", "TP Dump", "DCR_Analysis Dump"] },
@@ -2409,6 +2410,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "screenAccessSetup",
     title: "Setup For Screen Access",
+    uiKind: "screenAccessSetup",
     keyFields: ["fieldForceName", "entityType"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2419,12 +2421,14 @@ export const MASTERS: MasterConfig[] = [
       { key: "edit", label: "Edit", options: ["Yes", "No"] },
       { key: "view", label: "View", options: ["Yes", "No"] },
       { key: "delete", label: "Delete", options: ["Yes", "No"] },
-      { key: "reactivate", label: "Reactivate", options: ["Yes", "No"] }
+      { key: "reactivate", label: "Reactivate", options: ["Yes", "No"] },
+      { key: "nameChg", label: "Name Change", options: ["Yes", "No"] }
     ]
   },
   {
     key: "baseLevelSetup",
     title: "Base Level Setup",
+    uiKind: "baseLevelSetup",
     keyFields: ["settingName"],
     fields: [
       { key: "settingName", label: "Setting Name" },
@@ -2435,6 +2439,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "managerSetup",
     title: "Manager Setup",
+    uiKind: "managerSetup",
     keyFields: ["designation", "settingName"],
     fields: [
       { key: "designation", label: "Designation", options: ["BH", "RBM", "ABM", "ZBM", "BRM", "NBM", "Sr ABM", "MH", "SM"] },
