@@ -46,6 +46,15 @@ export async function ensureEmployeeLoginAccount(employee: {
     {
       $set: {
         username: employee.employeeCode.toLowerCase(),
+        // BUG FIX: this field was missing from the upsert entirely. Every
+        // caller that looks the account back up afterwards — Vacant MR
+        // Login, Change Password — queries UserModel by `employeeCode`
+        // (not `username`), so an account upserted without this field set
+        // could never be found again by that query: the upsert would
+        // "succeed" and then the very next findOne({ employeeCode }) would
+        // still come back empty, reproducing the exact same "no login
+        // account" error this function exists to eliminate.
+        employeeCode: employee.employeeCode,
         passwordHash,
         displayName: employee.name,
         role: toUserRole(employee.role),
