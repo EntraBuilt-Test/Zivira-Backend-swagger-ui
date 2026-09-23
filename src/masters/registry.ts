@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2258,6 +2258,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "tpDeleteSetup",
     title: "TP Delete",
+    uiKind: "tpDelete",
     keyFields: ["fieldForceName", "tourMonth", "tourYear"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2271,6 +2272,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "dcrEditSetup",
     title: "DCR Edit",
+    uiKind: "dcrEdit",
     keyFields: ["fieldForceName", "dcrDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },

@@ -76,6 +76,11 @@ const dcrSchema = new Schema(
     competitorMentioned: { type: String, default: null },
     followUpRequired:   { type: Boolean, default: false },
     followUpDate:        { type: Date, default: null },
+    // Admin "Update/Delete > DCR Edit" screen (matches sanpharma.info's own
+    // DCR Edit dropdown exactly) — lets Admin reclassify an already-submitted
+    // day's work type. Defaults to Field Work since that is what every real
+    // DCR submission already represents.
+    workType:            { type: String, enum: ["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"], default: "Field Work" },
     // ── PRD 12.2 — MR-to-Doctor Visit Tracking (3 visits/month soft cap) ──
     // Soft warning only — the DCR still saves even when overVisitFlag=true.
     overVisitFlag:   { type: Boolean, default: false },

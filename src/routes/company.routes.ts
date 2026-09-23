@@ -20,7 +20,7 @@ import { ProductModel } from "../models/product.model.js";
 import { audit } from "../utils/audit.js";
 import { AuditLogModel } from "../models/audit-log.model.js";
 import { serializeDocument } from "../utils/serialize.js";
-import { notifyEmployeeEmail, notifyFieldRep, notifyOnboardingCredentials, notifyPersonalOnboardingLink } from "../utils/notify.js";
+import { notifyEmployeeEmail, notifyFieldRep, notifyManager, notifyOnboardingCredentials, notifyPersonalOnboardingLink } from "../utils/notify.js";
 import { StockistModel } from "../models/stockist.model.js";
 import { SubdivisionModel } from "../models/subdivision.model.js";
 import { FieldForceModel } from "../models/fieldforce.model.js";
@@ -372,6 +372,58 @@ companyRouter.post(
     if (!dcr) throw new Error("DCR not found");
     dcr.status = "APPROVED";
     await dcr.save();
+    res.json({ data: serializeDocument(dcr) });
+  })
+);
+
+const dcrWorkTypeSchema = z.object({
+  workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"])
+});
+
+// PATCH /company/dcrs/:id/work-type — "Update/Delete > DCR Edit", matching
+// sanpharma.info's own DCR Edit dropdown exactly. Edits the REAL Dcr
+// document — the same collection the MR's own DCR history and the
+// manager's DCR review queue both read from — so the change is
+// immediately visible in both portals. Notifies both the MR and their
+// reporting manager.
+companyRouter.patch(
+  "/dcrs/:id/work-type",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = dcrWorkTypeSchema.parse(req.body);
+    const dcr = await DcrModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!dcr) throw new HttpError(404, "DCR not found");
+
+    const previousWorkType = dcr.workType;
+    dcr.workType = body.workType;
+    await dcr.save();
+    await audit("ADMIN_DCR_EDITED", "Dcr", String(dcr._id), { tenantSlug, employeeCode: dcr.employeeCode, previousWorkType, workType: body.workType });
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: dcr.employeeCode }).lean();
+    const manager = employee?.reportingManager
+      ? await EmployeeModel.findOne({ tenantSlug, employeeCode: employee.reportingManager }).lean()
+      : null;
+
+    await notifyFieldRep({
+      tenantSlug,
+      employeeCode: dcr.employeeCode,
+      employeeEmail: employee?.email,
+      employeeName: employee?.name,
+      title: "DCR edited by Admin",
+      message: `Your DCR dated ${dcr.visitDate.toDateString()} was updated by Admin to Work Type: ${body.workType}.`
+    });
+
+    if (manager) {
+      await notifyManager({
+        tenantSlug,
+        managerEmployeeCode: manager.employeeCode,
+        managerEmail: manager.email,
+        managerName: manager.name,
+        title: "DCR edited by Admin",
+        message: `${employee?.name ?? dcr.employeeCode}'s DCR dated ${dcr.visitDate.toDateString()} was updated by Admin to Work Type: ${body.workType}.`
+      });
+    }
+
     res.json({ data: serializeDocument(dcr) });
   })
 );
@@ -1271,8 +1323,56 @@ companyRouter.get("/tour-plans", asyncHandler(async (req, res) => {
   const query: Record<string, unknown> = { tenantSlug };
   if (typeof req.query.month === "string" && req.query.month) query.month = req.query.month;
   if (typeof req.query.status === "string" && req.query.status) query.status = req.query.status;
+  if (typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()) {
+    query.employeeCode = req.query.employeeCode.trim().toUpperCase();
+  }
   const tps = await TourPlanModel.find(query).sort({ createdAt: -1 }).limit(1000);
   res.json({ data: await enrichTourPlansWithNames(tenantSlug, tps) });
+}));
+
+// DELETE /company/tour-plans/:tpId — "Update/Delete > TP Delete", matching
+// sanpharma.info's own TP Delete screen. Deletes the REAL TourPlan
+// document — the exact same collection the field-force MR's own Tour Plan
+// screen and the manager's approval queue both read from (TourPlanModel,
+// filtered by employeeCode / assignedManager respectively) — so the
+// deletion is immediately visible as gone in both portals, with no
+// separate mirror to keep in sync. Also notifies both the MR and their
+// assigned manager, same in-app + email channel every other real
+// field-force event already uses.
+companyRouter.delete("/tour-plans/:tpId", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const tp = await TourPlanModel.findOne({ tenantSlug, tpId: req.params.tpId });
+  if (!tp) throw new HttpError(404, "Tour Plan not found");
+
+  await TourPlanModel.deleteOne({ _id: tp._id });
+  await audit("ADMIN_TP_DELETED", "TourPlan", String(tp._id), { tenantSlug, tpId: tp.tpId, employeeCode: tp.employeeCode });
+
+  const [employee, manager] = await Promise.all([
+    EmployeeModel.findOne({ tenantSlug, employeeCode: tp.employeeCode }).lean(),
+    EmployeeModel.findOne({ tenantSlug, employeeCode: tp.assignedManager }).lean()
+  ]);
+
+  await notifyFieldRep({
+    tenantSlug,
+    employeeCode: tp.employeeCode,
+    employeeEmail: employee?.email,
+    employeeName: employee?.name,
+    title: "Tour Plan deleted by Admin",
+    message: `Your Tour Plan ${tp.tpId} for ${tp.month} was deleted by Admin.`
+  });
+
+  if (tp.assignedManager) {
+    await notifyManager({
+      tenantSlug,
+      managerEmployeeCode: tp.assignedManager,
+      managerEmail: manager?.email,
+      managerName: manager?.name,
+      title: "Tour Plan deleted by Admin",
+      message: `${employee?.name ?? tp.employeeCode}'s Tour Plan ${tp.tpId} for ${tp.month} was deleted by Admin.`
+    });
+  }
+
+  res.json({ data: { deleted: true, tpId: tp.tpId } });
 }));
 
 // ══════════════════════════════════════════════════════════════════════
