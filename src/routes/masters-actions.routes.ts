@@ -47,7 +47,24 @@ mastersActionsRouter.post(
     if (!employee) throw new HttpError(404, "Field force employee not found");
     employeeCode = employee.employeeCode;
 
-    const users = await UserModel.find({ tenantSlug, employeeCode });
+    let users = await UserModel.find({ tenantSlug, employeeCode });
+    if (!users.length) {
+      // Same standing-convention auto-provisioning as Vacant MR Login below
+      // (see src/utils/credentials.ts) — an employee created before a login
+      // account existed, or one the migration endpoint hasn't reached yet,
+      // gets one created here on demand instead of blocking Change Password
+      // on a separate manual migration step. The account starts on the
+      // same Zivirachennai default every employee is documented to use, so
+      // "Old Password: Zivirachennai" on this screen still verifies for real
+      // against the account's actual bcrypt hash just below.
+      await ensureEmployeeLoginAccount({
+        employeeCode: employee.employeeCode,
+        name: employee.name,
+        role: employee.role,
+        tenantSlug
+      });
+      users = await UserModel.find({ tenantSlug, employeeCode });
+    }
     if (!users.length) {
       throw new HttpError(404, "This employee has no login account yet (no FIELD_FORCE/EMPLOYEE user record found)");
     }
