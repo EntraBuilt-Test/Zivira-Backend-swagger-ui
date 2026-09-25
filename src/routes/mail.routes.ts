@@ -183,3 +183,57 @@ mailRouter.delete(
     res.json({ data: { success: true } });
   })
 );
+
+// Backs the "Mail Folder Creation" screen's Transfer Mail Folder flow
+// (sanpharma.info's Mail_Folder_Trans.aspx): preview how many mails sit in
+// the "from" folder before transferring, then bulk-move them all to the
+// "to" folder in one call, optionally deleting the now-empty "from"
+// folder's own mailFolderCreation record afterwards.
+mailRouter.get(
+  "/transfer-preview",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const from = typeof req.query.from === "string" ? req.query.from.trim() : "";
+    if (!from) throw new HttpError(400, "Missing 'from' folder");
+    const count = await InternalMailModel.countDocuments({ tenantSlug, folder: from });
+    res.json({ data: { count } });
+  })
+);
+
+const transferSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  deleteAfterTransfer: z.boolean().optional().default(false)
+});
+mailRouter.post(
+  "/transfer",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = transferSchema.parse(req.body);
+    if (body.from === body.to) throw new HttpError(400, "From and To folder must differ");
+    if (!(await validFolder(tenantSlug, body.to))) {
+      throw new HttpError(400, `Unknown folder "${body.to}" — create it first under Mail Folder Creation`);
+    }
+
+    const result = await InternalMailModel.updateMany(
+      { tenantSlug, folder: body.from },
+      { $set: { folder: body.to } }
+    );
+
+    await refreshFolderCount(tenantSlug, body.from);
+    await refreshFolderCount(tenantSlug, body.to);
+
+    if (body.deleteAfterTransfer && !SYSTEM_FOLDERS.includes(body.from)) {
+      const FolderModel = getMasterModel("mailFolderCreation");
+      await FolderModel.deleteOne({ tenantSlug, mailFolderName: body.from });
+    }
+
+    await audit("MAIL_FOLDER_TRANSFERRED", "internalMail", body.from, {
+      tenantSlug,
+      to: body.to,
+      moved: result.modifiedCount ?? 0
+    });
+
+    res.json({ data: { moved: result.modifiedCount ?? 0 } });
+  })
+);

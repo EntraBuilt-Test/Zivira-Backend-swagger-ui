@@ -539,7 +539,7 @@ mastersActionsRouter.get(
 // masters list-of-records shape, each is stored as one JSON value under
 // CompanyConfigModel (key = "adminSettings:<kind>"), the same generic
 // per-tenant settings store company-config.model.ts already exists for.
-const ADMIN_SETTING_KINDS = new Set(["baseLevelSetup", "managerSetup", "autoMailSetupAdmin", "approvalMandatorySetup"]);
+const ADMIN_SETTING_KINDS = new Set(["baseLevelSetup", "managerSetup", "autoMailSetupAdmin", "approvalMandatorySetup", "otherSetup", "homepageDashboardDisplay", "leaveTypeSetup"]);
 
 function adminSettingConfigKey(kind: string): string {
   return `adminSettings:${kind}`;

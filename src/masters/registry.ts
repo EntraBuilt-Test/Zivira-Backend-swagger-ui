@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2507,6 +2507,7 @@ export const MASTERS: MasterConfig[] = [
     key: "mailFolderCreation",
     title: "Mail Folder Creation",
     keyFields: ["mailFolderName"],
+    uiKind: "mailFolderCreation",
     fields: [
       { key: "mailFolderName", label: "Mail Folder Name" },
       { key: "mailCount", label: "Mail Count", type: "number" },
@@ -2517,6 +2518,7 @@ export const MASTERS: MasterConfig[] = [
     key: "otherSetup",
     title: "Other Setup",
     keyFields: ["settingName"],
+    uiKind: "otherSetup",
     fields: [
       { key: "settingName", label: "Setting Name" },
       { key: "settingValue", label: "Setting Value" },
@@ -2527,6 +2529,7 @@ export const MASTERS: MasterConfig[] = [
     key: "homepageDashboardDisplay",
     title: "Homepage Dashboard Display",
     keyFields: ["widgetName"],
+    uiKind: "homepageDashboardDisplay",
     fields: [
       { key: "widgetName", label: "Widget Name" },
       { key: "enabled", label: "Enabled", options: ["Yes", "No"] }
@@ -2536,6 +2539,7 @@ export const MASTERS: MasterConfig[] = [
     key: "leaveTypeSetup",
     title: "Leave Setup",
     keyFields: ["employmentType"],
+    uiKind: "leaveTypeSetup",
     fields: [
       { key: "employmentType", label: "Employment Type", options: ["Trainee", "Probation", "Confirmed"] },
       { key: "cl", label: "CL", options: ["Yes", "No"] },
@@ -2546,17 +2550,39 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    key: "leaveTypeCatalog",
+    title: "Leave Type Catalog",
+    keyFields: ["shortName"],
+    fields: [
+      { key: "shortName", label: "Short Name" },
+      { key: "name", label: "Name" },
+      { key: "status", label: "Status", options: ACTIVE_INACTIVE }
+    ]
+  },
+  {
     key: "leavePolicySetup",
     title: "Leave Policy Setup",
     keyFields: ["leaveType"],
+    uiKind: "leavePolicySetup",
     fields: [
       { key: "leaveType", label: "Leave Type", options: ["Common", "CL", "PL", "SL", "LOP"] },
       { key: "calendarYearMode", label: "Calendar Year Mode", options: ["Full Year", "Half Year"] },
+      { key: "sequentialDeductionAutomatic", label: "Leave Balance Sequencial deduction Method Automatic", options: ["Yes", "No"] },
+      { key: "newSNoCL", label: "New S.No - CL" },
+      { key: "newSNoPL", label: "New S.No - PL" },
+      { key: "newSNoSL", label: "New S.No - SL" },
+      { key: "newSNoLOP", label: "New S.No - LOP" },
       { key: "maxContinuousDays", label: "Max Continuous Days", type: "number" },
       { key: "maxDaysPerMonth", label: "Max Days Per Month", type: "number" },
       { key: "minDays", label: "Min Days", type: "number" },
       { key: "holidaySundayCountsAsLeave", label: "Holiday/Sunday Counts As Leave", options: ["Yes", "No"] },
+      { key: "nationalHolidaysCountsAsLeave", label: "National Holidays Counts As Leave", options: ["Yes", "No"] },
+      { key: "leaveStartsWithHoliday", label: "Leave Starts with Holiday", options: ["Yes", "No"] },
+      { key: "leaveEndsWithHoliday", label: "Leave Ends with Holiday", options: ["Yes", "No"] },
+      { key: "leaveStartsWithSunday", label: "Leave Starts with Sunday", options: ["Yes", "No"] },
+      { key: "leaveEndsWithSunday", label: "Leave Ends with Sunday", options: ["Yes", "No"] },
       { key: "combinationRestriction", label: "Combination Restriction" },
+      { key: "inbetweenHolidayWeekoffContinuity", label: "Inbetween Holiday/Weekoff Consider Continuity", options: ["Yes", "No"] },
       { key: "leaveTakenBeforeDays", label: "Leave Taken Before Days", type: "number" },
       { key: "maxContinuousDaysForAttachment", label: "Max Continuous Days For Attachment", type: "number" }
     ]
@@ -2565,13 +2591,17 @@ export const MASTERS: MasterConfig[] = [
     key: "deviceLock",
     title: "Device Lock",
     keyFields: ["fieldForceName"],
+    uiKind: "deviceLock",
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "hq", label: "HQ", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
       { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
       { key: "empCode", label: "Emp Code", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
+      { key: "stateName", label: "State Name", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "state" } },
       { key: "androidApp", label: "Android App", options: ["Yes", "No"] },
-      { key: "geofencingDoctor", label: "Geofencing Doctor", options: ["Yes", "No"] },
-      { key: "geofencingChemist", label: "Geofencing Chemist", options: ["Yes", "No"] }
+      { key: "iosApp", label: "IOS App", options: ["Yes", "No"] },
+      { key: "androidDetailing", label: "Android Detailing", options: ["Yes", "No"] },
+      { key: "iosDetailing", label: "IOS Detailing", options: ["Yes", "No"] }
     ]
   },
   {
