@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { asyncHandler } from "../http/async-handler.js";
@@ -362,6 +363,18 @@ const REAL_TARGETS: Record<string, (tenantSlug: string, rows: Record<string, unk
   targetUploadLog: importTargets
 };
 
+// Masters whose upload log rows keep the raw uploaded file itself (as
+// base64) so the sanpharma-style "Download" link in the resulting table
+// can hand back the exact original file, and whose model has a
+// tenant-scoped "deactivate existing before import" bulk-update available.
+const FILE_STORING_UPLOAD_KEYS = new Set(["fileUploadDesignationwise", "userManualUpload"]);
+
+const DEACTIVATABLE_MODELS: Record<string, mongoose.Model<any>> = {
+  listedDoctorUploadLog: DoctorModel,
+  chemistUploadLog: DealerModel
+};
+
+
 // Every other "Upload Tool" master has no obvious safe real target
 // collection — accepted here as log-only: the file is received, its
 // metadata is stored on the upload-log master, but no fabricated data
@@ -396,6 +409,18 @@ uploadsRouter.post(
     for (const f of config.fields) {
       if (f.key === "fileName" || f.key === "uploadedOn" || f.key === "status" || f.key === "recordsProcessed") continue;
       if (typeof req.body[f.key] === "string" && req.body[f.key].trim()) extraFields[f.key] = req.body[f.key].trim();
+    }
+
+    if (FILE_STORING_UPLOAD_KEYS.has(config.key)) {
+      extraFields.fileData = req.file.buffer.toString("base64");
+      extraFields.mimeType = req.file.mimetype || "application/octet-stream";
+    }
+
+    if (String(req.body.deactivateExisting).toLowerCase() === "true") {
+      const DeactivateModel = DEACTIVATABLE_MODELS[config.key];
+      if (DeactivateModel) {
+        await DeactivateModel.updateMany({ tenantSlug, status: "ACTIVE" }, { $set: { status: "INACTIVE" } });
+      }
     }
 
     let rows: Record<string, unknown>[] = [];
@@ -460,5 +485,26 @@ uploadsRouter.post(
         logRow: logRow.toObject()
       }
     });
+  })
+);
+
+// GET /masters/:key/:id/download — hands back the exact original file for
+// the handful of upload-log masters that keep it (File Upload
+// (Designation-wise), User Manual Upload), matching sanpharma's own
+// "Download" link next to each uploaded row.
+uploadsRouter.get(
+  "/:key/:id/download",
+  asyncHandler(async (req, res) => {
+    const config = getMasterConfig(req.params.key);
+    if (!config) throw new HttpError(404, `Unknown master: ${req.params.key}`);
+    if (!FILE_STORING_UPLOAD_KEYS.has(config.key)) throw new HttpError(404, "No stored file for this master");
+    const tenantSlug = req.auth!.tenantSlug!;
+    const LogModel = getMasterModel(config.key);
+    const row = (await LogModel.findOne({ _id: req.params.id, tenantSlug }).lean()) as Record<string, unknown> | null;
+    if (!row || !row.fileData) throw new HttpError(404, "File not found");
+    const buffer = Buffer.from(row.fileData as string, "base64");
+    res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(String(row.fileName ?? "download"))}"`);
+    res.send(buffer);
   })
 );

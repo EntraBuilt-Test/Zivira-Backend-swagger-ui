@@ -553,7 +553,7 @@ mastersRouter.post(
 // other master keeps its existing soft-deactivate/reactivate behavior;
 // this is deliberately restricted the same way clear-all is below.
 // ══════════════════════════════════════════════════════════════════════
-const HARD_DELETABLE_MASTERS = new Set(["deviceIdDeletion", "mailDeleteLog"]);
+const HARD_DELETABLE_MASTERS = new Set(["deviceIdDeletion", "mailDeleteLog", "callFeedbackCreation", "callRemarksTemplates", "notificationMessage", "fileUploadDesignationwise", "userManualUpload"]);
 
 mastersRouter.delete(
   "/:key/:id",
