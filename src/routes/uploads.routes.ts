@@ -371,7 +371,10 @@ const FILE_STORING_UPLOAD_KEYS = new Set(["fileUploadDesignationwise", "userManu
 
 const DEACTIVATABLE_MODELS: Record<string, mongoose.Model<any>> = {
   listedDoctorUploadLog: DoctorModel,
-  chemistUploadLog: DealerModel
+  chemistUploadLog: DealerModel,
+  salesforceUploadLog: EmployeeModel,
+  stockistUploadLog: StockistModel,
+  productUploadLog: ProductModel
 };
 
 
