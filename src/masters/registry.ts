@@ -2609,13 +2609,13 @@ export const MASTERS: MasterConfig[] = [
     title: "Order Booking Setup",
     keyFields: ["mode", "fieldForceName"],
     fields: [
-      { key: "mode", label: "Mode", options: ["Order Booking", "Order Booking Days", "Order Booking Diary"] },
+      { key: "mode", label: "Mode", options: ["Order Booking", "Order Type Needed", "Min Order Value"] },
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
       { key: "needed", label: "Needed", options: ["Needed", "Not Needed"] },
-      { key: "noPerImageUpload", label: "No Per Image Upload", type: "number" },
-      { key: "setDaysPerOrder", label: "Set Days Per Order", type: "number" },
-      { key: "primary", label: "Primary" },
-      { key: "saveDay", label: "Save Day", type: "number" }
+      { key: "orderType", label: "Order Type", options: ["No Need", "Primary", "Secondary", "Both"] },
+      { key: "minPriOrderValue", label: "Min Pri-Order Value", type: "number" },
+      { key: "minSecOrderValue", label: "Min Sec-Order Value", type: "number" },
+      { key: "foc", label: "FOC", options: ["Yes", "No"] }
     ]
   },
   {
@@ -2672,7 +2672,7 @@ export const MASTERS: MasterConfig[] = [
     uiKind: "notificationSend",
     keyFields: ["filterBy", "effectiveFrom"],
     fields: [
-      { key: "filterBy", label: "Filter By", options: ["FieldForce Base wise", "HQ wise", "Zone wise", "State wise", "Designation wise"] },
+      { key: "filterBy", label: "Filter By", options: ["Designtion Wise", "State", "Sub DivisionWise", "FieldForce (Team Wise)"] },
       { key: "filterValue", label: "Filter Value" },
       { key: "message", label: "Message" },
       { key: "effectiveFrom", label: "Effective From", type: "date" },
@@ -2708,11 +2708,12 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "appSetupDynamicAppLink",
     title: "Dynamic App Link",
-    keyFields: ["name"],
+    keyFields: ["menuName"],
     fields: [
-      { key: "name", label: "Name" },
-      { key: "value", label: "Value" },
-      { key: "description", label: "Description" },
+      { key: "menuType", label: "Menu Type", options: ["Report", "Menu"] },
+      { key: "menuName", label: "Menu Name" },
+      { key: "path", label: "Path", options: ["Precall Analysis", "Order Booking"] },
+      { key: "logoFileName", label: "Logo" },
       { key: "status", label: "Status", options: ["Active", "Inactive"] }
     ]
   },

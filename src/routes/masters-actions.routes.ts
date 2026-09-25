@@ -314,8 +314,9 @@ mastersActionsRouter.post(
 // then flips the master row's status to "Sent".
 const sendNotificationSchema = z.object({
   id: z.string().optional(),
-  filterBy: z.enum(["FieldForce Base wise", "HQ wise", "Zone wise", "State wise", "Designation wise"]).optional(),
+  filterBy: z.enum(["Designtion Wise", "State", "Sub DivisionWise", "FieldForce (Team Wise)"]).optional(),
   filterValue: z.string().optional(),
+  filterValues: z.array(z.string()).optional(),
   message: z.string().optional(),
   effectiveFrom: z.string().optional(),
   effectiveTo: z.string().optional()
@@ -336,6 +337,7 @@ mastersActionsRouter.post(
         status: "Draft",
         filterBy: body.filterBy,
         filterValue: body.filterValue ?? "",
+        filterValues: body.filterValues ?? [],
         message: body.message,
         effectiveFrom: body.effectiveFrom ?? new Date(),
         effectiveTo: body.effectiveTo ?? null
@@ -344,22 +346,18 @@ mastersActionsRouter.post(
 
     const filterBy = String(row.get("filterBy"));
     const filterValue = String(row.get("filterValue") ?? "").trim();
+    const filterValues = Array.isArray(row.get("filterValues")) ? (row.get("filterValues") as string[]) : [];
     const message = String(row.get("message") ?? "");
 
     const employeeFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
-    if (filterBy === "HQ wise" && filterValue) employeeFilter.territory = filterValue;
-    else if (filterBy === "State wise" && filterValue) employeeFilter.state = filterValue;
-    else if (filterBy === "Designation wise" && filterValue) employeeFilter.designation = filterValue;
-    else if (filterBy === "Zone wise" && filterValue) {
-      // EmployeeModel has no dedicated "zone" field — best-effort match
-      // against territory, same as HQ wise, since Zone is the next level
-      // up from HQ in this org's hierarchy and isn't modeled separately.
-      employeeFilter.territory = filterValue;
-    }
-    // "FieldForce Base wise" with no filterValue (or filterValue === "All")
-    // means every active field-force employee.
-    if (filterBy === "FieldForce Base wise" && filterValue && filterValue.toLowerCase() !== "all") {
-      employeeFilter.$or = [{ employeeCode: filterValue }, { name: filterValue }];
+    if (filterBy === "State" && filterValue) employeeFilter.state = filterValue;
+    else if (filterBy === "Designtion Wise" && filterValue) employeeFilter.designation = filterValue;
+    else if (filterBy === "Sub DivisionWise" && filterValue) employeeFilter.division = filterValue;
+    // "FieldForce (Team Wise)" narrows to whichever specific employees the
+    // admin checked in the results table (by name); with none checked it
+    // falls through to every active employee returned by the base filter.
+    if (filterBy === "FieldForce (Team Wise)" && filterValues.length > 0) {
+      employeeFilter.name = { $in: filterValues };
     }
 
     const employees = await EmployeeModel.find(employeeFilter).lean();
@@ -539,7 +537,7 @@ mastersActionsRouter.get(
 // masters list-of-records shape, each is stored as one JSON value under
 // CompanyConfigModel (key = "adminSettings:<kind>"), the same generic
 // per-tenant settings store company-config.model.ts already exists for.
-const ADMIN_SETTING_KINDS = new Set(["baseLevelSetup", "managerSetup", "autoMailSetupAdmin", "approvalMandatorySetup", "otherSetup", "homepageDashboardDisplay", "leaveTypeSetup"]);
+const ADMIN_SETTING_KINDS = new Set(["baseLevelSetup", "managerSetup", "autoMailSetupAdmin", "approvalMandatorySetup", "otherSetup", "homepageDashboardDisplay", "leaveTypeSetup", "orderBookingCommon"]);
 
 function adminSettingConfigKey(kind: string): string {
   return `adminSettings:${kind}`;
