@@ -137,9 +137,14 @@ const productSchema = z.object({
 export const companyRouter = Router();
 
 companyRouter.use(requireAuth, requireCompanyAdmin);
-companyRouter.use("/masters", mastersRouter);
-companyRouter.use("/masters", uploadsRouter);
+// mastersActionsRouter and uploadsRouter declare specific routes like
+// /mail-auto-rules and /admin-settings/:kind; they must be mounted BEFORE
+// mastersRouter, whose generic GET/POST "/:key" would otherwise swallow
+// those requests first (Express matches routers in mount order) and throw
+// a false "Unknown master: mail-auto-rules" from requireConfig().
 companyRouter.use("/masters", mastersActionsRouter);
+companyRouter.use("/masters", uploadsRouter);
+companyRouter.use("/masters", mastersRouter);
 companyRouter.use("/mail", mailRouter);
 companyRouter.use("/quiz", quizRouter);
 companyRouter.use("/dashboards", dashboardsRouter);

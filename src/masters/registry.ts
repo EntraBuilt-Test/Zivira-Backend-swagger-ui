@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2464,10 +2464,19 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "managerwiseCoreDoctorMap",
     title: "Managerwise - Core Doctor Map",
-    keyFields: ["managerName", "doctorCode"],
+    // sanpharma.info's Core Doctor Map screen keys a core-doctor flag by
+    // (MR, doctor) — the Manager dropdown there is only a filter used to
+    // narrow down which MR to pick (via the MR's reportingManager), the
+    // checkbox itself always belongs to the selected MR. mrName is the
+    // real identity; managerName is kept (computed off mrName's own
+    // reportingManager) purely for the generic-masters list view / any
+    // reporting that still wants to group by manager.
+    keyFields: ["mrName", "doctorCode"],
+    uiKind: "managerwiseCoreDoctorMap",
     fields: [
-      { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "hq", label: "HQ", computed: { fromField: "managerName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
+      { key: "mrName", label: "MR Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "managerName", label: "Manager Name", computed: { fromField: "mrName", sourceMaster: "employees", lookupField: "name", displayField: "reportingManager" } },
+      { key: "hq", label: "HQ", computed: { fromField: "mrName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
       { key: "doctorCode", label: "Doctor Code", sourceMaster: "doctorMaster", sourceField: "doctorCode" },
       { key: "doctorName", label: "Doctor Name", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "doctorName" } },
       { key: "speciality", label: "Speciality", computed: { fromField: "doctorCode", sourceMaster: "doctorMaster", lookupField: "doctorCode", displayField: "specialty" } },
