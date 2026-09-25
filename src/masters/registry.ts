@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2489,16 +2489,17 @@ export const MASTERS: MasterConfig[] = [
     key: "screenwiseLock",
     title: "Screenwise Lock",
     keyFields: ["fieldForceName"],
+    uiKind: "screenwiseLock",
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
       { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
       { key: "hq", label: "HQ", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
       { key: "dcrLock", label: "DCR Lock", options: ["Yes", "No"] },
       { key: "tpLock", label: "TP Lock", options: ["Yes", "No"] },
-      { key: "iupLock", label: "IUP Lock", options: ["Yes", "No"] },
+      { key: "sdpLock", label: "SDP Lock", options: ["Yes", "No"] },
       { key: "campaignLock", label: "Campaign Lock", options: ["Yes", "No"] },
       { key: "doctorMapLock", label: "Doctor Map Lock", options: ["Yes", "No"] },
-      { key: "logLock", label: "Log Lock", options: ["Yes", "No"] },
+      { key: "unlstCnt", label: "Unlst Cnt" },
       { key: "remarks", label: "Remarks" }
     ]
   },
