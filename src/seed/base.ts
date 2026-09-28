@@ -13,6 +13,23 @@
 // does not create the base login accounts (adminzivira, superadminzivira,
 // mr-001, abm-001) or the zivira-labs tenant/platform-module rows this
 // seed creates. Safe to re-run any time (every write is an upsert).
+//
+// BUG FIX: mr-001 and abm-001 used to get a DIFFERENT password here
+// ("ziviramumbai") than the standing per-employee convention in
+// src/utils/credentials.ts (DEFAULT_EMPLOYEE_PASSWORD, "Zivirachennai").
+// Both seed a UserModel row keyed by the SAME `username`, so whichever
+// ran last silently won — running /api/seed/exact-10 (which calls
+// ensureEmployeeLoginAccount for every employee, including MR-001 and
+// ABM-001) after /api/seed/base overwrote these two accounts' password
+// to "Zivirachennai" without anything on screen changing, so a user still
+// typing the OLD "ziviramumbai" default (as pre-filled on the Field/Manager
+// login pages) got "Invalid credentials" even though the account exists
+// and is active. mr-001/abm-001 now use the SAME DEFAULT_EMPLOYEE_PASSWORD
+// as every other employee, so there is only one password convention for
+// every employee-backed account, no matter which seed route ran last.
+// superadminzivira/adminzivira are NOT employee records (no employeeCode),
+// so ensureEmployeeLoginAccount never touches them — they keep their own
+// separate "ziviramumbai" password.
 import bcrypt from "bcryptjs";
 import { connectMongo } from "../db.js";
 import { FeatureFlagModel } from "../models/feature-flag.model.js";
@@ -22,11 +39,13 @@ import { PlatformModuleModel } from "../models/platform-module.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { TenantModel } from "../models/tenant.model.js";
 import { UserModel } from "../models/user.model.js";
+import { DEFAULT_EMPLOYEE_PASSWORD } from "../utils/credentials.js";
 
 export async function runBaseSeed() {
   await connectMongo();
 
   const passwordHash = await bcrypt.hash("ziviramumbai", 12);
+  const employeePasswordHash = await bcrypt.hash(DEFAULT_EMPLOYEE_PASSWORD, 12);
 
   await UserModel.updateOne(
     { username: "superadminzivira" },
@@ -59,11 +78,12 @@ export async function runBaseSeed() {
     { username: "mr-001" },
     {
       username: "mr-001",
-      passwordHash,
+      passwordHash: employeePasswordHash,
       displayName: "Demo Medical Representative",
       role: "MR",
       portal: "FIELD_FORCE",
       tenantSlug: "zivira-labs",
+      employeeCode: "MR-001",
       active: true
     },
     { upsert: true }
@@ -73,11 +93,12 @@ export async function runBaseSeed() {
     { username: "abm-001" },
     {
       username: "abm-001",
-      passwordHash,
+      passwordHash: employeePasswordHash,
       displayName: "Demo Area Business Manager",
       role: "ABM",
       portal: "FIELD_FORCE",
       tenantSlug: "zivira-labs",
+      employeeCode: "ABM-001",
       active: true
     },
     { upsert: true }

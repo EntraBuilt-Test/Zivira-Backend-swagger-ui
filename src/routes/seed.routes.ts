@@ -99,12 +99,16 @@ seedRouter.post("/exact-10", asyncHandler(async (req, res) => {
 }));
 
 // Bootstrap seed for a FRESH database — creates the base login accounts
-// (adminzivira / superadminzivira / mr-001 / abm-001, password
-// "ziviramumbai" for all), the zivira-labs tenant, and platform module
-// rows. Run this ONCE before /exact-10 when pointing this service at a
-// database that has never had src/seed.ts run against it — /exact-10 only
-// resets master-tab data, it doesn't create these base accounts. Safe to
-// re-run any time (every write is an upsert).
+// (adminzivira / superadminzivira, password "ziviramumbai"; mr-001 /
+// abm-001, password "Zivirachennai" — same standing convention as every
+// other employee, see src/utils/credentials.ts), the zivira-labs tenant,
+// and platform module rows. Run this ONCE before /exact-10 when pointing
+// this service at a database that has never had src/seed.ts run against
+// it — /exact-10 only resets master-tab data, it doesn't create these base
+// accounts. Safe to re-run any time (every write is an upsert). Run
+// /api/seed/ensure-credentials afterwards (or /api/seed/exact-10, which
+// already calls it) to set/refresh every OTHER Manager and Field Rep
+// employee's login the same way.
 //
 //   curl -X POST https://<backend>/api/seed/base -H "x-seed-secret: <SEED_SECRET>"
 // Resets (or creates) a Field/Manager portal login account for EVERY
