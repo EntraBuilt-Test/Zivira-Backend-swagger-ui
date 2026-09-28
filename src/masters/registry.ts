@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -227,7 +227,6 @@ export const ZIVIRA_MENU_PATH_OPTIONS: string[] = [
   "Listed Dr Deactivation (division-dashboard/division-navigation-tabs/activities/approvals/listed-dr-deactivation)",
   "TP (division-dashboard/division-navigation-tabs/activities/approvals/tp)",
   "DCR (division-dashboard/division-navigation-tabs/activities/approvals/dcr)",
-  "DCR Bulk Approval (division-dashboard/division-navigation-tabs/activities/approvals/dcr-bulk-approval)",
   "Leave (division-dashboard/division-navigation-tabs/activities/approvals/leave)",
   "Expense (division-dashboard/division-navigation-tabs/activities/expense)",
   "Approval(Active) (division-dashboard/division-navigation-tabs/activities/expense/approval-active)",
@@ -1781,7 +1780,14 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "activitiesExpenseAnalysis",
     title: "Expense Analysis",
-    uiKind: "reportFilter",
+    // Item 1 — sanpharma's own screen at this same nav position is actually
+    // its "Coverage Analysis 2" report (rpt_Coverage_2_Pivot.aspx), not a
+    // literal expense table: S.No/Emp.Code/DOJ/FieldForce Name/Designation
+    // Name/HQ/First+Second Level Manager/No Of FWD/No Of FWD Exp/Ttl Drs,
+    // then three grouped Territory Type (HQ/EX/OS) column-groups each with
+    // TC/DW/Met/Seen/Coverage/Cal Avg/Amt/Amt-per-call — see
+    // coverage-analysis-2-panel.tsx.
+    uiKind: "coverageAnalysis2",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
