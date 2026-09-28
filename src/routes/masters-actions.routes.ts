@@ -14,6 +14,12 @@ import { notifyFieldRep, notifyManager } from "../utils/notify.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { CompanyConfigModel, getConfigValue } from "../models/company-config.model.js";
 import { MailAutoRuleModel } from "../models/mail-auto-rule.model.js";
+import { DealerModel } from "../models/dealer.model.js";
+import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
+import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { ProductBrandModel } from "../models/product-brand.model.js";
+import { ProductModel } from "../models/product.model.js";
+import { computeComplianceRows } from "../utils/compliance.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -630,5 +636,404 @@ mastersActionsRouter.delete(
     if (!deleted) throw new HttpError(404, "Mail rule not found");
     await audit("MAIL_AUTO_RULE_DELETED", "mailAutoRule", req.params.id, { tenantSlug });
     res.json({ data: { success: true, id: req.params.id } });
+  })
+);
+
+// ── 7. Slide Upload - E-Detailing > Priority tab ────────────────────────
+// Matches sanpharma.info's DD_Slide_Upload.aspx Priority sub-tab: "Update
+// Priority for" Brand/Product/Speciality/Therapy, a Sub Division picker and
+// a second item picker, then a priority number per item. Brand and Product
+// item lists come from the real ProductBrand/Product collections; Speciality
+// and Therapy are fixed taxonomy lists (no dedicated master for either exists
+// yet in this codebase) matching sanpharma's own option set exactly. The
+// priority number itself is real, persisted per (type, subDivision, item) in
+// the generic per-tenant CompanyConfig key/value store — one small number per
+// item is exactly what that store already exists for, rather than a new
+// bespoke collection.
+const SLIDE_SPECIALITY_OPTIONS = ["CMS", "CP", "CRS", "CTRCT", "ECC", "GENPHY", "GLAUCO", "GLS", "IOL", "LSK", "MSO", "NEURO", "OCLP", "OPTO", "ORBIT", "PEDOPT", "PG", "PGCRS", "PGOPT", "PGR", "PHACO", "PSUR", "RES", "RETINA", "SPL", "SUR", "UVE"];
+const SLIDE_THERAPY_OPTIONS = ["AA", "AG", "AI", "AIC", "AO", "INFLM", "TS", "WIPES"];
+
+function slidePriorityConfigKey(type: string, subDivision: string, item: string) {
+  return `slidePriority:${type}:${subDivision || "-"}:${item}`;
+}
+
+mastersActionsRouter.get(
+  "/slideUploadEDetailing/action/priority-list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const type = String(req.query.type || "Brand");
+    const subDivision = String(req.query.subDivision || "");
+
+    let items: string[] = [];
+    if (type === "Brand") {
+      items = (await ProductBrandModel.find({ tenantSlug, status: "ACTIVE" }).sort({ brandName: 1 }).lean()).map((b: any) => b.brandName).filter(Boolean);
+    } else if (type === "Product") {
+      items = (await ProductModel.find({ tenantSlug, status: "ACTIVE" }).sort({ productName: 1 }).lean()).map((p: any) => p.productName || p.name).filter(Boolean);
+    } else if (type === "Speciality") {
+      items = SLIDE_SPECIALITY_OPTIONS;
+    } else {
+      items = SLIDE_THERAPY_OPTIONS;
+    }
+
+    const prefix = `slidePriority:${type}:${subDivision || "-"}:`;
+    const rows = await CompanyConfigModel.find({ tenantSlug, key: { $regex: `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}` } }).lean();
+    const priorityMap = new Map<string, number>();
+    for (const r of rows) {
+      const item = String(r.key).slice(prefix.length);
+      priorityMap.set(item, Number(r.value));
+    }
+
+    const result = Array.from(new Set(items)).map((item, idx) => ({
+      item,
+      priority: priorityMap.has(item) ? priorityMap.get(item)! : idx + 1
+    }));
+    res.json({ data: result });
+  })
+);
+
+const slidePrioritySaveSchema = z.object({
+  type: z.enum(["Brand", "Product", "Speciality", "Therapy"]),
+  subDivision: z.string().optional().default(""),
+  item: z.string().min(1),
+  priority: z.coerce.number().int().min(0)
+});
+
+mastersActionsRouter.post(
+  "/slideUploadEDetailing/action/priority",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = slidePrioritySaveSchema.parse(req.body);
+    const key = slidePriorityConfigKey(body.type, body.subDivision, body.item);
+    await CompanyConfigModel.findOneAndUpdate(
+      { tenantSlug, key },
+      { $set: { value: body.priority } },
+      { upsert: true, new: true }
+    );
+    await audit("SLIDE_PRIORITY_UPDATED", "slideUploadEDetailing", body.item, { tenantSlug, ...body });
+    res.json({ data: { success: true } });
+  })
+);
+
+// ── 8. Transfer Master Details ──────────────────────────────────────────
+// Matches sanpharma.info's MR_MR_Transfer.aspx: pick a Listed Doctor/Chemist
+// entity type, a "Transfer From" field force + territory, and a "Transfer
+// To" field force + territory. The left table lists that field force's real
+// Doctor/Dealer records in that territory; the right table lists what the
+// destination field force+territory already has. "Transfer" writes a real,
+// persisted update to the DoctorModel/DealerModel documents' mapped
+// employee + territory fields — the exact same collections every other
+// Doctor/Chemist screen reads from — so the move survives a refresh.
+mastersActionsRouter.get(
+  "/transferMasterDetails/action/territories",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const entityType = String(req.query.entityType || "Listed Doctor");
+    const employeeCode = String(req.query.employeeCode || "");
+    if (!employeeCode) { res.json({ data: [] }); return; }
+
+    const territories = entityType === "Chemist"
+      ? await DealerModel.distinct("patchName", { tenantSlug, employeeCode, status: "ACTIVE" })
+      : await DoctorModel.distinct("territory", { tenantSlug, mappedEmployeeCode: employeeCode, status: "ACTIVE" });
+
+    res.json({ data: territories.filter(Boolean).sort() });
+  })
+);
+
+mastersActionsRouter.get(
+  "/transferMasterDetails/action/candidates",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const entityType = String(req.query.entityType || "Listed Doctor");
+    const employeeCode = String(req.query.employeeCode || "");
+    const territory = String(req.query.territory || "");
+    if (!employeeCode || !territory) { res.json({ data: [] }); return; }
+
+    if (entityType === "Chemist") {
+      const rows = await DealerModel.find({ tenantSlug, employeeCode, patchName: territory, status: "ACTIVE" }).sort({ dealerName: 1 }).lean();
+      res.json({
+        data: rows.map((r: any) => ({
+          id: String(r._id),
+          name: r.dealerName,
+          contactPerson: r.contactPersonName || "",
+          territory: r.patchName
+        }))
+      });
+    } else {
+      const rows = await DoctorModel.find({ tenantSlug, mappedEmployeeCode: employeeCode, territory, status: "ACTIVE" }).sort({ name: 1 }).lean();
+      res.json({
+        data: rows.map((r: any) => ({
+          id: String(r._id),
+          name: r.name,
+          // Doctor Category master uses A/B/C — mapped here to sanpharma's
+          // own CORE / NON CORE / Nil wording purely for this screen's
+          // display, matching the reference screenshots exactly without
+          // changing the real stored category values anywhere else.
+          category: r.category === "A" ? "CORE" : r.category === "B" || r.category === "C" ? "NON CORE" : "Nil",
+          speciality: r.specialty,
+          territory: r.territory
+        }))
+      });
+    }
+  })
+);
+
+const transferActionSchema = z.object({
+  entityType: z.enum(["Listed Doctor", "Chemist"]),
+  ids: z.array(z.string()).min(1),
+  fromEmployeeName: z.string().optional().default(""),
+  fromTerritory: z.string().min(1),
+  toEmployeeCode: z.string().min(1),
+  toEmployeeName: z.string().optional().default(""),
+  toTerritory: z.string().min(1)
+});
+
+mastersActionsRouter.post(
+  "/transferMasterDetails/action/transfer",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = transferActionSchema.parse(req.body);
+    const LogModel = getMasterModel("transferMasterDetails");
+
+    if (body.entityType === "Chemist") {
+      await DealerModel.updateMany(
+        { tenantSlug, _id: { $in: body.ids } },
+        { $set: { employeeCode: body.toEmployeeCode, employeeName: body.toEmployeeName || null, patchName: body.toTerritory } }
+      );
+    } else {
+      await DoctorModel.updateMany(
+        { tenantSlug, _id: { $in: body.ids } },
+        { $set: { mappedEmployeeCode: body.toEmployeeCode, mappedEmployeeName: body.toEmployeeName || null, territory: body.toTerritory } }
+      );
+    }
+
+    const logRow = await LogModel.create({
+      tenantSlug,
+      status: "Active",
+      entityType: body.entityType,
+      transferFromFieldForce: body.fromEmployeeName,
+      transferFromTerritory: body.fromTerritory,
+      transferToFieldForce: body.toEmployeeName,
+      transferToTerritory: body.toTerritory,
+      transferredOn: new Date()
+    });
+
+    await audit("TRANSFER_MASTER_DETAILS", "transferMasterDetails", String(logRow._id), { tenantSlug, ...body });
+    res.status(201).json({ data: { success: true, movedCount: body.ids.length } });
+  })
+);
+
+// ── 9. Unlisted Drs Convert To Listed Drs ───────────────────────────────
+// Matches sanpharma.info's MGR/Convert_Unlistto_Listeddr.aspx: pick a Field
+// Force, see their Pending UnlistedDoctor rows, check some/all and Convert.
+// This is a REAL mutation: each converted row becomes a real, persisted
+// DoctorModel document (the exact same collection every other Doctor
+// screen/report reads from, mapped to that field force via
+// mappedEmployeeCode), and the source UnlistedDoctor row is flipped to
+// "Approved" so it drops off this pending list for good.
+mastersActionsRouter.get(
+  "/unlistedToListedDrConversion/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "");
+    if (!fieldForceName) { res.json({ data: [] }); return; }
+
+    const rows = await UnlistedDoctorModel.find({ tenantSlug, mr: fieldForceName, status: "Pending" }).sort({ name: 1 }).lean();
+    res.json({
+      data: rows.map((r: any) => ({
+        id: String(r._id),
+        name: r.name,
+        qualification: r.qualification || "-",
+        speciality: r.specialty || "-",
+        category: r.category || "-",
+        classField: r.classField || "-",
+        territory: r.territory || r.patch || r.hq || "-"
+      }))
+    });
+  })
+);
+
+const convertUnlistedSchema = z.object({ ids: z.array(z.string()).min(1) });
+
+mastersActionsRouter.post(
+  "/unlistedToListedDrConversion/action/convert",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = convertUnlistedSchema.parse(req.body);
+    const rows = await UnlistedDoctorModel.find({ tenantSlug, _id: { $in: body.ids }, status: "Pending" });
+    const LogModel = getMasterModel("unlistedToListedDrConversion");
+
+    let converted = 0;
+    for (const r of rows) {
+      const territory = r.territory || r.patch || r.hq || "Unassigned";
+      const mrEmployee = r.mr ? await EmployeeModel.findOne({ tenantSlug, name: r.mr }).lean() : null;
+
+      await DoctorModel.create({
+        tenantSlug,
+        name: r.name,
+        specialty: r.specialty || "General Physician",
+        category: ["A", "B", "C"].includes(String(r.category)) ? r.category : "C",
+        state: r.state || territory,
+        city: r.city || territory,
+        territory,
+        mappedEmployeeCode: (mrEmployee as any)?.employeeCode || null,
+        mappedEmployeeName: r.mr || null,
+        qualification: r.qualification || null,
+        phone: r.mobile || null,
+        email: r.email || null,
+        clinicName: r.clinicName || null,
+        status: "ACTIVE"
+      });
+
+      r.status = "Approved";
+      await r.save();
+
+      await LogModel.create({
+        tenantSlug,
+        status: "Converted",
+        fieldForceName: r.mr,
+        unlistedDoctorName: r.name,
+        qualification: r.qualification,
+        specialty: r.specialty,
+        category: r.category,
+        classField: r.classField,
+        territory
+      });
+      converted++;
+    }
+
+    await audit("UNLISTED_DR_CONVERTED", "unlistedToListedDrConversion", "BULK", { tenantSlug, converted });
+    res.status(201).json({ data: { success: true, converted } });
+  })
+);
+
+// ── 10. Delayed Release ─────────────────────────────────────────────────
+// Matches sanpharma.info's Delayed_Release.aspx: a Year/Month + FieldForce
+// filter, a table of field force with delayed/missing DCR dates, and a
+// Release action. Built on the SAME real DCR-gap computation the Compliance
+// Analytics dashboard already uses (computeComplianceRows, missedLast30Days)
+// rather than a fabricated table — a field force only shows up here if they
+// genuinely have missed working-day DCRs in the window. "Released" is a
+// real, persisted per (month, employee) flag in the generic CompanyConfig
+// key/value store, so a released row stays released across refreshes.
+mastersActionsRouter.get(
+  "/delayedRelease/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "").trim();
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+
+    const employeeFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+    if (fieldForceName) {
+      employeeFilter.name = new RegExp(fieldForceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    }
+    const employees = await EmployeeModel.find(employeeFilter).lean();
+
+    const complianceRows = await computeComplianceRows(
+      tenantSlug!,
+      employees.map((e: any) => ({ employeeCode: e.employeeCode, name: e.name, joinDate: e.joinDate })),
+      { month: month || undefined }
+    );
+
+    const monthKey = month || "current";
+    const releasedRows = await CompanyConfigModel.find({ tenantSlug, key: { $regex: `^delayedReleased:${monthKey}:` } }).lean();
+    const releasedSet = new Set(releasedRows.map((r: any) => String(r.key).split(":")[2]));
+
+    const empByCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
+
+    const result = complianceRows
+      .filter((r) => r.missedLast30Days > 0)
+      .map((r) => {
+        const emp = empByCode.get(r.employeeCode);
+        return {
+          employeeCode: r.employeeCode,
+          fieldForceName: r.employeeName,
+          hq: emp?.territory || "-",
+          designation: emp?.designation || "-",
+          state: emp?.state || "-",
+          delayedMissingDates: `${r.missedLast30Days} day(s) missed in last 30 days`,
+          released: releasedSet.has(r.employeeCode)
+        };
+      });
+
+    res.json({ data: result });
+  })
+);
+
+const releaseDelayedSchema = z.object({
+  employeeCodes: z.array(z.string()).min(1),
+  month: z.string().optional().default("current")
+});
+
+mastersActionsRouter.post(
+  "/delayedRelease/action/release",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = releaseDelayedSchema.parse(req.body);
+    for (const code of body.employeeCodes) {
+      await CompanyConfigModel.findOneAndUpdate(
+        { tenantSlug, key: `delayedReleased:${body.month}:${code}` },
+        { $set: { value: true } },
+        { upsert: true }
+      );
+    }
+    await audit("DELAYED_RELEASE_RELEASED", "delayedRelease", "BULK", { tenantSlug, ...body });
+    res.status(201).json({ data: { success: true, releasedCount: body.employeeCodes.length } });
+  })
+);
+
+// ── 11. Leave Status ─────────────────────────────────────────────────────
+// Matches sanpharma.info's MR/Leave_Status.aspx exactly (headers: S.No,
+// FieldForce Name, Designaion, HQ, Emp.Code, Applied Date, From Date, To
+// Date, Leave Information, Type, Status, Approved BY, Reason, Click Here to
+// View), reading the real LeaveApplicationModel joined against Employee for
+// name/designation/HQ/code — not a generic-master mirror.
+mastersActionsRouter.get(
+  "/leaveStatusReport/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+    const fromMonth = Number(req.query.fromMonth || 0);
+    const fromYear = Number(req.query.fromYear || 0);
+    const toMonth = Number(req.query.toMonth || 0);
+    const toYear = Number(req.query.toYear || 0);
+
+    const filter: Record<string, unknown> = { tenantSlug };
+    if (fromYear && fromMonth && toYear && toMonth) {
+      const from = new Date(Date.UTC(fromYear, fromMonth - 1, 1));
+      const to = new Date(Date.UTC(toYear, toMonth, 0, 23, 59, 59));
+      filter.fromDate = { $gte: from, $lte: to };
+    }
+
+    if (fieldForceName) {
+      const emp = await EmployeeModel.findOne({ tenantSlug, name: fieldForceName }).lean();
+      if (emp) filter.employeeCode = (emp as any).employeeCode;
+      else filter.employeeCode = "__none__";
+    }
+
+    const rows = await LeaveApplicationModel.find(filter).sort({ createdAt: -1 }).lean();
+    const codes = Array.from(new Set(rows.map((r: any) => r.employeeCode)));
+    const employees = await EmployeeModel.find({ tenantSlug, employeeCode: { $in: codes } }).lean();
+    const empByCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
+
+    const result = rows.map((r: any) => {
+      const emp = empByCode.get(r.employeeCode);
+      return {
+        id: String(r._id),
+        fieldForceName: emp?.name || r.employeeCode,
+        designation: emp?.designation || "-",
+        hq: emp?.territory || "-",
+        empCode: r.employeeCode,
+        appliedDate: r.createdAt,
+        fromDate: r.fromDate,
+        toDate: r.toDate,
+        leaveInformation: "Prior",
+        type: r.leaveType,
+        status: r.status === "APPROVED" ? "Approved" : r.status === "REJECTED" ? "Rejected" : "Pending",
+        approvedBy: r.approvedBy || "-",
+        reason: r.reason || "-"
+      };
+    });
+
+    res.json({ data: result });
   })
 );

@@ -29,7 +29,15 @@ const unlistedDoctorSchema = new Schema(
     
     dob: { type: String, trim: true, default: null },
     anniversaryDate: { type: String, trim: true, default: null },
-    
+
+    // Admin "Unlisted Drs Convert To Listed Drs" screen (MGR/Convert_Unlistto_Listeddr.aspx)
+    // needs these on the conversion table — additive fields, safe for any
+    // pre-existing rows (they simply read back as null/undefined).
+    qualification: { type: String, trim: true, default: null },
+    category: { type: String, trim: true, default: null },
+    classField: { type: String, trim: true, default: null },
+    territory: { type: String, trim: true, default: null },
+
     status: { type: String, enum: ["Pending", "Approved", "Rejected"], default: "Pending", index: true }
   },
   { timestamps: true }

@@ -367,7 +367,7 @@ const REAL_TARGETS: Record<string, (tenantSlug: string, rows: Record<string, unk
 // base64) so the sanpharma-style "Download" link in the resulting table
 // can hand back the exact original file, and whose model has a
 // tenant-scoped "deactivate existing before import" bulk-update available.
-const FILE_STORING_UPLOAD_KEYS = new Set(["fileUploadDesignationwise", "userManualUpload"]);
+const FILE_STORING_UPLOAD_KEYS = new Set(["fileUploadDesignationwise", "userManualUpload", "slideUploadEDetailing", "homepageImageUpload", "homepageImageFieldForcewise"]);
 
 const DEACTIVATABLE_MODELS: Record<string, mongoose.Model<any>> = {
   listedDoctorUploadLog: DoctorModel,
