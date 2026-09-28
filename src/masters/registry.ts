@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2" | "leaveEntitlement" | "leaveStatusView" | "sampleDispatchView" | "sampleDispatchStatus" | "inputDispatchView" | "inputDispatchStatus" | "msisView" | "loginDetails" | "activityMaster";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2" | "leaveEntitlement" | "leaveStatusView" | "sampleDispatchView" | "sampleDispatchStatus" | "inputDispatchView" | "inputDispatchStatus" | "msisView" | "loginDetails" | "activityMaster" | "activityStatusReport" | "managerMissedCallReport";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -2137,7 +2137,7 @@ export const MASTERS: MasterConfig[] = [
     // custom activities. Result columns not live-confirmed.
     key: "activityStatus",
     title: "Activity - Status",
-    uiKind: "reportFilter",
+    uiKind: "activityStatusReport",
     keyFields: ["fieldForceName", "mode", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2169,7 +2169,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "managerMissedCallView",
     title: "Manager Missed Call - View",
-    uiKind: "reportFilter",
+    uiKind: "managerMissedCallReport",
     keyFields: ["managerName", "month", "year"],
     fields: [
       { key: "managerName", label: "Manager Name", sourceMaster: "employees", sourceField: "name" },

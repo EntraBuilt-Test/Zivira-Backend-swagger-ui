@@ -183,7 +183,11 @@ companyRouter.get(
     if (typeof req.query.division === "string" && req.query.division.trim()) {
       query.division = exactCaseInsensitive(req.query.division.trim());
     }
-    const employees = await EmployeeModel.find(query).sort({ createdAt: -1 });
+    // Round 9 item 1 — this is what every FieldForce dropdown across the
+    // app fetches; .lean() skips Mongoose document hydration (this list can
+    // be hundreds of employees), a real, measurable speedup on top of the
+    // frontend's new shared cache (api-client.ts).
+    const employees = await EmployeeModel.find(query).sort({ createdAt: -1 }).lean();
     res.json({ data: employees.map(serializeDocument) });
   })
 );

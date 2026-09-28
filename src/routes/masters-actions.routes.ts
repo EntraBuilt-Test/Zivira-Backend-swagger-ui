@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { asyncHandler } from "../http/async-handler.js";
@@ -26,6 +27,7 @@ import { MsisSaleModel } from "../models/msis-sale.model.js";
 import { LoginEventModel } from "../models/login-event.model.js";
 import { ActivityModel } from "../models/activity.model.js";
 import { ActivityParameterModel } from "../models/activity-parameter.model.js";
+import { CustomizedMasterModel } from "../models/customized-master.model.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -1815,5 +1817,176 @@ mastersActionsRouter.post(
     }
     await audit("ACTIVITY_PARAMETER_REORDERED", "ActivityParameter", "BULK", { tenantSlug, count: body.orders.length });
     res.json({ data: { success: true } });
+  })
+);
+
+// ── 19. Customized Master (Round 9 item 2, tab 3) ────────────────────────
+mastersActionsRouter.get(
+  "/customizedMaster/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const rows = await CustomizedMasterModel.find({ tenantSlug }).sort({ name: 1 }).lean();
+    res.json({
+      data: rows.map((r: any) => ({
+        id: String(r._id),
+        name: r.name,
+        rows: (r.rows || []).map((row: any) => ({ id: String(row._id), shortName: row.shortName, name: row.name, active: row.active }))
+      }))
+    });
+  })
+);
+
+const customizedMasterCreateSchema = z.object({ name: z.string().min(1) });
+
+mastersActionsRouter.post(
+  "/customizedMaster/action/create",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = customizedMasterCreateSchema.parse(req.body);
+    const existing = await CustomizedMasterModel.findOne({ tenantSlug, name: body.name });
+    if (existing) throw new HttpError(409, "A Customized Master with this name already exists");
+    const row = await CustomizedMasterModel.create({ tenantSlug, name: body.name, rows: [{ shortName: "", name: "", active: true }] });
+    await audit("CUSTOMIZED_MASTER_CREATED", "CustomizedMaster", String(row._id), { tenantSlug, name: body.name });
+    res.status(201).json({ data: { id: String(row._id), name: row.name, rows: row.rows.map((r: any) => ({ id: String(r._id), shortName: r.shortName, name: r.name, active: r.active })) } });
+  })
+);
+
+const customizedMasterRowsSchema = z.object({
+  rows: z.array(z.object({ id: z.string().optional(), shortName: z.string().default(""), name: z.string().default(""), active: z.boolean().default(true) }))
+});
+
+// "Save" — replaces the whole rows array with the edited grid state. Rows
+// without an id are new (Add New Row); rows with an id keep their identity
+// so Deactivate on an existing row still targets the right one.
+mastersActionsRouter.put(
+  "/customizedMaster/action/:id/rows",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = customizedMasterRowsSchema.parse(req.body);
+    const doc = await CustomizedMasterModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doc) throw new HttpError(404, "Customized Master not found");
+    doc.rows = body.rows.map((r) => ({
+      _id: r.id ? new mongoose.Types.ObjectId(r.id) : undefined,
+      shortName: r.shortName,
+      name: r.name,
+      active: r.active
+    })) as any;
+    await doc.save();
+    await audit("CUSTOMIZED_MASTER_ROWS_SAVED", "CustomizedMaster", String(doc._id), { tenantSlug, rowCount: doc.rows.length });
+    res.json({ data: { id: String(doc._id), name: doc.name, rows: doc.rows.map((r: any) => ({ id: String(r._id), shortName: r.shortName, name: r.name, active: r.active })) } });
+  })
+);
+
+mastersActionsRouter.post(
+  "/customizedMaster/action/:id/rows/:rowId/deactivate",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const doc = await CustomizedMasterModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doc) throw new HttpError(404, "Customized Master not found");
+    const row = (doc.rows as any).id(req.params.rowId);
+    if (!row) throw new HttpError(404, "Row not found");
+    row.active = false;
+    await doc.save();
+    await audit("CUSTOMIZED_MASTER_ROW_DEACTIVATED", "CustomizedMaster", String(doc._id), { tenantSlug, rowId: req.params.rowId });
+    res.json({ data: { id: String(doc._id), name: doc.name, rows: doc.rows.map((r: any) => ({ id: String(r._id), shortName: r.shortName, name: r.name, active: r.active })) } });
+  })
+);
+
+// ── 20. Activity Status (Round 9 item 3) ─────────────────────────────────
+// Real Employee identity columns + a per-activity, per-entity-type
+// completion date. No completion-tracking model exists anywhere in this
+// codebase (DCR rows aren't linked to a specific Activity), so every date
+// cell is honestly "-" — exactly what sanpharma's own reference screenshot
+// shows for employees with no completions recorded yet. Wiring this to real
+// dates would require a genuinely new "activity completion" event to be
+// recorded somewhere first; nothing in this round asked for that new
+// tracking flow, so it isn't fabricated here.
+mastersActionsRouter.get(
+  "/activityStatus/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const activityId = String(req.query.activityId || "").trim();
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+
+    const activity = activityId ? await ActivityModel.findOne({ _id: activityId, tenantSlug }).lean() : null;
+
+    const empFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+    if (fieldForceName) empFilter.name = fieldForceName;
+    const employees = await EmployeeModel.find(empFilter).sort({ name: 1 }).lean();
+
+    const result = employees.map((e: any) => ({
+      empCode: e.employeeCode,
+      fieldForceName: e.name,
+      designation: e.designation || "-",
+      hq: e.territory || "-",
+      doj: e.joinDate || null,
+      drsDate: "-",
+      chmDate: "-",
+      stkDate: "-",
+      unlstDrsDate: "-",
+      hosDate: "-",
+      cipDate: "-"
+    }));
+
+    res.json({ data: result, activityName: (activity as any)?.name || "" });
+  })
+);
+
+// ── 21. Manager Missed Call - View (Round 9 item 4) ──────────────────────
+// Real per-employee doctor coverage for the selected month: LIST = total
+// real doctors mapped to that employee (DoctorModel.mappedEmployeeCode);
+// MET/SEEN = distinct real doctors actually visited that month
+// (DcrModel); MISSED = LIST - SEEN. "-" only when the employee has no
+// mapped doctors at all (genuinely nothing to compute against), matching
+// the reference screenshot's blank cells for a brand-new employee.
+mastersActionsRouter.get(
+  "/managerMissedCallView/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+    const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
+    const year = Number(req.query.year) || new Date().getUTCFullYear();
+    const monthStr = `${year}-${String(month).padStart(2, "0")}`;
+
+    const empFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+    if (fieldForceName) empFilter.name = fieldForceName;
+    const employees = await EmployeeModel.find(empFilter).sort({ name: 1 }).lean();
+
+    const doctors = await DoctorModel.find({ tenantSlug, mappedEmployeeCode: { $in: employees.map((e: any) => e.employeeCode) } }).lean();
+    const listByCode = new Map<string, number>();
+    for (const d of doctors as any[]) {
+      listByCode.set(d.mappedEmployeeCode, (listByCode.get(d.mappedEmployeeCode) || 0) + 1);
+    }
+
+    const dcrRows = await DcrModel.find({
+      tenantSlug,
+      month: monthStr,
+      employeeCode: { $in: employees.map((e: any) => e.employeeCode) },
+      status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED", "AUTO_APPROVED"] }
+    }).lean();
+    const seenByCode = new Map<string, Set<string>>();
+    for (const r of dcrRows as any[]) {
+      if (!r.doctorId) continue;
+      if (!seenByCode.has(r.employeeCode)) seenByCode.set(r.employeeCode, new Set());
+      seenByCode.get(r.employeeCode)!.add(String(r.doctorId));
+    }
+
+    const result = employees.map((e: any) => {
+      const list = listByCode.get(e.employeeCode) || 0;
+      const seen = seenByCode.get(e.employeeCode)?.size || 0;
+      const hasData = list > 0;
+      return {
+        empCode: e.employeeCode,
+        fieldForceName: e.name,
+        designation: e.designation || "-",
+        hq: e.territory || "-",
+        list: hasData ? list : "-",
+        met: hasData ? seen : "-",
+        seen: hasData ? seen : "-",
+        missed: hasData ? Math.max(0, list - seen) : "-"
+      };
+    });
+
+    res.json({ data: result, month, year });
   })
 );
