@@ -1803,9 +1803,12 @@ export const MASTERS: MasterConfig[] = [
     // already used by Sample/Input Dispatch below), then an "At a Glance"
     // checkbox above the results table switches between the normal
     // one-row-per-record table and a summarized per-Field-Force-Name view.
+    // Round 8 item 2 — coordinator confirmed this screen renders the same
+    // Coverage Analysis 2 report/table as activitiesExpenseAnalysis above,
+    // backed by the same real /coverageAnalysis2/action/list aggregation.
     key: "activitiesExpenseConsolidatedView",
     title: "Expense Consolidated View",
-    uiKind: "reportFilter",
+    uiKind: "coverageAnalysis2",
     atAGlance: true,
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [

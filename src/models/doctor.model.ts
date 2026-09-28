@@ -34,7 +34,14 @@ const doctorSchema = new Schema(
     // sequential serial number assigned to each doctor, allocated by mode
     // (All Listed Drs / Specialty Wise / Subdivision-HQ Wise) and cleared
     // by Reset. null/absent means "not allocated yet".
-    uniqueSlNo: { type: String, trim: true, default: null, index: true }
+    uniqueSlNo: { type: String, trim: true, default: null, index: true },
+    // Round 8 item 1/2 — Coverage Analysis 2's "Territory Type" grouped
+    // columns (HQ / EX / OS) need a real per-doctor classification to
+    // aggregate DCR calls against; no such field existed anywhere in the
+    // schema before. Defaults every doctor to "HQ" (the common case) so
+    // existing records stay queryable immediately; genuinely EX/OS doctors
+    // can be reclassified via the normal doctor edit flow.
+    territoryType: { type: String, enum: ["HQ", "EX", "OS"], default: "HQ", index: true }
   },
   { timestamps: true }
 );

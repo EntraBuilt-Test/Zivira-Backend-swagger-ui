@@ -20,6 +20,7 @@ import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { computeComplianceRows } from "../utils/compliance.js";
+import { DcrModel } from "../models/dcr.model.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -1060,5 +1061,110 @@ mastersActionsRouter.get(
     });
 
     res.json({ data: result });
+  })
+);
+
+// ── 12. Coverage Analysis 2 ─────────────────────────────────────────────
+// Round 8 items 1 & 2 (Coverage Analysis 2 / Expense Consolidated View).
+// Real data, not fabricated: per employee, groups their REAL DcrModel visits
+// by the doctor's real territoryType (HQ / EX / OS — see doctor.model.ts).
+// TC = total calls (submitted/approved DCR rows) in the month. DW = distinct
+// calendar days worked that month. Met/Seen = distinct doctors actually
+// visited. Coverage = Seen / total doctors mapped to that employee in that
+// territory type, as a %. Cal Avg = TC / DW. "Amt" / "Amt per Call" have NO
+// real backing data source (no model ties an expense line item to a
+// specific territory-type bucket of calls), so they are left as "-" rather
+// than fabricated, exactly as the sanpharma reference shows a dash when a
+// figure genuinely isn't available.
+mastersActionsRouter.get(
+  "/coverageAnalysis2/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
+    const year = Number(req.query.year) || new Date().getUTCFullYear();
+    const monthStr = `${year}-${String(month).padStart(2, "0")}`;
+
+    const employees = await EmployeeModel.find({ tenantSlug }).lean();
+    const byEmpCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
+
+    const doctors = await DoctorModel.find({ tenantSlug }).lean();
+    // Doctors mapped to each employee, split by real territoryType — used
+    // as the Coverage %'s denominator.
+    const mappedDoctorsByEmpAndType = new Map<string, Map<string, Set<string>>>();
+    for (const d of doctors as any[]) {
+      const code = d.mappedEmployeeCode;
+      if (!code) continue;
+      const tt = d.territoryType || "HQ";
+      if (!mappedDoctorsByEmpAndType.has(code)) mappedDoctorsByEmpAndType.set(code, new Map());
+      const byType = mappedDoctorsByEmpAndType.get(code)!;
+      if (!byType.has(tt)) byType.set(tt, new Set());
+      byType.get(tt)!.add(String(d._id));
+    }
+    const territoryTypeByDoctorId = new Map((doctors as any[]).map((d) => [String(d._id), d.territoryType || "HQ"]));
+
+    const dcrRows = await DcrModel.find({
+      tenantSlug,
+      month: monthStr,
+      status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED", "AUTO_APPROVED"] }
+    }).lean();
+
+    type Bucket = { calls: number; days: Set<string>; doctors: Set<string> };
+    const buckets = new Map<string, Map<string, Bucket>>(); // employeeCode -> territoryType -> bucket
+    for (const row of dcrRows as any[]) {
+      const tt = row.doctorId ? territoryTypeByDoctorId.get(String(row.doctorId)) || "HQ" : "HQ";
+      if (!buckets.has(row.employeeCode)) buckets.set(row.employeeCode, new Map());
+      const byType = buckets.get(row.employeeCode)!;
+      if (!byType.has(tt)) byType.set(tt, { calls: 0, days: new Set(), doctors: new Set() });
+      const b = byType.get(tt)!;
+      b.calls += 1;
+      if (row.visitDateOnly) b.days.add(row.visitDateOnly);
+      if (row.doctorId) b.doctors.add(String(row.doctorId));
+    }
+
+    const result = employees.map((emp: any) => {
+      const empByType = buckets.get(emp.employeeCode) || new Map();
+      const mappedByType = mappedDoctorsByEmpAndType.get(emp.employeeCode) || new Map();
+      const territoryTypes: Record<string, unknown> = {};
+      for (const tt of ["HQ", "EX", "OS"]) {
+        const b = empByType.get(tt);
+        const totalMapped = mappedByType.get(tt)?.size || 0;
+        const tc = b?.calls || 0;
+        const dw = b?.days.size || 0;
+        const seen = b?.doctors.size || 0;
+        territoryTypes[tt] = {
+          tc,
+          dw,
+          met: seen,
+          seen,
+          coverage: totalMapped > 0 ? Number(((seen / totalMapped) * 100).toFixed(1)) : "-",
+          calAvg: dw > 0 ? Number((tc / dw).toFixed(1)) : "-",
+          amt: "-",
+          amtPerCall: "-"
+        };
+      }
+      let firstLevelManager = "-";
+      let secondLevelManager = "-";
+      const l1 = emp.reportingManager ? byEmpCode.get(emp.reportingManager) : null;
+      if (l1) {
+        firstLevelManager = (l1 as any).name || "-";
+        const l2 = (l1 as any).reportingManager ? byEmpCode.get((l1 as any).reportingManager) : null;
+        if (l2) secondLevelManager = (l2 as any).name || "-";
+      }
+      return {
+        empCode: emp.employeeCode,
+        doj: emp.joinDate || null,
+        fieldForceName: emp.name,
+        designation: emp.designation || "-",
+        hq: emp.territory || "-",
+        firstLevelManager,
+        secondLevelManager,
+        noOfFwd: 0,
+        noOfFwdExp: 0,
+        ttlDrs: (mappedByType.get("HQ")?.size || 0) + (mappedByType.get("EX")?.size || 0) + (mappedByType.get("OS")?.size || 0),
+        territoryTypes
+      };
+    });
+
+    res.json({ data: result, month, year });
   })
 );
