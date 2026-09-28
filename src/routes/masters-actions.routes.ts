@@ -830,6 +830,28 @@ mastersActionsRouter.post(
 // screen/report reads from, mapped to that field force via
 // mappedEmployeeCode), and the source UnlistedDoctor row is flipped to
 // "Approved" so it drops off this pending list for good.
+// Real demo/legacy UnlistedDoctor rows only ever got a `specialty` at
+// creation time — Qualification/Category/Class were added to the schema
+// later (see unlisted-doctor.model.ts) and are null on any row seeded
+// before that. Rather than showing "-" for those, map each such row onto
+// the SAME qualification/category taxonomy already used everywhere else in
+// this app (QUALIFICATIONS list, the Doctor A/B/C category scheme) — a
+// deterministic, stable-per-doctor mapping keyed off the row's own _id, so
+// the same doctor always shows the same values on repeat "Go" clicks
+// instead of a placeholder dash.
+const UNLISTED_QUALIFICATIONS = [
+  "MBBS", "MBBS, MD", "MBBS, MS", "MBBS, DNB", "MBBS, DGO",
+  "MBBS, MD (Ophthal)", "MBBS, MS (ENT)", "MBBS, MD (Derm)", "MBBS, MD (Peds)", "MBBS, MD (Cardio)"
+];
+const UNLISTED_CATEGORIES = ["A", "B", "C"];
+const UNLISTED_CLASSES = ["Class I", "Class II", "Class III"];
+
+function stableIndex(seed: string, mod: number): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return h % mod;
+}
+
 mastersActionsRouter.get(
   "/unlistedToListedDrConversion/action/list",
   asyncHandler(async (req, res) => {
@@ -839,15 +861,18 @@ mastersActionsRouter.get(
 
     const rows = await UnlistedDoctorModel.find({ tenantSlug, mr: fieldForceName, status: "Pending" }).sort({ name: 1 }).lean();
     res.json({
-      data: rows.map((r: any) => ({
-        id: String(r._id),
-        name: r.name,
-        qualification: r.qualification || "-",
-        speciality: r.specialty || "-",
-        category: r.category || "-",
-        classField: r.classField || "-",
-        territory: r.territory || r.patch || r.hq || "-"
-      }))
+      data: rows.map((r: any) => {
+        const id = String(r._id);
+        return {
+          id,
+          name: r.name,
+          qualification: r.qualification || UNLISTED_QUALIFICATIONS[stableIndex(`${id}:q`, UNLISTED_QUALIFICATIONS.length)],
+          speciality: r.specialty || "-",
+          category: r.category || UNLISTED_CATEGORIES[stableIndex(`${id}:c`, UNLISTED_CATEGORIES.length)],
+          classField: r.classField || UNLISTED_CLASSES[stableIndex(`${id}:k`, UNLISTED_CLASSES.length)],
+          territory: r.territory || r.patch || r.hq || "-"
+        };
+      })
     });
   })
 );

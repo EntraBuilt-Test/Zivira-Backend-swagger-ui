@@ -30,7 +30,24 @@ const quizSchema = new Schema(
     title: { type: String, required: true, trim: true },
     description: { type: String, trim: true, default: "" },
     isActive: { type: Boolean, default: true },
-    questions: { type: [quizQuestionSchema], default: [] }
+    questions: { type: [quizQuestionSchema], default: [] },
+
+    // sanpharma.info's "Online Quiz - Title Creation" fields, kept alongside
+    // the real MCQ authoring above so the "Quiz List" table can match
+    // sanpharma's exact columns (Quiz Title/Created On/Process From-To
+    // Date/No Of Questions/Uploaded File/Status/Processed) while still
+    // being backed by real, scoreable questions rather than a headers-only
+    // log row.
+    category: { type: String, trim: true, default: null }, // matches a Quiz Category master (quizCategoryList) entry
+    effectiveDate: { type: Date, default: null },
+    month: { type: String, trim: true, default: null },
+    year: { type: String, trim: true, default: null },
+    processFromDate: { type: Date, default: null },
+    processToDate: { type: Date, default: null },
+    uploadedFileName: { type: String, trim: true, default: null },
+    uploadedFileData: { type: String, default: null }, // base64 of the last uploaded questions workbook
+    uploadedMimeType: { type: String, trim: true, default: null },
+    processed: { type: Boolean, default: false }
   },
   { timestamps: true }
 );
