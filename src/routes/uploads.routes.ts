@@ -426,12 +426,20 @@ uploadsRouter.post(
       }
     }
 
+    // Masters that keep the raw uploaded file itself (images, slides,
+    // manuals, designation-wise attachments) are never spreadsheets, so
+    // they must never be run through the XLSX parser below — doing so used
+    // to fail every single one of these uploads with a confusing
+    // "Could not parse file: ... is not a spreadsheet" error (e.g. Home
+    // Page Image Upload, Home Page - FieldForcewise, Slide Upload).
     let rows: Record<string, unknown>[] = [];
     let parseError: string | null = null;
-    try {
-      rows = parseWorkbookRows(req.file.buffer);
-    } catch (err) {
-      parseError = err instanceof Error ? err.message : String(err);
+    if (!FILE_STORING_UPLOAD_KEYS.has(config.key)) {
+      try {
+        rows = parseWorkbookRows(req.file.buffer);
+      } catch (err) {
+        parseError = err instanceof Error ? err.message : String(err);
+      }
     }
 
     if (parseError) {
