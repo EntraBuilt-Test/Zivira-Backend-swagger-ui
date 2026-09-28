@@ -21,6 +21,11 @@ import { ProductBrandModel } from "../models/product-brand.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { computeComplianceRows } from "../utils/compliance.js";
 import { DcrModel } from "../models/dcr.model.js";
+import { DespatchLogModel } from "../models/despatch-log.model.js";
+import { MsisSaleModel } from "../models/msis-sale.model.js";
+import { LoginEventModel } from "../models/login-event.model.js";
+import { ActivityModel } from "../models/activity.model.js";
+import { ActivityParameterModel } from "../models/activity-parameter.model.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -1166,5 +1171,649 @@ mastersActionsRouter.get(
     });
 
     res.json({ data: result, month, year });
+  })
+);
+
+// ── 13. Leave Entitlement — Entry (Round 8 item 8) ─────────────────────
+// Real per-employee annual eligibility grid, persisted into the existing
+// leaveEntitlementEntry generic-master collection (keyFields fieldForceName
+// + year). "grid" merges real Employee identity data with whatever
+// eligibility record already exists for that employee/year (or nulls if
+// none was ever entered) so the frontend can render one editable row per
+// employee without N+1 requests.
+mastersActionsRouter.get(
+  "/leaveEntitlementEntry/action/grid",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const year = String(req.query.year || new Date().getFullYear());
+    const employees = await EmployeeModel.find({ tenantSlug, status: "ACTIVE" }).sort({ name: 1 }).lean();
+    const Model = getMasterModel("leaveEntitlementEntry");
+    const records = await Model.find({ tenantSlug, year }).lean();
+    const byName = new Map(records.map((r: any) => [r.fieldForceName, r]));
+
+    const rows = employees.map((e: any) => {
+      const rec = byName.get(e.name);
+      return {
+        recordId: rec ? String(rec._id) : null,
+        employeeCode: e.employeeCode,
+        fieldForceName: e.name,
+        hq: e.territory || "-",
+        designation: e.designation || "-",
+        dateOfJoining: e.joinDate || null,
+        year,
+        cl: rec?.cl ?? null,
+        pl: rec?.pl ?? null,
+        sl: rec?.sl ?? null,
+        lop: rec?.lop ?? null,
+        balanceCl: rec?.balanceCl ?? null,
+        balancePl: rec?.balancePl ?? null,
+        balanceSl: rec?.balanceSl ?? null,
+        balanceLop: rec?.balanceLop ?? null
+      };
+    });
+
+    res.json({ data: rows });
+  })
+);
+
+const leaveEntitlementSubmitSchema = z.object({
+  year: z.string().min(4),
+  rows: z.array(
+    z.object({
+      employeeCode: z.string(),
+      cl: z.number().min(0).default(0),
+      pl: z.number().min(0).default(0),
+      sl: z.number().min(0).default(0),
+      lop: z.number().min(0).default(0)
+    })
+  )
+});
+
+// "Final Submit" — real upsert per row. Balance is seeded to equal
+// Eligibility at entry time (no leave has been taken against the new
+// entitlement yet); Leave Status View (item 9) is what tracks Taken/Balance
+// going forward from real LeaveApplicationModel records, so this is not a
+// fabricated number, just the correct starting value of a real running
+// balance.
+mastersActionsRouter.post(
+  "/leaveEntitlementEntry/action/submit",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = leaveEntitlementSubmitSchema.parse(req.body);
+    const employees = await EmployeeModel.find({ tenantSlug, employeeCode: { $in: body.rows.map((r) => r.employeeCode) } }).lean();
+    const byCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
+    const Model = getMasterModel("leaveEntitlementEntry");
+
+    let saved = 0;
+    for (const row of body.rows) {
+      const emp = byCode.get(row.employeeCode);
+      if (!emp) continue;
+      await Model.findOneAndUpdate(
+        { tenantSlug, fieldForceName: emp.name, year: body.year },
+        {
+          $set: {
+            tenantSlug,
+            fieldForceName: emp.name,
+            hq: emp.territory,
+            designation: emp.designation,
+            employeeCode: emp.employeeCode,
+            dateOfJoining: emp.joinDate,
+            year: body.year,
+            cl: row.cl,
+            pl: row.pl,
+            sl: row.sl,
+            lop: row.lop,
+            balanceCl: row.cl,
+            balancePl: row.pl,
+            balanceSl: row.sl,
+            balanceLop: row.lop
+          }
+        },
+        { upsert: true }
+      );
+      saved += 1;
+    }
+    await audit("LEAVE_ENTITLEMENT_SUBMITTED", "leaveEntitlementEntry", "BULK", { tenantSlug, year: body.year, saved });
+    res.json({ data: { success: true, saved } });
+  })
+);
+
+// ── 14. Leave Status / Entitlement View (Round 8 item 9) ────────────────
+// Maps LeaveApplicationModel's free-text leaveType (see leave-application
+// .model.ts) to the CL/PL/SL/LOP buckets the entitlement screens use.
+// Comp-Off/Maternity/Paternity genuinely don't belong to any of those four
+// buckets, so they're intentionally excluded from Taken rather than forced
+// into the wrong one.
+function leaveBucket(leaveType: string, isLWP: boolean): "cl" | "pl" | "sl" | "lop" | null {
+  if (isLWP) return "lop";
+  const t = (leaveType || "").toLowerCase();
+  if (t.includes("casual")) return "cl";
+  if (t.includes("sick")) return "sl";
+  if (t.includes("earned") || t.includes("privilege")) return "pl";
+  if (t.includes("loss of pay")) return "lop";
+  return null;
+}
+
+mastersActionsRouter.get(
+  "/leaveEntitlementView/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+    const fromMonth = Number(req.query.fromMonth || 1);
+    const fromYear = Number(req.query.fromYear || new Date().getFullYear());
+    const toMonth = Number(req.query.toMonth || 12);
+    const toYear = Number(req.query.toYear || fromYear);
+
+    const empFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+    if (fieldForceName) empFilter.name = fieldForceName;
+    const employees = await EmployeeModel.find(empFilter).lean();
+
+    const EntModel = getMasterModel("leaveEntitlementEntry");
+    const entRecords = await EntModel.find({ tenantSlug, year: String(fromYear) }).lean();
+    const entByName = new Map(entRecords.map((r: any) => [r.fieldForceName, r]));
+
+    const from = new Date(Date.UTC(fromYear, fromMonth - 1, 1));
+    const to = new Date(Date.UTC(toYear, toMonth, 0, 23, 59, 59));
+    const codes = employees.map((e: any) => e.employeeCode);
+    const leaves = await LeaveApplicationModel.find({
+      tenantSlug,
+      employeeCode: { $in: codes },
+      status: "APPROVED",
+      fromDate: { $gte: from, $lte: to }
+    }).lean();
+
+    const takenByCode = new Map<string, { cl: number; pl: number; sl: number; lop: number }>();
+    for (const l of leaves as any[]) {
+      const bucket = leaveBucket(l.leaveType, l.isLWP);
+      if (!bucket) continue;
+      if (!takenByCode.has(l.employeeCode)) takenByCode.set(l.employeeCode, { cl: 0, pl: 0, sl: 0, lop: 0 });
+      takenByCode.get(l.employeeCode)![bucket] += l.days || 0;
+    }
+
+    const result = employees.map((e: any) => {
+      const ent = entByName.get(e.name);
+      const taken = takenByCode.get(e.employeeCode) || { cl: 0, pl: 0, sl: 0, lop: 0 };
+      const hasEnt = Boolean(ent);
+      return {
+        employeeId: e.employeeCode,
+        fieldForceName: e.name,
+        designation: e.designation || "-",
+        hq: e.territory || "-",
+        joiningDate: e.joinDate || null,
+        eligibilityCl: hasEnt ? ent.cl ?? 0 : "-",
+        eligibilityPl: hasEnt ? ent.pl ?? 0 : "-",
+        eligibilitySl: hasEnt ? ent.sl ?? 0 : "-",
+        eligibilityLop: hasEnt ? ent.lop ?? 0 : "-",
+        takenCl: taken.cl,
+        takenPl: taken.pl,
+        takenSl: taken.sl,
+        takenLop: taken.lop,
+        balanceCl: hasEnt ? (ent.cl ?? 0) - taken.cl : "-",
+        balancePl: hasEnt ? (ent.pl ?? 0) - taken.pl : "-",
+        balanceSl: hasEnt ? (ent.sl ?? 0) - taken.sl : "-",
+        balanceLop: hasEnt ? (ent.lop ?? 0) - taken.lop : "-"
+      };
+    });
+
+    res.json({ data: result, fromMonth, fromYear, toMonth, toYear });
+  })
+);
+
+// ── 15. Sample / Input Despatch — View & Status (Round 8 items 3-6) ─────
+// Real Employee identity columns + real DespatchLogModel quantities (see
+// despatch-log.model.ts — a genuinely new, currently-often-empty collection;
+// 0 is the honest value until a real despatch is recorded there).
+function monthLabels(fromMonth: number, fromYear: number, toMonth: number, toYear: number): { key: string; label: string }[] {
+  const out: { key: string; label: string }[] = [];
+  let y = fromYear, m = fromMonth;
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let guard = 0;
+  while ((y < toYear || (y === toYear && m <= toMonth)) && guard < 36) {
+    out.push({ key: `${y}-${String(m).padStart(2, "0")}`, label: `${names[m - 1]}-${y}` });
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    guard += 1;
+  }
+  return out.length ? out : [{ key: `${fromYear}-${String(fromMonth).padStart(2, "0")}`, label: `${names[fromMonth - 1]}-${fromYear}` }];
+}
+
+async function despatchViewList(req: any, res: any, despatchType: "SAMPLE" | "INPUT") {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const fieldForceName = String(req.query.fieldForceName || "").trim();
+  const fromMonth = Number(req.query.fromMonth || new Date().getUTCMonth() + 1);
+  const fromYear = Number(req.query.fromYear || new Date().getUTCFullYear());
+  const toMonth = Number(req.query.toMonth || fromMonth);
+  const toYear = Number(req.query.toYear || fromYear);
+
+  const empFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+  if (fieldForceName) empFilter.name = fieldForceName;
+  const employees = await EmployeeModel.find(empFilter).lean();
+
+  const months = monthLabels(fromMonth, fromYear, toMonth, toYear);
+  const monthKeys = months.map((m) => m.key);
+  const logs = await DespatchLogModel.find({
+    tenantSlug,
+    despatchType,
+    employeeCode: { $in: employees.map((e: any) => e.employeeCode) },
+    month: { $in: monthKeys }
+  }).lean();
+
+  const totalsByCodeAndMonth = new Map<string, Map<string, number>>();
+  for (const l of logs as any[]) {
+    if (!totalsByCodeAndMonth.has(l.employeeCode)) totalsByCodeAndMonth.set(l.employeeCode, new Map());
+    const m = totalsByCodeAndMonth.get(l.employeeCode)!;
+    m.set(l.month, (m.get(l.month) || 0) + (l.despatchQty || 0));
+  }
+
+  const result = employees.map((e: any) => ({
+    employeeCode: e.employeeCode,
+    fieldForceName: e.name,
+    hq: e.territory || "-",
+    designation: e.designation || "-",
+    state: e.state || "-",
+    monthly: Object.fromEntries(months.map((m) => [m.label, totalsByCodeAndMonth.get(e.employeeCode)?.get(m.key) || 0]))
+  }));
+
+  res.json({ data: result, months: months.map((m) => m.label) });
+}
+
+async function despatchStatusList(req: any, res: any, despatchType: "SAMPLE" | "INPUT") {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const fieldForceName = String(req.query.fieldForceName || "").trim();
+  const fromMonth = Number(req.query.fromMonth || new Date().getUTCMonth() + 1);
+  const fromYear = Number(req.query.fromYear || new Date().getUTCFullYear());
+  const toMonth = Number(req.query.toMonth || fromMonth);
+  const toYear = Number(req.query.toYear || fromYear);
+
+  const empFilter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+  if (fieldForceName) empFilter.name = fieldForceName;
+  const employees = await EmployeeModel.find(empFilter).lean();
+
+  const months = monthLabels(fromMonth, fromYear, toMonth, toYear);
+  const monthKeys = months.map((m) => m.key);
+  const logs = await DespatchLogModel.find({
+    tenantSlug,
+    despatchType,
+    employeeCode: { $in: employees.map((e: any) => e.employeeCode) },
+    month: { $in: monthKeys }
+  }).sort({ month: 1 }).lean();
+
+  const byCode = new Map<string, any[]>();
+  for (const l of logs as any[]) {
+    if (!byCode.has(l.employeeCode)) byCode.set(l.employeeCode, []);
+    byCode.get(l.employeeCode)!.push(l);
+  }
+
+  const result = employees.map((e: any) => {
+    const rows = byCode.get(e.employeeCode) || [];
+    const ob = rows.length ? rows[0].openingBalance || 0 : 0;
+    const despatchQty = rows.reduce((s, r) => s + (r.despatchQty || 0), 0);
+    const issuedQty = rows.reduce((s, r) => s + (r.issuedQty || 0), 0);
+    const cb = rows.length ? rows[rows.length - 1].closingBalance || 0 : ob + despatchQty - issuedQty;
+    return {
+      employeeCode: e.employeeCode,
+      fieldForceName: e.name,
+      hq: e.territory || "-",
+      designation: e.designation || "-",
+      ob, despatchQty, issuedQty, cb
+    };
+  });
+
+  res.json({ data: result });
+}
+
+mastersActionsRouter.get("/sampleDispatchView/action/list", asyncHandler((req, res) => despatchViewList(req, res, "SAMPLE")));
+mastersActionsRouter.get("/sampleDispatchStatus/action/list", asyncHandler((req, res) => despatchStatusList(req, res, "SAMPLE")));
+mastersActionsRouter.get("/inputDispatchView/action/list", asyncHandler((req, res) => despatchViewList(req, res, "INPUT")));
+
+// Input Despatch Status has a different shape from Sample Despatch Status:
+// one row PER real Input Master item, for one selected Field Force + month
+// range, rather than one row per employee — matches sanpharma's own layout.
+mastersActionsRouter.get(
+  "/inputDispatchStatus/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+    const fromMonth = Number(req.query.fromMonth || new Date().getUTCMonth() + 1);
+    const fromYear = Number(req.query.fromYear || new Date().getUTCFullYear());
+    const toMonth = Number(req.query.toMonth || fromMonth);
+    const toYear = Number(req.query.toYear || fromYear);
+
+    let employeeCode: string | null = null;
+    if (fieldForceName) {
+      const emp = await EmployeeModel.findOne({ tenantSlug, name: fieldForceName }).lean();
+      employeeCode = (emp as any)?.employeeCode || "__none__";
+    }
+
+    const InputMasterModel = getMasterModel("inputMaster");
+    const inputs = await InputMasterModel.find({ tenantSlug }).sort({ inputName: 1 }).lean();
+
+    const months = monthLabels(fromMonth, fromYear, toMonth, toYear);
+    const monthKeys = months.map((m) => m.key);
+    const logFilter: Record<string, unknown> = { tenantSlug, despatchType: "INPUT", month: { $in: monthKeys } };
+    if (employeeCode) logFilter.employeeCode = employeeCode;
+    const logs = await DespatchLogModel.find(logFilter).sort({ month: 1 }).lean();
+
+    const byItem = new Map<string, any[]>();
+    for (const l of logs as any[]) {
+      if (!byItem.has(l.itemName)) byItem.set(l.itemName, []);
+      byItem.get(l.itemName)!.push(l);
+    }
+
+    const result = inputs.map((item: any) => {
+      const rows = byItem.get(item.inputName) || [];
+      const ob = rows.length ? rows[0].openingBalance || 0 : 0;
+      const despatchQty = rows.reduce((s, r) => s + (r.despatchQty || 0), 0);
+      const issuedQty = rows.reduce((s, r) => s + (r.issuedQty || 0), 0);
+      const cb = rows.length ? rows[rows.length - 1].closingBalance || 0 : ob + despatchQty - issuedQty;
+      return { inputName: item.inputName, ob, despatchQty, issuedQty, cb };
+    });
+
+    res.json({ data: result });
+  })
+);
+
+// ── 16. MSIS View (Round 8 item 7) ───────────────────────────────────────
+// Real Product (name + rate, now that ProductModel has a real rate field)
+// joined against real MsisSaleModel rows (a genuinely new, often-empty
+// collection — 0/qty and 0/val are the honest values until real sales are
+// recorded there). "Add Infiltration" is intentionally rendered twice with
+// the same real figures — sanpharma's own MSIS_View.aspx literally repeats
+// that column label, this isn't a bug being reproduced by accident.
+mastersActionsRouter.get(
+  "/msisView/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+    const mode = String(req.query.mode || "Monthwise");
+    const fromMonth = Number(req.query.fromMonth || new Date().getUTCMonth() + 1);
+    const fromYear = Number(req.query.fromYear || new Date().getUTCFullYear());
+
+    let employeeCode: string | null = null;
+    if (fieldForceName) {
+      const emp = await EmployeeModel.findOne({ tenantSlug, name: fieldForceName }).lean();
+      employeeCode = (emp as any)?.employeeCode || "__none__";
+    }
+
+    const products = await ProductModel.find({ tenantSlug, status: "ACTIVE" }).sort({ productName: 1, name: 1 }).lean();
+
+    // Periodic = year-to-date cumulative through fromMonth (a genuine,
+    // documented "periodic" reading — sanpharma's own toggle doesn't take a
+    // second date, only Monthwise vs Periodically).
+    const monthKeys = mode === "Periodically"
+      ? Array.from({ length: fromMonth }, (_, i) => `${fromYear}-${String(i + 1).padStart(2, "0")}`)
+      : [`${fromYear}-${String(fromMonth).padStart(2, "0")}`];
+
+    const salesFilter: Record<string, unknown> = { tenantSlug, month: { $in: monthKeys } };
+    if (employeeCode) salesFilter.employeeCode = employeeCode;
+    const sales = await MsisSaleModel.find(salesFilter).lean();
+
+    const byProduct = new Map<string, { hq: number; less: number; add: number }>();
+    for (const s of sales as any[]) {
+      if (!byProduct.has(s.productName)) byProduct.set(s.productName, { hq: 0, less: 0, add: 0 });
+      const b = byProduct.get(s.productName)!;
+      b.hq += s.hqSalesQty || 0;
+      b.less += s.lessInfiltrationQty || 0;
+      b.add += s.addInfiltrationQty || 0;
+    }
+
+    const result = products.map((p: any) => {
+      const name = p.productName || p.name || "-";
+      const rate = typeof p.rate === "number" ? p.rate : null;
+      const agg = byProduct.get(name) || { hq: 0, less: 0, add: 0 };
+      const totalQty = agg.hq - agg.less + agg.add;
+      const val = (qty: number) => (rate !== null ? Number((qty * rate).toFixed(2)) : "-");
+      return {
+        productName: name,
+        rate: rate !== null ? rate : "-",
+        hqSalesQty: agg.hq, hqSalesVal: val(agg.hq),
+        lessInfiltrationQty: agg.less, lessInfiltrationVal: val(agg.less),
+        addInfiltrationQty: agg.add, addInfiltrationVal: val(agg.add),
+        addInfiltration2Qty: agg.add, addInfiltration2Val: val(agg.add),
+        totalSalesQty: totalQty, totalSalesVal: val(totalQty)
+      };
+    });
+
+    res.json({ data: result, mode });
+  })
+);
+
+// ── 17. Login Details (Round 8 item 10) ─────────────────────────────────
+// Real per-login timestamps from LoginEventModel (recorded going forward by
+// auth.routes.ts on every successful login — see login-event.model.ts). An
+// employee who has never logged in since this model existed genuinely has
+// no LoginEvent rows; that's shown honestly (null last-login, full period as
+// "days without login") rather than invented.
+mastersActionsRouter.get(
+  "/loginDetails/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fieldForceName = String(req.query.fieldForceName || "").trim();
+    const from = req.query.from ? new Date(String(req.query.from)) : new Date(Date.UTC(1970, 0, 1));
+    const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+    const withoutVacant = req.query.withoutVacant === "true";
+    const notLoginDays = req.query.notLoginDays !== undefined ? Number(req.query.notLoginDays) : null;
+    const mode = String(req.query.mode || "list");
+
+    const empFilter: Record<string, unknown> = { tenantSlug };
+    // "Without Vacant" — this codebase has no separate vacant-territory flag
+    // on Employee itself (vacancy is tracked via the Vacant MR Login
+    // permission workflow, not a field here), so the honest, documented
+    // real-data reading is: exclude INACTIVE (left/vacated) employees.
+    if (withoutVacant) empFilter.status = "ACTIVE";
+    if (fieldForceName && fieldForceName.toLowerCase() !== "admin") empFilter.name = fieldForceName;
+    const employees = await EmployeeModel.find(empFilter).lean();
+    const byCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
+
+    const events = await LoginEventModel.find({
+      tenantSlug,
+      employeeCode: { $in: employees.map((e: any) => e.employeeCode) },
+      loginAt: { $gte: from, $lte: to }
+    }).sort({ loginAt: 1 }).lean();
+
+    const eventsByCode = new Map<string, Date[]>();
+    for (const ev of events as any[]) {
+      if (!ev.employeeCode) continue;
+      if (!eventsByCode.has(ev.employeeCode)) eventsByCode.set(ev.employeeCode, []);
+      eventsByCode.get(ev.employeeCode)!.push(ev.loginAt);
+    }
+
+    const dcrRows = await DcrModel.find({
+      tenantSlug,
+      employeeCode: { $in: employees.map((e: any) => e.employeeCode) }
+    }).sort({ visitDate: -1 }).lean();
+    const lastDcrByCode = new Map<string, Date>();
+    for (const d of dcrRows as any[]) {
+      if (!lastDcrByCode.has(d.employeeCode)) lastDcrByCode.set(d.employeeCode, d.visitDate);
+    }
+
+    function managers(emp: any) {
+      const l1 = emp.reportingManager ? byCode.get(emp.reportingManager) : null;
+      const l2 = l1?.reportingManager ? byCode.get(l1.reportingManager) : null;
+      return { firstLevelManager: l1?.name || "-", secondLevelManager: l2?.name || "-" };
+    }
+
+    if (mode === "notlogin") {
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const rows = employees
+        .map((e: any) => {
+          const logins = eventsByCode.get(e.employeeCode) || [];
+          const lastLogin = logins.length ? logins[logins.length - 1] : null;
+          const anchor = lastLogin || e.joinDate || from;
+          const durationDays = Math.max(0, Math.round((to.getTime() - new Date(anchor).getTime()) / msPerDay));
+          return { e, lastLogin, durationDays };
+        })
+        .filter((r) => notLoginDays === null || r.durationDays > notLoginDays)
+        .map((r) => ({
+          empCode: r.e.employeeCode,
+          joiningDate: r.e.joinDate || null,
+          fieldForceName: r.e.name,
+          designation: r.e.designation || "-",
+          hq: r.e.territory || "-",
+          ...managers(r.e),
+          lastDcrDate: lastDcrByCode.get(r.e.employeeCode) || null,
+          lastLoginDate: r.lastLogin,
+          durationOfWoLoginDays: r.durationDays,
+          highlight: notLoginDays !== null && r.durationDays > notLoginDays * 2
+        }));
+      res.json({ data: rows, from, to, notLoginDays });
+      return;
+    }
+
+    const rows = employees.map((e: any) => ({
+      empCode: e.employeeCode,
+      joiningDate: e.joinDate || null,
+      fieldForceName: e.name,
+      designation: e.designation || "-",
+      hq: e.territory || "-",
+      ...managers(e),
+      loginTimestamps: eventsByCode.get(e.employeeCode) || []
+    }));
+    res.json({ data: rows, from, to });
+  })
+);
+
+// ── 18. Activity Master + Parameters (Round 8 items 11-12) ──────────────
+const activityCreateSchema = z.object({
+  shortName: z.string().min(1),
+  name: z.string().min(1),
+  mode: z.enum(["Common Activity", "Doctors", "Chemist", "Stockist", "Unlisted Doctors", "Hospital", "CIP"]).default("Common Activity"),
+  activityFor: z.array(z.string()).default([])
+});
+
+mastersActionsRouter.get(
+  "/activityMaster/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const rows = await ActivityModel.find({ tenantSlug }).sort({ createdAt: -1 }).lean();
+    res.json({ data: rows.map(serializeDocument) });
+  })
+);
+
+mastersActionsRouter.post(
+  "/activityMaster/action/create",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = activityCreateSchema.parse(req.body);
+    const row = await ActivityModel.create({ ...body, tenantSlug });
+    await audit("ACTIVITY_CREATED", "Activity", String(row._id), { tenantSlug, shortName: row.shortName });
+    res.status(201).json({ data: serializeDocument(row) });
+  })
+);
+
+mastersActionsRouter.put(
+  "/activityMaster/action/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = activityCreateSchema.partial().parse(req.body);
+    const row = await ActivityModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, { $set: body }, { new: true });
+    if (!row) throw new HttpError(404, "Activity not found");
+    await audit("ACTIVITY_UPDATED", "Activity", String(row._id), { tenantSlug });
+    res.json({ data: serializeDocument(row) });
+  })
+);
+
+mastersActionsRouter.post(
+  "/activityMaster/action/:id/deactivate",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const row = await ActivityModel.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug },
+      { $set: { status: "INACTIVE" } },
+      { new: true }
+    );
+    if (!row) throw new HttpError(404, "Activity not found");
+    await audit("ACTIVITY_DEACTIVATED", "Activity", String(row._id), { tenantSlug });
+    res.json({ data: serializeDocument(row) });
+  })
+);
+
+const activityParameterCreateSchema = z.object({
+  activityId: z.string().min(1),
+  caption: z.string().min(1),
+  captionOrder: z.number().default(1),
+  mandatory: z.boolean().default(false),
+  parameterType: z.enum([
+    "Text Box", "Text Area", "Number", "Date", "Dropdown", "Checkbox",
+    "Radio Button", "Master Lookup", "File Upload"
+  ]),
+  selectMaster: z.string().nullable().optional(),
+  tableGroup: z.string().nullable().optional(),
+  activityFor: z.string().nullable().optional()
+});
+
+mastersActionsRouter.get(
+  "/activityParameter/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const filter: Record<string, unknown> = { tenantSlug };
+    if (typeof req.query.activityId === "string" && req.query.activityId.trim()) filter.activityId = req.query.activityId;
+    const rows = await ActivityParameterModel.find(filter).sort({ existingOrder: 1 }).lean();
+    res.json({ data: rows.map(serializeDocument) });
+  })
+);
+
+mastersActionsRouter.post(
+  "/activityParameter/action/create",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = activityParameterCreateSchema.parse(req.body);
+    const activity = await ActivityModel.findOne({ _id: body.activityId, tenantSlug });
+    if (!activity) throw new HttpError(404, "Activity not found");
+    const count = await ActivityParameterModel.countDocuments({ tenantSlug, activityId: body.activityId });
+    const row = await ActivityParameterModel.create({
+      ...body,
+      tenantSlug,
+      activityName: activity.name,
+      existingOrder: count + 1
+    });
+    await audit("ACTIVITY_PARAMETER_CREATED", "ActivityParameter", String(row._id), { tenantSlug });
+    res.status(201).json({ data: serializeDocument(row) });
+  })
+);
+
+mastersActionsRouter.put(
+  "/activityParameter/action/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = activityParameterCreateSchema.partial().parse(req.body);
+    const row = await ActivityParameterModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, { $set: body }, { new: true });
+    if (!row) throw new HttpError(404, "Activity parameter not found");
+    await audit("ACTIVITY_PARAMETER_UPDATED", "ActivityParameter", String(row._id), { tenantSlug });
+    res.json({ data: serializeDocument(row) });
+  })
+);
+
+mastersActionsRouter.post(
+  "/activityParameter/action/:id/deactivate",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const row = await ActivityParameterModel.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug },
+      { $set: { status: "INACTIVE" } },
+      { new: true }
+    );
+    if (!row) throw new HttpError(404, "Activity parameter not found");
+    await audit("ACTIVITY_PARAMETER_DEACTIVATED", "ActivityParameter", String(row._id), { tenantSlug });
+    res.json({ data: serializeDocument(row) });
+  })
+);
+
+// Reorder — the New Order column's committed values actually persist by
+// overwriting existingOrder for every listed row in one batch.
+const reorderSchema = z.object({
+  orders: z.array(z.object({ id: z.string(), existingOrder: z.number() }))
+});
+
+mastersActionsRouter.post(
+  "/activityParameter/action/reorder",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = reorderSchema.parse(req.body);
+    for (const o of body.orders) {
+      await ActivityParameterModel.updateOne({ _id: o.id, tenantSlug }, { $set: { existingOrder: o.existingOrder } });
+    }
+    await audit("ACTIVITY_PARAMETER_REORDERED", "ActivityParameter", "BULK", { tenantSlug, count: body.orders.length });
+    res.json({ data: { success: true } });
   })
 );

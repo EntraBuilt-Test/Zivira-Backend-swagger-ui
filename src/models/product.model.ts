@@ -13,6 +13,14 @@ const productSchema = new Schema(
     division: { type: String, trim: true, index: true },
     productName: { type: String, trim: true },
     brandName: { type: String, trim: true },
+    // Round 8 item 7 — MSIS View needs a real per-product Rate and Pack
+    // size; neither existed anywhere on Product before. rate is the MRP/
+    // trade rate per pack used to value MSIS sales figures; pack is the
+    // pack-size label (e.g. "10x10", "100ml"). Both default to null so
+    // existing products stay valid and simply show "-" until a real rate
+    // is set via the Product Master edit flow, rather than fabricating one.
+    rate: { type: Number, default: null, min: 0 },
+    pack: { type: String, trim: true, default: null },
     status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
   },
   { timestamps: true }

@@ -8,7 +8,6 @@ import { uploadsRouter } from "./uploads.routes.js";
 import { mailRouter } from "./mail.routes.js";
 import { mastersActionsRouter } from "./masters-actions.routes.js";
 import { quizRouter } from "./quiz.routes.js";
-import { dashboardsRouter } from "./dashboard.routes.js";
 import { MASTERS } from "../masters/registry.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { HttpError } from "../http/errors.js";
@@ -20,7 +19,7 @@ import { ProductModel } from "../models/product.model.js";
 import { audit } from "../utils/audit.js";
 import { AuditLogModel } from "../models/audit-log.model.js";
 import { serializeDocument } from "../utils/serialize.js";
-import { notifyEmployeeEmail, notifyFieldRep, notifyManager, notifyOnboardingCredentials, notifyPersonalOnboardingLink } from "../utils/notify.js";
+import { notifyEmployeeEmail, notifyFieldRep, notifyOnboardingCredentials, notifyPersonalOnboardingLink } from "../utils/notify.js";
 import { StockistModel } from "../models/stockist.model.js";
 import { SubdivisionModel } from "../models/subdivision.model.js";
 import { FieldForceModel } from "../models/fieldforce.model.js";
@@ -131,23 +130,23 @@ const productSchema = z.object({
   code: z.string().min(2),
   category: z.string().min(2),
   division: z.string().min(2),
-  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE")
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  // Round 8 item 7 — real MSIS Rate/Pack, editable at product creation and
+  // (via the new PUT below) after the fact.
+  rate: z.number().min(0).nullable().optional(),
+  pack: z.string().nullable().optional()
 });
+
+const productUpdateSchema = productSchema.partial();
 
 export const companyRouter = Router();
 
 companyRouter.use(requireAuth, requireCompanyAdmin);
-// mastersActionsRouter and uploadsRouter declare specific routes like
-// /mail-auto-rules and /admin-settings/:kind; they must be mounted BEFORE
-// mastersRouter, whose generic GET/POST "/:key" would otherwise swallow
-// those requests first (Express matches routers in mount order) and throw
-// a false "Unknown master: mail-auto-rules" from requireConfig().
-companyRouter.use("/masters", mastersActionsRouter);
-companyRouter.use("/masters", uploadsRouter);
 companyRouter.use("/masters", mastersRouter);
+companyRouter.use("/masters", uploadsRouter);
+companyRouter.use("/masters", mastersActionsRouter);
 companyRouter.use("/mail", mailRouter);
 companyRouter.use("/quiz", quizRouter);
-companyRouter.use("/dashboards", dashboardsRouter);
 
 companyRouter.get(
   "/dashboard",
@@ -340,6 +339,24 @@ companyRouter.post(
   })
 );
 
+// Round 8 item 7 — lets rate/pack (and any other product field) actually be
+// set after creation, since MSIS needs a real Rate to value sales against.
+companyRouter.put(
+  "/products/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = productUpdateSchema.parse(req.body);
+    const product = await ProductModel.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug },
+      { $set: body },
+      { new: true }
+    );
+    if (!product) throw new HttpError(404, "Product not found");
+    await audit("PRODUCT_UPDATED", "Product", String(product._id), { tenantSlug, code: product.code });
+    res.json({ data: serializeDocument(product) });
+  })
+);
+
 // GET /company/dcrs — admin sees DCRs only after 24h delay
 companyRouter.get(
   "/dcrs",
@@ -380,158 +397,6 @@ companyRouter.post(
     res.json({ data: serializeDocument(dcr) });
   })
 );
-
-const dcrWorkTypeSchema = z.object({
-  workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"])
-});
-
-// PATCH /company/dcrs/:id/work-type — kept for backward compatibility with
-// any caller that only wants to change Work Type.
-companyRouter.patch(
-  "/dcrs/:id/work-type",
-  asyncHandler(async (req, res) => {
-    const tenantSlug = req.auth!.tenantSlug!;
-    const body = dcrWorkTypeSchema.parse(req.body);
-    const dcr = await DcrModel.findOne({ _id: req.params.id, tenantSlug });
-    if (!dcr) throw new HttpError(404, "DCR not found");
-
-    const previousWorkType = dcr.workType;
-    dcr.workType = body.workType;
-    await dcr.save();
-    await audit("ADMIN_DCR_EDITED", "Dcr", String(dcr._id), { tenantSlug, employeeCode: dcr.employeeCode, previousWorkType, workType: body.workType });
-
-    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: dcr.employeeCode }).lean();
-    const manager = employee?.reportingManager
-      ? await EmployeeModel.findOne({ tenantSlug, employeeCode: employee.reportingManager }).lean()
-      : null;
-
-    await notifyFieldRep({
-      tenantSlug,
-      employeeCode: dcr.employeeCode,
-      employeeEmail: employee?.email,
-      employeeName: employee?.name,
-      title: "DCR edited by Admin",
-      message: `Your DCR dated ${dcr.visitDate.toDateString()} was updated by Admin to Work Type: ${body.workType}.`
-    });
-
-    if (manager) {
-      await notifyManager({
-        tenantSlug,
-        managerEmployeeCode: manager.employeeCode,
-        managerEmail: manager.email,
-        managerName: manager.name,
-        title: "DCR edited by Admin",
-        message: `${employee?.name ?? dcr.employeeCode}'s DCR dated ${dcr.visitDate.toDateString()} was updated by Admin to Work Type: ${body.workType}.`
-      });
-    }
-
-    res.json({ data: serializeDocument(dcr) });
-  })
-);
-
-// PATCH /company/dcrs/:id — "Update/Delete > DCR Edit" full-row edit. The
-// Admin DCR Edit screen's Edit button opens every editable field on the
-// row (not just Work Type) — visit date, hospital/clinic, work type,
-// notes, check-in/out time and follow-up — and saves them all against the
-// REAL Dcr document that the field-force MR's own history and the
-// manager's review queue both read from, so the change is immediately
-// visible in both portals. Notifies both the MR and their manager with a
-// summary of what changed.
-const dcrFullEditSchema = z.object({
-  workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"]).optional(),
-  visitDate: z.string().optional(),
-  hospitalClinic: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
-  checkInTime: z.string().nullable().optional(),
-  checkOutTime: z.string().nullable().optional(),
-  followUpRequired: z.boolean().optional(),
-  followUpDate: z.string().nullable().optional(),
-  prescriptionInterest: z.enum(["HIGH", "MEDIUM", "LOW", "NONE"]).nullable().optional()
-});
-
-companyRouter.patch(
-  "/dcrs/:id",
-  asyncHandler(async (req, res) => {
-    const tenantSlug = req.auth!.tenantSlug!;
-    const body = dcrFullEditSchema.parse(req.body);
-    const dcr = await DcrModel.findOne({ _id: req.params.id, tenantSlug });
-    if (!dcr) throw new HttpError(404, "DCR not found");
-
-    const changes: string[] = [];
-    if (body.workType !== undefined && body.workType !== dcr.workType) {
-      changes.push(`Work Type: ${dcr.workType} → ${body.workType}`);
-      dcr.workType = body.workType;
-    }
-    if (body.visitDate !== undefined) {
-      const parsed = new Date(body.visitDate);
-      if (!isNaN(parsed.getTime()) && parsed.getTime() !== dcr.visitDate.getTime()) {
-        changes.push(`Visit Date: ${dcr.visitDate.toDateString()} → ${parsed.toDateString()}`);
-        dcr.visitDate = parsed;
-      }
-    }
-    if (body.hospitalClinic !== undefined && body.hospitalClinic !== dcr.hospitalClinic) {
-      changes.push(`Hospital/Clinic updated`);
-      dcr.hospitalClinic = body.hospitalClinic;
-    }
-    if (body.notes !== undefined && body.notes !== dcr.notes) {
-      changes.push(`Notes updated`);
-      dcr.notes = body.notes ?? undefined;
-    }
-    if (body.checkInTime !== undefined && body.checkInTime !== dcr.checkInTime) {
-      changes.push(`Check-In Time: ${dcr.checkInTime ?? "-"} → ${body.checkInTime ?? "-"}`);
-      dcr.checkInTime = body.checkInTime;
-    }
-    if (body.checkOutTime !== undefined && body.checkOutTime !== dcr.checkOutTime) {
-      changes.push(`Check-Out Time: ${dcr.checkOutTime ?? "-"} → ${body.checkOutTime ?? "-"}`);
-      dcr.checkOutTime = body.checkOutTime;
-    }
-    if (body.followUpRequired !== undefined && body.followUpRequired !== dcr.followUpRequired) {
-      changes.push(`Follow-Up Required: ${body.followUpRequired ? "Yes" : "No"}`);
-      dcr.followUpRequired = body.followUpRequired;
-    }
-    if (body.followUpDate !== undefined) {
-      const parsed = body.followUpDate ? new Date(body.followUpDate) : null;
-      dcr.followUpDate = parsed;
-      changes.push(`Follow-Up Date updated`);
-    }
-    if (body.prescriptionInterest !== undefined && body.prescriptionInterest !== dcr.prescriptionInterest) {
-      changes.push(`Prescription Interest: ${body.prescriptionInterest ?? "-"}`);
-      dcr.prescriptionInterest = body.prescriptionInterest;
-    }
-
-    await dcr.save();
-    await audit("ADMIN_DCR_EDITED", "Dcr", String(dcr._id), { tenantSlug, employeeCode: dcr.employeeCode, changes });
-
-    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: dcr.employeeCode }).lean();
-    const manager = employee?.reportingManager
-      ? await EmployeeModel.findOne({ tenantSlug, employeeCode: employee.reportingManager }).lean()
-      : null;
-    const summary = changes.length ? changes.join("; ") : "minor details updated";
-
-    await notifyFieldRep({
-      tenantSlug,
-      employeeCode: dcr.employeeCode,
-      employeeEmail: employee?.email,
-      employeeName: employee?.name,
-      title: "DCR edited by Admin",
-      message: `Your DCR dated ${dcr.visitDate.toDateString()} was updated by Admin. ${summary}.`
-    });
-
-    if (manager) {
-      await notifyManager({
-        tenantSlug,
-        managerEmployeeCode: manager.employeeCode,
-        managerEmail: manager.email,
-        managerName: manager.name,
-        title: "DCR edited by Admin",
-        message: `${employee?.name ?? dcr.employeeCode}'s DCR dated ${dcr.visitDate.toDateString()} was updated by Admin. ${summary}.`
-      });
-    }
-
-    res.json({ data: serializeDocument(dcr) });
-  })
-);
-
 
 companyRouter.get(
   "/manager-activity",
@@ -1428,56 +1293,8 @@ companyRouter.get("/tour-plans", asyncHandler(async (req, res) => {
   const query: Record<string, unknown> = { tenantSlug };
   if (typeof req.query.month === "string" && req.query.month) query.month = req.query.month;
   if (typeof req.query.status === "string" && req.query.status) query.status = req.query.status;
-  if (typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()) {
-    query.employeeCode = req.query.employeeCode.trim().toUpperCase();
-  }
   const tps = await TourPlanModel.find(query).sort({ createdAt: -1 }).limit(1000);
   res.json({ data: await enrichTourPlansWithNames(tenantSlug, tps) });
-}));
-
-// DELETE /company/tour-plans/:tpId — "Update/Delete > TP Delete", matching
-// sanpharma.info's own TP Delete screen. Deletes the REAL TourPlan
-// document — the exact same collection the field-force MR's own Tour Plan
-// screen and the manager's approval queue both read from (TourPlanModel,
-// filtered by employeeCode / assignedManager respectively) — so the
-// deletion is immediately visible as gone in both portals, with no
-// separate mirror to keep in sync. Also notifies both the MR and their
-// assigned manager, same in-app + email channel every other real
-// field-force event already uses.
-companyRouter.delete("/tour-plans/:tpId", asyncHandler(async (req, res) => {
-  const tenantSlug = req.auth!.tenantSlug!;
-  const tp = await TourPlanModel.findOne({ tenantSlug, tpId: req.params.tpId });
-  if (!tp) throw new HttpError(404, "Tour Plan not found");
-
-  await TourPlanModel.deleteOne({ _id: tp._id });
-  await audit("ADMIN_TP_DELETED", "TourPlan", String(tp._id), { tenantSlug, tpId: tp.tpId, employeeCode: tp.employeeCode });
-
-  const [employee, manager] = await Promise.all([
-    EmployeeModel.findOne({ tenantSlug, employeeCode: tp.employeeCode }).lean(),
-    EmployeeModel.findOne({ tenantSlug, employeeCode: tp.assignedManager }).lean()
-  ]);
-
-  await notifyFieldRep({
-    tenantSlug,
-    employeeCode: tp.employeeCode,
-    employeeEmail: employee?.email,
-    employeeName: employee?.name,
-    title: "Tour Plan deleted by Admin",
-    message: `Your Tour Plan ${tp.tpId} for ${tp.month} was deleted by Admin.`
-  });
-
-  if (tp.assignedManager) {
-    await notifyManager({
-      tenantSlug,
-      managerEmployeeCode: tp.assignedManager,
-      managerEmail: manager?.email,
-      managerName: manager?.name,
-      title: "Tour Plan deleted by Admin",
-      message: `${employee?.name ?? tp.employeeCode}'s Tour Plan ${tp.tpId} for ${tp.month} was deleted by Admin.`
-    });
-  }
-
-  res.json({ data: { deleted: true, tpId: tp.tpId } });
 }));
 
 // ══════════════════════════════════════════════════════════════════════

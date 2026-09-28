@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2" | "leaveEntitlement" | "leaveStatusView" | "sampleDispatchView" | "sampleDispatchStatus" | "inputDispatchView" | "inputDispatchStatus" | "msisView" | "loginDetails" | "activityMaster";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -1828,7 +1828,7 @@ export const MASTERS: MasterConfig[] = [
     // period. Result columns not live-confirmed (automation blockage).
     key: "sampleDispatchView",
     title: "Sample Dispatch - View",
-    uiKind: "reportFilter",
+    uiKind: "sampleDispatchView",
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1849,7 +1849,7 @@ export const MASTERS: MasterConfig[] = [
     // despatch. Result columns not live-confirmed (automation blockage).
     key: "sampleDispatchStatus",
     title: "Sample Dispatch - Status",
-    uiKind: "reportFilter",
+    uiKind: "sampleDispatchStatus",
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1869,7 +1869,7 @@ export const MASTERS: MasterConfig[] = [
     // not live-confirmed (automation blockage).
     key: "inputDispatchView",
     title: "Input Dispatch - View",
-    uiKind: "reportFilter",
+    uiKind: "inputDispatchView",
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1890,7 +1890,7 @@ export const MASTERS: MasterConfig[] = [
     // live-confirmed (automation blockage).
     key: "inputDispatchStatus",
     title: "Input Dispatch - Status",
-    uiKind: "reportFilter",
+    uiKind: "inputDispatchStatus",
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1912,7 +1912,7 @@ export const MASTERS: MasterConfig[] = [
     // filter field.
     key: "msisView",
     title: "MSIS - View",
-    uiKind: "reportFilter",
+    uiKind: "msisView",
     keyFields: ["fieldForceName", "fromMonth", "fromYear", "mode"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1938,7 +1938,7 @@ export const MASTERS: MasterConfig[] = [
     // admin sets.
     key: "leaveEntitlementEntry",
     title: "Leave Entitlement - Entry",
-    uiKind: "reportFilter",
+    uiKind: "leaveEntitlement",
     keyFields: ["fieldForceName", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -1969,7 +1969,7 @@ export const MASTERS: MasterConfig[] = [
     // (CL/PL/SL/LOP), filtered by Field Force Name + From/To Month-Year.
     key: "leaveEntitlementView",
     title: "Leave Entitlement - View",
-    uiKind: "reportFilter",
+    uiKind: "leaveStatusView",
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
       { key: "employeeId", label: "Employee id", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "employeeCode" } },
@@ -2054,7 +2054,7 @@ export const MASTERS: MasterConfig[] = [
     // live-confirmed (automation blockage).
     key: "loginDetailsManager",
     title: "Login Details - Manager",
-    uiKind: "reportFilter",
+    uiKind: "loginDetails",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2071,7 +2071,7 @@ export const MASTERS: MasterConfig[] = [
     // shape, only by which Field Force subset is shown.
     key: "loginDetailsFieldrepo",
     title: "Login Details - Fieldrepo",
-    uiKind: "reportFilter",
+    uiKind: "loginDetails",
     keyFields: ["fieldForceName", "month", "year"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
@@ -2119,6 +2119,7 @@ export const MASTERS: MasterConfig[] = [
   {
     key: "activityMasterScreenCreation",
     title: "Activity - Master & Screen Creation",
+    uiKind: "activityMaster",
     keyFields: ["shortName"],
     fields: [
       { key: "shortName", label: "Activity Short Name" },

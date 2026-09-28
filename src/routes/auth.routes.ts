@@ -5,6 +5,7 @@ import { asyncHandler } from "../http/async-handler.js";
 import { requireAuth, signToken } from "../http/auth.js";
 import { HttpError } from "../http/errors.js";
 import { UserModel } from "../models/user.model.js";
+import { LoginEventModel } from "../models/login-event.model.js";
 
 const loginSchema = z.object({
   username: z.string().min(2).transform((value) => value.toLowerCase()),
@@ -35,6 +36,18 @@ authRouter.post("/login", asyncHandler(async (req, res) => {
     ...(user.tenantSlug ? { tenantSlug: user.tenantSlug } : {}),
     ...(user.employeeCode ? { employeeCode: user.employeeCode } : {})
   });
+
+  // Round 8 item 10 — real per-login timestamp trail for the Login
+  // Details / "Not Login Details" reports. Fire-and-forget: a logging
+  // failure must never block a real, valid login.
+  if (user.tenantSlug) {
+    LoginEventModel.create({
+      tenantSlug: user.tenantSlug,
+      username: user.username,
+      employeeCode: user.employeeCode || null,
+      role: user.role
+    }).catch(() => {});
+  }
 
   res.json({
     data: {
