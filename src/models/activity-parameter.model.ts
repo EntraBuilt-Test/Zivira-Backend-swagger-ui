@@ -16,11 +16,16 @@ const activityParameterSchema = new Schema(
     caption: { type: String, required: true, trim: true },
     captionOrder: { type: Number, default: 1 },
     mandatory: { type: Boolean, default: false },
+    // Round 10 item 1 — full 19-item sanpharma Parameter Type list, matching
+    // the frontend's PARAMETER_TYPES / the zod schema in masters-actions.routes.ts.
     parameterType: {
       type: String,
       enum: [
-        "Text Box", "Text Area", "Number", "Date", "Dropdown", "Checkbox",
-        "Radio Button", "Master Lookup", "File Upload"
+        "Label", "Text Box - Characters", "Text box - Numeric", "Text Area", "Date",
+        "Date Range", "Time", "Time Range", "Combo Box - Single", "Combo Box - Multiple",
+        "Upload", "Currency", "Customized Tables - Single", "Customized Tables - Multiple",
+        "Table Type - Row wise", "Date with Time", "Date with Time Range", "Geo Location",
+        "Currency Converter"
       ],
       required: true
     },

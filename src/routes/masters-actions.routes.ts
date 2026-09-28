@@ -1679,7 +1679,9 @@ mastersActionsRouter.get(
 const activityCreateSchema = z.object({
   shortName: z.string().min(1),
   name: z.string().min(1),
-  mode: z.enum(["Common Activity", "Doctors", "Chemist", "Stockist", "Unlisted Doctors", "Hospital", "CIP"]).default("Common Activity"),
+  // Round 10 item 1 fix — matches ActivityModel.mode (MR/MGR/MR & MGR),
+  // not the entity-type list (that's activityFor).
+  mode: z.enum(["MR", "MGR", "MR & MGR"]).default("MR"),
   activityFor: z.array(z.string()).default([])
 });
 
@@ -1735,9 +1737,16 @@ const activityParameterCreateSchema = z.object({
   caption: z.string().min(1),
   captionOrder: z.number().default(1),
   mandatory: z.boolean().default(false),
+  // Round 10 item 1 — full 19-item sanpharma Parameter Type list, matching
+  // the frontend's PARAMETER_TYPES exactly (byte-for-byte); the previous
+  // 9-item placeholder enum here would reject every real submission from the
+  // Activity - Add Parameter tab the same way the Mode mismatch did above.
   parameterType: z.enum([
-    "Text Box", "Text Area", "Number", "Date", "Dropdown", "Checkbox",
-    "Radio Button", "Master Lookup", "File Upload"
+    "Label", "Text Box - Characters", "Text box - Numeric", "Text Area", "Date",
+    "Date Range", "Time", "Time Range", "Combo Box - Single", "Combo Box - Multiple",
+    "Upload", "Currency", "Customized Tables - Single", "Customized Tables - Multiple",
+    "Table Type - Row wise", "Date with Time", "Date with Time Range", "Geo Location",
+    "Currency Converter"
   ]),
   selectMaster: z.string().nullable().optional(),
   tableGroup: z.string().nullable().optional(),
