@@ -24,6 +24,15 @@
 //
 // Safe to re-run any time: it only touches documents that still match the
 // bad value, so a second run is a no-op.
+//
+// Round 16: this now ALSO runs automatically on every backend boot (see
+// server.ts, right after connectMongo()) — it no longer depends on anyone
+// manually running scripts/fix-data-corrections.ts against production.
+// Every correction below shares that same "only touches what's still
+// wrong" idempotency, which is exactly what makes running the whole set
+// unconditionally on every boot safe. scripts/fix-data-corrections.ts still
+// exists and still works standalone (e.g. to correct a different tenant, or
+// to run it on demand without a redeploy).
 
 import { connectMongo } from "../db.js";
 import { getMasterModel } from "../models/master-record.model.js";
@@ -147,51 +156,67 @@ async function fixYearFields() {
 }
 
 
-const OLD_DEMO_NAME = "Demo Medical Representative";
-const NEW_DEMO_NAME = "Rahul Deshmuth";
+// Round 16 — MR-001 is defined TWICE across this codebase's two separate
+// seed scripts: src/seed/base.ts (the one that actually populated this live
+// tenant) named it "Demo Medical Representative", while src/seed/
+// exact-10.ts's own EMPLOYEES list already independently names the same
+// employeeCode "Rahul Deshmukh" (correct spelling — a real Medical
+// Representative in Pune, per earlier rounds' screenshots). Since an
+// employeeCode can only ever be one real person, these are certainly meant
+// to be the SAME employee, and "Rahul Deshmuth" (Round 12's literal-spelling
+// instruction) reads as a plain typo of the name this codebase already uses
+// for MR-001 elsewhere — renaming to the mis-spelled variant would create a
+// NEW inconsistency against exact-10.ts rather than fixing one. Correcting
+// to "Rahul Deshmukh" instead, and also migrating anyone already renamed to
+// the "Deshmuth" spelling by an earlier attempt, so every source converges
+// on the one real name. Flagged to the coordinator in this round's report.
+const OLD_DEMO_NAMES = ["Demo Medical Representative", "Rahul Deshmuth"];
+const NEW_DEMO_NAME = "Rahul Deshmukh";
 
 async function renameDemoRep() {
-  // Round 12 item 2 / Round 13 mandate 2 — the seeded demo employee was
-  // literally named "Demo Medical Representative" everywhere (dropdowns,
-  // DCR rows, tables). Round 12 added this function but it was never
-  // actually invoked against the live database (this script is a CLI the
-  // user has to run — it doing nothing until run is exactly why the name
-  // was still showing everywhere in Round 13's fresh screenshots). Beyond
-  // the Employee record itself, several OTHER collections embed the
-  // employee's name as a plain denormalized string at the time each record
-  // was created (TourPlanModel.employeeName, ExpenseClaimModel.employeeName,
+  // Round 12 item 2 / Round 13 mandate 2 / Round 16 — the seeded demo
+  // employee was literally named "Demo Medical Representative" everywhere
+  // (dropdowns, DCR rows, tables). This function existed since Round 12 but
+  // was never actually invoked against the live database — it was only
+  // reachable via a manual CLI script the user was never going to run.
+  // Round 16 wires runDataCorrections() into the server's own boot sequence
+  // (see server.ts) so this now applies itself the moment the backend
+  // restarts, with no separate step. Beyond the Employee record itself,
+  // several OTHER collections embed the employee's name as a plain
+  // denormalized string at the time each record was created
+  // (TourPlanModel.employeeName, ExpenseClaimModel.employeeName,
   // DealerModel/SfcModel.employeeName, TaskModel.assignedToName/
   // assignedByName) rather than joining live against Employee — those
   // already-existing historical records keep the OLD name forever unless
   // corrected here too, even after the Employee record itself is renamed.
-  console.log(`\n── Renaming '${OLD_DEMO_NAME}' -> '${NEW_DEMO_NAME}' (Employee + every embedded copy) ──`);
+  console.log(`\n── Renaming '${OLD_DEMO_NAMES.join("' / '")}' -> '${NEW_DEMO_NAME}' (Employee + every embedded copy) ──`);
 
-  const employee = await EmployeeModel.findOne({ tenantSlug: TENANT, name: OLD_DEMO_NAME }).lean();
+  const employee = await EmployeeModel.findOne({ tenantSlug: TENANT, name: { $in: OLD_DEMO_NAMES } }).lean();
   const employeeCode = (employee as any)?.employeeCode as string | undefined;
 
   const empResult = await EmployeeModel.updateMany(
-    { tenantSlug: TENANT, name: OLD_DEMO_NAME },
+    { tenantSlug: TENANT, name: { $in: OLD_DEMO_NAMES } },
     { $set: { name: NEW_DEMO_NAME } }
   );
-  console.log(empResult.modifiedCount ? `  [FIXED] employees: ${empResult.modifiedCount} record(s) renamed.` : "  employees: no matching record found.");
+  console.log(empResult.modifiedCount ? `  [FIXED] employees: ${empResult.modifiedCount} record(s) renamed.` : "  employees: no matching record found (already corrected, or never seeded).");
 
   if (employeeCode) {
-    const tp = await TourPlanModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const tp = await TourPlanModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
     if (tp.modifiedCount) console.log(`  [FIXED] tour plans: ${tp.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const ec = await ExpenseClaimModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const ec = await ExpenseClaimModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
     if (ec.modifiedCount) console.log(`  [FIXED] expense claims: ${ec.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const dl = await DealerModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const dl = await DealerModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
     if (dl.modifiedCount) console.log(`  [FIXED] dealers: ${dl.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const sfc = await SfcModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const sfc = await SfcModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
     if (sfc.modifiedCount) console.log(`  [FIXED] sfc: ${sfc.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const taskTo = await TaskModel.updateMany({ tenantSlug: TENANT, assignedToEmployeeCode: employeeCode, assignedToName: OLD_DEMO_NAME }, { $set: { assignedToName: NEW_DEMO_NAME } });
+    const taskTo = await TaskModel.updateMany({ tenantSlug: TENANT, assignedToEmployeeCode: employeeCode, assignedToName: { $in: OLD_DEMO_NAMES } }, { $set: { assignedToName: NEW_DEMO_NAME } });
     if (taskTo.modifiedCount) console.log(`  [FIXED] tasks (assignedToName): ${taskTo.modifiedCount} record(s) corrected.`);
 
-    const taskBy = await TaskModel.updateMany({ tenantSlug: TENANT, assignedByEmployeeCode: employeeCode, assignedByName: OLD_DEMO_NAME }, { $set: { assignedByName: NEW_DEMO_NAME } });
+    const taskBy = await TaskModel.updateMany({ tenantSlug: TENANT, assignedByEmployeeCode: employeeCode, assignedByName: { $in: OLD_DEMO_NAMES } }, { $set: { assignedByName: NEW_DEMO_NAME } });
     if (taskBy.modifiedCount) console.log(`  [FIXED] tasks (assignedByName): ${taskBy.modifiedCount} record(s) corrected.`);
   }
 
@@ -205,7 +230,7 @@ async function renameDemoRep() {
     if (!hasFieldForceName) continue;
     const Model = getMasterModel(config.key);
     const result = await Model.updateMany(
-      { tenantSlug: TENANT, fieldForceName: OLD_DEMO_NAME },
+      { tenantSlug: TENANT, fieldForceName: { $in: OLD_DEMO_NAMES } },
       { $set: { fieldForceName: NEW_DEMO_NAME } }
     );
     if (result.modifiedCount) {

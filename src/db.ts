@@ -22,6 +22,16 @@ export async function connectMongo() {
   // makes Mongoose pass the full filter through to MongoDB untouched, which
   // is what these loose-schema queries need.
   mongoose.set("strictQuery", false);
+  // Round 16 — connectMongo() is now called both at server boot AND from
+  // runDataCorrections() (also invoked at boot, right after this) as well
+  // as from the standalone CLI script, so it needs to be safe to call more
+  // than once in the same process. mongoose.connect() on an already-open
+  // default connection throws "Trying to open unclosed connection" in some
+  // Mongoose versions — skip it once readyState shows we're already
+  // connected (1) or actively connecting (2).
+  if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) {
+    return;
+  }
   await mongoose.connect(config.mongoUri, {
     autoIndex: true
   });

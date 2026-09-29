@@ -18,6 +18,7 @@ import { essRouter } from "./routes/ess.routes.js";
 import { openApiSpec } from "./openapi-spec.js";
 import { startAutoApproveJob }   from "./jobs/auto-approve.job.js";
 import { startManagerDigestJob } from "./jobs/manager-digest.job.js";
+import { runDataCorrections } from "./seed/fix-data-corrections.js";
 
 const app = express();
 
@@ -67,6 +68,25 @@ app.use((error: unknown, req: express.Request, res: express.Response, next: expr
 app.use(errorHandler);
 
 await connectMongo();
+
+// Round 16 — the "Demo Medical Representative" rename (+ doctor-code
+// backfill + generic-master fieldForceName normalization) was previously
+// only reachable via a manual CLI script the user was never going to run
+// against production, so it never actually took effect on the live
+// database across two prior rounds. Every function in
+// fix-data-corrections.ts is deliberately idempotent (each only touches
+// documents that still match its specific bad value, so a second run finds
+// nothing left to do — see that file's own header comment), which is
+// exactly what makes it safe to run unconditionally on every boot rather
+// than needing a separate "have I already run this" flag: the moment the
+// backend redeploys — which happens routinely anyway — this now just
+// applies itself, with no manual step. A failure here is logged, never
+// fatal: it must never block the API from coming up.
+try {
+  await runDataCorrections();
+} catch (err) {
+  console.error("Startup data corrections failed (server will still start):", err);
+}
 
 app.listen(config.port, () => {
   console.log(`Zivira API listening on http://localhost:${config.port}`);
