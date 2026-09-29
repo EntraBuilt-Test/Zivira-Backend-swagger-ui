@@ -17,6 +17,7 @@ import { DoctorModel } from "../models/doctor.model.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { audit } from "../utils/audit.js";
+import { nextDoctorCode } from "../utils/doctor-code.js";
 import { AuditLogModel } from "../models/audit-log.model.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { notifyEmployeeEmail, notifyFieldRep, notifyOnboardingCredentials, notifyPersonalOnboardingLink } from "../utils/notify.js";
@@ -290,7 +291,11 @@ companyRouter.post(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = doctorSchema.parse(req.body);
-    const doctor = await DoctorModel.create({ ...body, tenantSlug });
+    // Round 12 item 6 — doctorCode was optional here, so a caller that left
+    // it out (as the Unlisted -> Listed conversion route did) got a doctor
+    // with no code, ever after shown blank wherever doctorCode is a column.
+    const doctorCode = body.doctorCode || (await nextDoctorCode(tenantSlug));
+    const doctor = await DoctorModel.create({ ...body, doctorCode, tenantSlug });
     await audit("DOCTOR_CREATED", "Doctor", String(doctor._id), { tenantSlug, category: doctor.category });
     res.status(201).json({ data: serializeDocument(doctor) });
   })
@@ -373,6 +378,12 @@ companyRouter.get(
     if (typeof req.query.callSession === "string" && req.query.callSession.trim()) {
       query.callSession = req.query.callSession.trim().toUpperCase();
     }
+    // Round 12 item 3 — Month/Year gating for the Admin DCR Edit screen,
+    // matching sanpharma's real search form (results only load after
+    // FieldForce + Month + Year + Go, not immediately on employee pick).
+    if (typeof req.query.month === "string" && req.query.month.trim()) {
+      query.month = req.query.month.trim();
+    }
 
     const dcrs = await DcrModel.find(query).sort({ createdAt: -1 }).limit(200).populate("doctorId");
     const serialized = dcrs.map(serializeDocument);
@@ -399,6 +410,44 @@ companyRouter.post(
     dcr.status = "APPROVED";
     await dcr.save();
     res.json({ data: serializeDocument(dcr) });
+  })
+);
+
+// Round 12 item 3 — PATCH /company/dcrs/:id: the Admin DCR Edit screen's
+// full-row Edit calls this (lib/api-client.ts's updateDcr) but the backend
+// never actually registered it, so every save hit Express's fallback
+// "Route not found" handler. This is the real, missing route.
+const dcrUpdateSchema = z.object({
+  workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"]).optional(),
+  visitDate: z.string().optional(),
+  hospitalClinic: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  checkInTime: z.string().nullable().optional(),
+  checkOutTime: z.string().nullable().optional(),
+  followUpRequired: z.boolean().optional(),
+  followUpDate: z.string().nullable().optional(),
+  prescriptionInterest: z.enum(["HIGH", "MEDIUM", "LOW", "NONE"]).nullable().optional()
+});
+
+companyRouter.patch(
+  "/dcrs/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = dcrUpdateSchema.parse(req.body);
+    const update: Record<string, unknown> = { ...body };
+    if (body.visitDate) update.visitDate = new Date(body.visitDate);
+    if (body.followUpDate) update.followUpDate = new Date(body.followUpDate);
+    else if (body.followUpDate === null) update.followUpDate = null;
+
+    const dcr = await DcrModel.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug },
+      { $set: update },
+      { new: true }
+    ).populate("doctorId");
+    if (!dcr) throw new HttpError(404, "DCR not found");
+    await audit("DCR_EDITED_BY_ADMIN", "Dcr", String(dcr._id), { tenantSlug });
+    const [enriched] = await enrichWithEmployeeNames(tenantSlug, [serializeDocument(dcr)], ["employeeCode", "managerApprovedBy"]);
+    res.json({ data: enriched });
   })
 );
 
@@ -1299,6 +1348,27 @@ companyRouter.get("/tour-plans", asyncHandler(async (req, res) => {
   if (typeof req.query.status === "string" && req.query.status) query.status = req.query.status;
   const tps = await TourPlanModel.find(query).sort({ createdAt: -1 }).limit(1000);
   res.json({ data: await enrichTourPlansWithNames(tenantSlug, tps) });
+}));
+
+// Round 12 item 1 — DELETE /company/tour-plans/:tpId: the Admin TP Delete
+// screen has called this real endpoint since it was built, but it was never
+// actually registered on the backend, so every delete attempt 404'd
+// ("Route not found") and the frontend surfaced that as "Failed to delete:
+// <tpId>". tpId is the real unique human-readable code (TourPlanModel.tpId,
+// e.g. "TP-2026-09-MR-004-001"), which is exactly what the frontend already
+// sends — no ObjectId mismatch, the route itself simply didn't exist.
+companyRouter.delete("/tour-plans/:tpId", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const tp = await TourPlanModel.findOneAndDelete({ tenantSlug, tpId: req.params.tpId });
+  if (!tp) throw new HttpError(404, "Tour Plan not found");
+  await audit("TOUR_PLAN_DELETED_BY_ADMIN", "TourPlan", tp.tpId, { tenantSlug, employeeCode: (tp as any).employeeCode });
+  notifyFieldRep({
+    tenantSlug,
+    employeeCode: (tp as any).employeeCode,
+    title: "Tour Plan removed by Admin",
+    message: `Your Tour Plan ${tp.tpId} for ${(tp as any).month} was deleted by an administrator.`
+  }).catch(() => {});
+  res.json({ data: { deleted: true, tpId: tp.tpId } });
 }));
 
 // ══════════════════════════════════════════════════════════════════════

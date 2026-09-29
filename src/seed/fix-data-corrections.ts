@@ -29,6 +29,8 @@ import { connectMongo } from "../db.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { MASTERS } from "../masters/registry.js";
 import { EmployeeModel } from "../models/employee.model.js";
+import { DoctorModel } from "../models/doctor.model.js";
+import { nextDoctorCode } from "../utils/doctor-code.js";
 
 const TENANT = "zivira-labs";
 const ROTATION: readonly string[] = ["A", "B", "C"];
@@ -138,6 +140,79 @@ async function fixYearFields() {
   console.log(totalFixed ? `  Total corrected: ${totalFixed}` : "  No placeholder Year values found — nothing to fix.");
 }
 
+
+async function renameDemoRep() {
+  // Round 12 item 2 — the seeded demo employee was literally named "Demo
+  // Medical Representative" everywhere (dropdowns, DCR rows, tables). Renamed
+  // to a real-looking name, exact spelling as given: "Rahul Deshmuth".
+  console.log("\n── Renaming 'Demo Medical Representative' -> 'Rahul Deshmuth' ──");
+  const result = await EmployeeModel.updateMany(
+    { tenantSlug: TENANT, name: "Demo Medical Representative" },
+    { $set: { name: "Rahul Deshmuth" } }
+  );
+  console.log(result.modifiedCount ? `  [FIXED] ${result.modifiedCount} employee record(s) renamed.` : "  No 'Demo Medical Representative' records found — nothing to fix.");
+}
+
+async function backfillDoctorCodes() {
+  // Round 12 item 6 — the Unlisted -> Listed Doctor conversion route never
+  // set doctorCode, leaving converted doctors ("Dr. Pending Review N", etc.)
+  // with a permanently blank Doctor Code column. Backfill real, sequential
+  // DOC-0XX codes (same convention as every other listed doctor) one at a
+  // time so each backfilled doctor gets its own unique next-available code.
+  console.log("\n── Backfilling blank Doctor Code values ──");
+  const missing = await DoctorModel.find({
+    tenantSlug: TENANT,
+    $or: [{ doctorCode: null }, { doctorCode: { $exists: false } }, { doctorCode: "" }]
+  }).sort({ createdAt: 1 });
+  if (!missing.length) {
+    console.log("  No blank Doctor Code values found — nothing to fix.");
+    return;
+  }
+  for (const doc of missing) {
+    doc.doctorCode = await nextDoctorCode(TENANT);
+    await doc.save();
+    console.log(`  [FIXED] ${doc.name}: assigned ${doc.doctorCode}`);
+  }
+  console.log(`  Total corrected: ${missing.length}`);
+}
+
+async function normalizeGenericMasterFieldForceNames() {
+  // Round 12 item 7 — some generic-master rows (e.g. Chemist - Release/Lock
+  // Month-wise) had a fieldForceName value that differed from the real
+  // Employee.name only by case or stray whitespace, so the frontend's
+  // exact-string join to pull Designation/Emp Code silently failed for
+  // those specific rows while every exact-matching row worked fine. Correct
+  // the stored value to the real employee's exact name wherever a
+  // case/whitespace-insensitive match exists.
+  console.log("\n── Normalizing generic-master fieldForceName values against real employees ──");
+  const employees = await EmployeeModel.find({ tenantSlug: TENANT }, { name: 1 }).lean();
+  const byNormalized = new Map<string, string>();
+  for (const e of employees) {
+    if (e.name) byNormalized.set(e.name.trim().toLowerCase().replace(/\s+/g, " "), e.name);
+  }
+
+  let totalFixed = 0;
+  for (const config of MASTERS) {
+    const hasFieldForceName = config.fields.some((f) => f.key === "fieldForceName");
+    if (!hasFieldForceName) continue;
+    const Model = getMasterModel(config.key);
+    const rows = await Model.find({ tenantSlug: TENANT });
+    for (const row of rows) {
+      const raw = (row as any).fieldForceName;
+      if (typeof raw !== "string" || !raw) continue;
+      const normalized = raw.trim().toLowerCase().replace(/\s+/g, " ");
+      const real = byNormalized.get(normalized);
+      if (real && real !== raw) {
+        (row as any).fieldForceName = real;
+        await row.save();
+        totalFixed++;
+        console.log(`  [FIXED] ${config.key}: "${raw}" -> "${real}"`);
+      }
+    }
+  }
+  console.log(totalFixed ? `  Total corrected: ${totalFixed}` : "  No mismatched fieldForceName values found — nothing to fix.");
+}
+
 export async function runDataCorrections() {
   await connectMongo();
   console.log(`Connected. Running targeted data corrections for tenant "${TENANT}" (no records deleted, no other fields touched)...`);
@@ -145,6 +220,9 @@ export async function runDataCorrections() {
   await fixAraSpelling();
   await fixDoctorCategoryD();
   await fixYearFields();
+  await renameDemoRep();
+  await backfillDoctorCodes();
+  await normalizeGenericMasterFieldForceNames();
 
   console.log("\nDone.");
 }

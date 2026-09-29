@@ -79,7 +79,7 @@ export async function runBaseSeed() {
     {
       username: "mr-001",
       passwordHash: employeePasswordHash,
-      displayName: "Demo Medical Representative",
+      displayName: "Rahul Deshmuth",
       role: "MR",
       portal: "FIELD_FORCE",
       tenantSlug: "zivira-labs",
@@ -185,7 +185,7 @@ export async function runBaseSeed() {
     { tenantSlug: "zivira-labs", employeeCode: "MR-001" },
     {
       tenantSlug: "zivira-labs",
-      name: "Demo Medical Representative",
+      name: "Rahul Deshmuth",
       employeeCode: "MR-001",
       designation: "Medical Representative",
       division: "Cardio Diabetes",

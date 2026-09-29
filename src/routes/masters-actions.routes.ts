@@ -29,7 +29,9 @@ import { ActivityModel } from "../models/activity.model.js";
 import { ActivityParameterModel } from "../models/activity-parameter.model.js";
 import { CustomizedMasterModel } from "../models/customized-master.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
+import { nextDoctorCode } from "../utils/doctor-code.js";
 import { TaskModel } from "../models/task.model.js";
+import { TaskModeModel } from "../models/task-mode.model.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -902,8 +904,14 @@ mastersActionsRouter.post(
       const territory = r.territory || r.patch || r.hq || "Unassigned";
       const mrEmployee = r.mr ? await EmployeeModel.findOne({ tenantSlug, name: r.mr }).lean() : null;
 
+      // Round 12 item 6 — this path never set doctorCode, leaving the
+      // converted doctor's row genuinely blank wherever doctorCode is
+      // shown (e.g. Drs UNI No - Generation). Generate a real one, same
+      // DOC-0XX convention as every other listed doctor.
+      const doctorCode = await nextDoctorCode(tenantSlug);
       await DoctorModel.create({
         tenantSlug,
+        doctorCode,
         name: r.name,
         specialty: r.specialty || "General Physician",
         category: ["A", "B", "C"].includes(String(r.category)) ? r.category : "C",
@@ -1093,7 +1101,13 @@ mastersActionsRouter.get(
     const year = Number(req.query.year) || new Date().getUTCFullYear();
     const monthStr = `${year}-${String(month).padStart(2, "0")}`;
 
-    const employees = await EmployeeModel.find({ tenantSlug }).lean();
+    // Round 12 item 8 — sanpharma's real search form filters this report by
+    // FieldForce Name too, not just Month/Year.
+    const employeeFilter: Record<string, unknown> = { tenantSlug };
+    if (typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()) {
+      employeeFilter.employeeCode = req.query.employeeCode.trim();
+    }
+    const employees = await EmployeeModel.find(employeeFilter).lean();
     const byEmpCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
 
     const doctors = await DoctorModel.find({ tenantSlug }).lean();
@@ -2033,7 +2047,13 @@ mastersActionsRouter.get(
     const year = Number(req.query.year) || new Date().getUTCFullYear();
     const monthStr = `${year}-${String(month).padStart(2, "0")}`;
 
-    const employees = await EmployeeModel.find({ tenantSlug }).lean();
+    // Round 12 item 8 — sanpharma's real search form filters this report by
+    // FieldForce Name too, not just Month/Year.
+    const employeeFilter: Record<string, unknown> = { tenantSlug };
+    if (typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()) {
+      employeeFilter.employeeCode = req.query.employeeCode.trim();
+    }
+    const employees = await EmployeeModel.find(employeeFilter).lean();
     const doctors = await DoctorModel.find({ tenantSlug }).lean();
     const territoryTypeByDoctorId = new Map((doctors as any[]).map((d) => [String(d._id), d.territoryType || "HQ"]));
 
@@ -2140,6 +2160,78 @@ mastersActionsRouter.get(
   })
 );
 
+// ── 19b. Expense Consolidated View — "At a Glance" mode (Round 12 item 8) ─
+// sanpharma's real "Expense Consolidated View From <Month Year> to <Month
+// Year>" summary: one row per employee under the selected date range with a
+// merged Applied Amount/Approved Amount pair per calendar month in range,
+// plus an Applied Total/Approved Total, and a Grand Total row — built from
+// the same real ExpenseClaimModel data as the detailed view above (honestly
+// 0 for a month/employee with no submitted claims, matching the reference).
+mastersActionsRouter.get(
+  "/expenseConsolidatedView/action/atAGlance",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const now = new Date();
+    const fromMonth = Number(req.query.fromMonth) || now.getUTCMonth() + 1;
+    const fromYear = Number(req.query.fromYear) || now.getUTCFullYear();
+    const toMonth = Number(req.query.toMonth) || fromMonth;
+    const toYear = Number(req.query.toYear) || fromYear;
+
+    const months: string[] = [];
+    let y = fromYear;
+    let m = fromMonth;
+    while (y < toYear || (y === toYear && m <= toMonth)) {
+      months.push(`${y}-${String(m).padStart(2, "0")}`);
+      m++;
+      if (m > 12) { m = 1; y++; }
+      if (months.length > 60) break; // sanity guard against a malformed range
+    }
+
+    const employeeFilter: Record<string, unknown> = { tenantSlug };
+    if (typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()) {
+      employeeFilter.employeeCode = req.query.employeeCode.trim();
+    }
+    const employees = await EmployeeModel.find(employeeFilter).lean();
+
+    const claims = await ExpenseClaimModel.find({ tenantSlug, month: { $in: months } }).lean();
+    const byEmpMonth = new Map<string, Map<string, { applied: number; approved: number }>>();
+    for (const c of claims as any[]) {
+      if (!byEmpMonth.has(c.employeeCode)) byEmpMonth.set(c.employeeCode, new Map());
+      const byMonth = byEmpMonth.get(c.employeeCode)!;
+      if (!byMonth.has(c.month)) byMonth.set(c.month, { applied: 0, approved: 0 });
+      const bucket = byMonth.get(c.month)!;
+      bucket.applied += c.amountRs || 0;
+      if (c.status === "APPROVED") bucket.approved += c.amountRs || 0;
+    }
+
+    const rows = employees.map((emp: any) => {
+      const byMonth = byEmpMonth.get(emp.employeeCode) || new Map();
+      const perMonth = months.map((mo) => {
+        const bucket = byMonth.get(mo) || { applied: 0, approved: 0 };
+        return { month: mo, appliedAmount: bucket.applied, approvedAmount: bucket.approved };
+      });
+      const appliedTotal = perMonth.reduce((sum, x) => sum + x.appliedAmount, 0);
+      const approvedTotal = perMonth.reduce((sum, x) => sum + x.approvedAmount, 0);
+      return {
+        empCode: emp.employeeCode,
+        fieldForceName: emp.name,
+        designation: emp.designation || "-",
+        headQuarter: emp.territory || "-",
+        perMonth,
+        appliedTotal,
+        approvedTotal
+      };
+    });
+
+    const grandTotal = {
+      appliedTotal: rows.reduce((s, r) => s + r.appliedTotal, 0),
+      approvedTotal: rows.reduce((s, r) => s + r.approvedTotal, 0)
+    };
+
+    res.json({ data: rows, months, grandTotal });
+  })
+);
+
 // ── 20. Task Management System (Round 11 item 5) ─────────────────────────
 const taskCreateSchema = z.object({
   modeOfTask: z.string().min(1),
@@ -2208,5 +2300,80 @@ mastersActionsRouter.post(
     });
     await audit("TASK_ASSIGNED", "Task", String(row._id), { tenantSlug, assignedTo: body.assignedToEmployeeCode });
     res.status(201).json({ data: serializeDocument(row) });
+  })
+);
+
+// ── 21. Task Mode Creation (Round 12 item 9) ──────────────────────────────
+// sanpharma's real "Mode Of Task" CRUD screen (Task Management > Mode
+// Creation): Short Name + Task Name, listed with Edit — this real master
+// drives the "Mode of Task" dropdown in Task Assign, replacing the Round 11
+// hardcoded option list.
+const taskModeSchema = z.object({
+  shortName: z.string().min(1),
+  taskName: z.string().min(1)
+});
+
+const DEFAULT_TASK_MODES: { shortName: string; taskName: string }[] = [
+  { shortName: "AV", taskName: "Allowance Variance" },
+  { shortName: "CA", taskName: "Call Adherance" },
+  { shortName: "CAD", taskName: "Campaign Doctors" },
+  { shortName: "CB", taskName: "Chemist Based" },
+  { shortName: "CCA", taskName: "Chemist Call Average" },
+  { shortName: "CMU", taskName: "Chemist Master Updation" },
+  { shortName: "CPOB", taskName: "Chemist POB" },
+  { shortName: "CD", taskName: "Core Doctors" },
+  { shortName: "COV", taskName: "Coverage" },
+  { shortName: "DR", taskName: "Delayed Reports" },
+  { shortName: "DIM", taskName: "Device ID Maintenance" },
+  { shortName: "DD", taskName: "Digital Detailing" },
+  { shortName: "DB", taskName: "Doctor Based" },
+  { shortName: "DCA", taskName: "Doctor Call Average" },
+  { shortName: "DCOV", taskName: "Doctor Coverage" },
+  { shortName: "DMU", taskName: "Doctor Master Updation" },
+  { shortName: "DPOB", taskName: "Doctor POB" },
+  { shortName: "DWCF", taskName: "Doctor wise Call Feedback" },
+  { shortName: "FC", taskName: "Fare Calculation" }
+];
+
+// Ensures every tenant has the real, editable Mode Of Task rows on first
+// use (idempotent — never overwrites a tenant's own edits/additions), so
+// the dropdown is never empty for a tenant that hasn't visited Mode
+// Creation yet, while still being a genuine CRUD table underneath.
+async function ensureDefaultTaskModes(tenantSlug: string) {
+  const count = await TaskModeModel.countDocuments({ tenantSlug });
+  if (count > 0) return;
+  await TaskModeModel.insertMany(DEFAULT_TASK_MODES.map((m) => ({ ...m, tenantSlug })));
+}
+
+mastersActionsRouter.get(
+  "/taskMode/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    await ensureDefaultTaskModes(tenantSlug);
+    const rows = await TaskModeModel.find({ tenantSlug }).sort({ createdAt: 1 }).lean();
+    res.json({ data: rows.map(serializeDocument) });
+  })
+);
+
+mastersActionsRouter.post(
+  "/taskMode/action/create",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = taskModeSchema.parse(req.body);
+    const row = await TaskModeModel.create({ ...body, tenantSlug });
+    await audit("TASK_MODE_CREATED", "TaskMode", String(row._id), { tenantSlug, shortName: body.shortName });
+    res.status(201).json({ data: serializeDocument(row) });
+  })
+);
+
+mastersActionsRouter.patch(
+  "/taskMode/action/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = taskModeSchema.parse(req.body);
+    const row = await TaskModeModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, { $set: body }, { new: true });
+    if (!row) throw new HttpError(404, "Task Mode not found");
+    await audit("TASK_MODE_EDITED", "TaskMode", String(row._id), { tenantSlug, shortName: body.shortName });
+    res.json({ data: serializeDocument(row) });
   })
 );
