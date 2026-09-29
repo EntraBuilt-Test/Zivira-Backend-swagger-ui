@@ -28,6 +28,8 @@ import { LoginEventModel } from "../models/login-event.model.js";
 import { ActivityModel } from "../models/activity.model.js";
 import { ActivityParameterModel } from "../models/activity-parameter.model.js";
 import { CustomizedMasterModel } from "../models/customized-master.model.js";
+import { ExpenseClaimModel } from "../models/expense-claim.model.js";
+import { TaskModel } from "../models/task.model.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -1567,6 +1569,7 @@ mastersActionsRouter.get(
       const val = (qty: number) => (rate !== null ? Number((qty * rate).toFixed(2)) : "-");
       return {
         productName: name,
+        pack: p.pack || "-",
         rate: rate !== null ? rate : "-",
         hqSalesQty: agg.hq, hqSalesVal: val(agg.hq),
         lessInfiltrationQty: agg.less, lessInfiltrationVal: val(agg.less),
@@ -1662,15 +1665,32 @@ mastersActionsRouter.get(
       return;
     }
 
-    const rows = employees.map((e: any) => ({
-      empCode: e.employeeCode,
-      joiningDate: e.joinDate || null,
-      fieldForceName: e.name,
-      designation: e.designation || "-",
-      hq: e.territory || "-",
-      ...managers(e),
-      loginTimestamps: eventsByCode.get(e.employeeCode) || []
-    }));
+    // Round 11 item 4 — List mode's real header set is "Reporting to" (one
+    // manager column, not First/Second) plus Last DCR Date / Last Login
+    // Date / the real day-gap between them, matching sanpharma's Login
+    // Details table exactly.
+    const msPerDayList = 24 * 60 * 60 * 1000;
+    const rows = employees.map((e: any) => {
+      const logins = eventsByCode.get(e.employeeCode) || [];
+      const lastLogin = logins.length ? logins[logins.length - 1] : null;
+      const lastDcr = lastDcrByCode.get(e.employeeCode) || null;
+      const daysBetween =
+        lastDcr && lastLogin
+          ? Math.round((new Date(lastLogin).getTime() - new Date(lastDcr).getTime()) / msPerDayList)
+          : null;
+      return {
+        empCode: e.employeeCode,
+        joiningDate: e.joinDate || null,
+        fieldForceName: e.name,
+        designation: e.designation || "-",
+        hq: e.territory || "-",
+        reportingTo: managers(e).firstLevelManager,
+        loginTimestamps: logins,
+        lastDcrDate: lastDcr,
+        lastLoginDate: lastLogin,
+        daysBetweenLastDcrAndLogin: daysBetween
+      };
+    });
     res.json({ data: rows, from, to });
   })
 );
@@ -1997,5 +2017,196 @@ mastersActionsRouter.get(
     });
 
     res.json({ data: result, month, year });
+  })
+);
+
+// ── 19. Expense Consolidated View (Round 11 item 1) ──────────────────────
+// Real sanpharma-structure expense ledger: identity + TWD/FW + HQ/EX/OS call
+// counts from the same DCR/territoryType data used by Coverage Analysis 2,
+// plus real claim fields from ExpenseClaimModel (blank/0 where no claim has
+// been submitted yet, matching the reference's mostly-blank cells).
+mastersActionsRouter.get(
+  "/expenseConsolidatedView/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
+    const year = Number(req.query.year) || new Date().getUTCFullYear();
+    const monthStr = `${year}-${String(month).padStart(2, "0")}`;
+
+    const employees = await EmployeeModel.find({ tenantSlug }).lean();
+    const doctors = await DoctorModel.find({ tenantSlug }).lean();
+    const territoryTypeByDoctorId = new Map((doctors as any[]).map((d) => [String(d._id), d.territoryType || "HQ"]));
+
+    const dcrRows = await DcrModel.find({
+      tenantSlug,
+      month: monthStr,
+      status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED", "AUTO_APPROVED"] }
+    }).lean();
+
+    type Bucket = { days: Set<string> };
+    const buckets = new Map<string, Map<string, Bucket>>();
+    const allDaysByEmp = new Map<string, Set<string>>();
+    for (const row of dcrRows as any[]) {
+      const tt = row.doctorId ? territoryTypeByDoctorId.get(String(row.doctorId)) || "HQ" : "HQ";
+      if (!buckets.has(row.employeeCode)) buckets.set(row.employeeCode, new Map());
+      const byType = buckets.get(row.employeeCode)!;
+      if (!byType.has(tt)) byType.set(tt, { days: new Set() });
+      if (row.visitDateOnly) byType.get(tt)!.days.add(row.visitDateOnly);
+      if (row.visitDateOnly) {
+        if (!allDaysByEmp.has(row.employeeCode)) allDaysByEmp.set(row.employeeCode, new Set());
+        allDaysByEmp.get(row.employeeCode)!.add(row.visitDateOnly);
+      }
+    }
+
+    // TWD (Total Working Days) — real calendar business days in the month
+    // (excluding Sundays); FW (Field Working days) — real distinct DCR
+    // visit days recorded that month.
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    let twd = 0;
+    for (let d = 1; d <= daysInMonth; d++) {
+      if (new Date(Date.UTC(year, month - 1, d)).getUTCDay() !== 0) twd++;
+    }
+
+    // Real claim data — aggregated from the existing per-Tour-Plan
+    // ExpenseClaimModel (category + amountRs + approval status), not a new
+    // parallel model. Category -> ledger-column mapping is a documented
+    // best-effort join (Travel->Fare, Lodging->Stay, Food->Food Bill, Local
+    // Conveyance->Conveyance, Other->Additional Expenses); DA/Internet/
+    // Mobile/Vehicle/Communication Allowance have no matching claim category
+    // in this app yet, so they stay honestly blank rather than fabricated.
+    const claims = await ExpenseClaimModel.find({ tenantSlug, month: monthStr }).lean();
+    const claimsByEmp = new Map<string, any[]>();
+    for (const c of claims as any[]) {
+      if (!claimsByEmp.has(c.employeeCode)) claimsByEmp.set(c.employeeCode, []);
+      claimsByEmp.get(c.employeeCode)!.push(c);
+    }
+    const CATEGORY_TO_COLUMN: Record<string, string> = {
+      Travel: "fare",
+      Lodging: "stay",
+      Food: "foodBill",
+      "Local Conveyance": "conveyance",
+      Other: "additionalExpenses"
+    };
+
+    const rows = employees.map((emp: any) => {
+      const byType = buckets.get(emp.employeeCode) || new Map();
+      const fw = allDaysByEmp.get(emp.employeeCode)?.size || 0;
+      const empClaims = claimsByEmp.get(emp.employeeCode) || [];
+      const columnTotals: Record<string, number> = { fare: 0, stay: 0, foodBill: 0, conveyance: 0, additionalExpenses: 0 };
+      let appliedAmount = 0;
+      let confirmedAmount = 0;
+      for (const c of empClaims) {
+        const col = CATEGORY_TO_COLUMN[c.category];
+        if (col) columnTotals[col] += c.amountRs || 0;
+        appliedAmount += c.amountRs || 0;
+        if (c.status === "APPROVED") confirmedAmount += c.amountRs || 0;
+      }
+      const hasClaims = empClaims.length > 0;
+      return {
+        empCode: emp.employeeCode,
+        fieldForceName: emp.name,
+        designation: emp.designation || "-",
+        headQuarter: emp.territory || "-",
+        state: emp.state || "-",
+        subDivision: "ZIVIRA LABS",
+        bankName: null,
+        bankAccountNo: null,
+        ifscCode: null,
+        twd,
+        fw,
+        hq: byType.get("HQ")?.days.size || 0,
+        ex: byType.get("EX")?.days.size || 0,
+        os: byType.get("OS")?.days.size || 0,
+        da: null,
+        fare: hasClaims ? columnTotals.fare : null,
+        internet: null,
+        mobileAllowances: null,
+        vehicleAllowances: null,
+        // No claim category maps distinctly to "Travel" (Travel category
+        // already feeds Fare above) so this stays honestly blank.
+        travel: null,
+        communicationAllowance: null,
+        stay: hasClaims ? columnTotals.stay : null,
+        foodBill: hasClaims ? columnTotals.foodBill : null,
+        conveyance: hasClaims ? columnTotals.conveyance : null,
+        additionalExpenses: hasClaims ? columnTotals.additionalExpenses : null,
+        appliedAmount: hasClaims ? appliedAmount : null,
+        additionDeduction: hasClaims ? appliedAmount - confirmedAmount : null,
+        confirmedAmount: hasClaims ? confirmedAmount : null
+      };
+    });
+
+    res.json({ data: rows, month, year });
+  })
+);
+
+// ── 20. Task Management System (Round 11 item 5) ─────────────────────────
+const taskCreateSchema = z.object({
+  modeOfTask: z.string().min(1),
+  priority: z.enum(["High", "Medium", "Low"]),
+  assignedToEmployeeCode: z.string().min(1),
+  deadlineFrom: z.string().nullable().optional(),
+  deadlineTo: z.string().nullable().optional(),
+  description: z.string().default("")
+});
+
+const TASK_STATUSES = ["New", "Pending", "Completed", "Closed", "ReOpen", "Hold", "Cancel"] as const;
+
+function emptyTaskStats() {
+  return { total: 0, New: 0, Pending: 0, Completed: 0, Closed: 0, ReOpen: 0, Hold: 0, Cancel: 0 };
+}
+
+mastersActionsRouter.get(
+  "/task/action/list",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const filter: Record<string, unknown> = { tenantSlug };
+    const assignedToEmployeeCode = String(req.query.assignedToEmployeeCode || "").trim();
+    const assignedByMe = String(req.query.assignedByMe || "") === "true";
+    const priority = String(req.query.priority || "").trim();
+    const modeOfTask = String(req.query.modeOfTask || "").trim();
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+
+    if (assignedToEmployeeCode) filter.assignedToEmployeeCode = assignedToEmployeeCode;
+    if (assignedByMe) filter.assignedByEmployeeCode = req.auth!.employeeCode || "__none__";
+    if (priority) filter.priority = priority;
+    if (modeOfTask) filter.modeOfTask = modeOfTask;
+    if (month && year) {
+      const from = new Date(Date.UTC(year, month - 1, 1));
+      const to = new Date(Date.UTC(year, month, 1));
+      filter.createdAt = { $gte: from, $lt: to };
+    }
+
+    const rows = await TaskModel.find(filter).sort({ createdAt: -1 }).lean();
+    const stats = emptyTaskStats();
+    stats.total = rows.length;
+    for (const r of rows as any[]) {
+      if (stats[r.status as keyof typeof stats] !== undefined) {
+        (stats as any)[r.status] += 1;
+      }
+    }
+    res.json({ data: rows.map(serializeDocument), stats });
+  })
+);
+
+mastersActionsRouter.post(
+  "/task/action/create",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = taskCreateSchema.parse(req.body);
+    const assignee = await EmployeeModel.findOne({ tenantSlug, employeeCode: body.assignedToEmployeeCode }).lean();
+    if (!assignee) throw new HttpError(404, "Assignee not found");
+    const row = await TaskModel.create({
+      ...body,
+      tenantSlug,
+      assignedToName: (assignee as any).name,
+      assignedByEmployeeCode: req.auth!.employeeCode || null,
+      assignedByName: null,
+      deadlineFrom: body.deadlineFrom ? new Date(body.deadlineFrom) : null,
+      deadlineTo: body.deadlineTo ? new Date(body.deadlineTo) : null
+    });
+    await audit("TASK_ASSIGNED", "Task", String(row._id), { tenantSlug, assignedTo: body.assignedToEmployeeCode });
+    res.status(201).json({ data: serializeDocument(row) });
   })
 );

@@ -54,7 +54,7 @@ export type MasterConfig = {
   // renders Field Force Name / Month / Year dropdown filters above the
   // results table (matching sanpharma.info's report screens). Omitted/
   // "table" keeps the existing generic Add/Edit/Deactivate console.
-  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2" | "leaveEntitlement" | "leaveStatusView" | "sampleDispatchView" | "sampleDispatchStatus" | "inputDispatchView" | "inputDispatchStatus" | "msisView" | "loginDetails" | "activityMaster" | "activityStatusReport" | "managerMissedCallReport";
+  uiKind?: "table" | "approvalQueue" | "reportFilter" | "changePassword" | "vacantMrLogin" | "vacantMrPermission" | "loginAsEmployee" | "notificationSend" | "upload" | "mailBox" | "quizAuthoring" | "dashboardBuilder" | "doctorCampaignFilter" | "tpDelete" | "dcrEdit" | "mailDelete" | "leaveCancellation" | "deviceIdDeletion" | "drUniqueNoGeneration" | "chemistReleaseLockMonthwise" | "autoMailSetup" | "screenAccessSetup" | "baseLevelSetup" | "managerSetup" | "approvalMandatorySetup" | "managerwiseCoreDoctorMap" | "screenwiseLock" | "mailFolderCreation" | "otherSetup" | "homepageDashboardDisplay" | "leaveTypeSetup" | "leavePolicySetup" | "deviceLock" | "coverageAnalysis2" | "leaveEntitlement" | "leaveStatusView" | "sampleDispatchView" | "sampleDispatchStatus" | "inputDispatchView" | "inputDispatchStatus" | "msisView" | "loginDetails" | "activityMaster" | "activityStatusReport" | "managerMissedCallReport" | "expenseConsolidatedView" | "taskManagement";
   fields: MasterField[];
   keyFields: string[]; // natural unique key (besides tenantSlug) — used for upsert/update matching
   // Additional fields (besides keyFields) that must also be unique per tenant,
@@ -1808,7 +1808,12 @@ export const MASTERS: MasterConfig[] = [
     // backed by the same real /coverageAnalysis2/action/list aggregation.
     key: "activitiesExpenseConsolidatedView",
     title: "Expense Consolidated View",
-    uiKind: "coverageAnalysis2",
+    // Round 11 item 1 — this is genuinely a different, more detailed report
+    // than Coverage Analysis 2 (a real expense ledger: bank details, TWD/FW,
+    // HQ/EX/OS call counts, per-allowance columns, Applied/Confirmed
+    // amounts) - the earlier "same report" assumption from Round 8 was
+    // wrong. See expense-consolidated-view-panel.tsx.
+    uiKind: "expenseConsolidatedView",
     atAGlance: true,
     keyFields: ["fieldForceName", "fromMonth", "toMonth"],
     fields: [
@@ -2105,15 +2110,19 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
-    key: "taskAssign",
-    title: "Task Management - Task Assign",
-    keyFields: ["fieldForceName", "task"],
+    // Round 11 item 5 — replaced with sanpharma's real, self-contained
+    // 4-tab "Task Management System" (Home/Assign/Status/Track), backed by
+    // a real Task model + routes. See task-management-panel.tsx.
+    key: "taskManagementSystem",
+    title: "Task Management System",
+    uiKind: "taskManagement",
+    keyFields: ["modeOfTask", "assignedToEmployeeCode"],
     fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "task", label: "Task" },
-      { key: "dueDate", label: "Due Date", type: "date" },
-      { key: "status", label: "Status", options: ["New", "Pending", "Completed", "Closed", "ReOpen", "On Hold"] },
-      { key: "remarks", label: "Remarks" }
+      { key: "modeOfTask", label: "Mode of Task" },
+      { key: "priority", label: "Priority", options: ["High", "Medium", "Low"] },
+      { key: "assignedToEmployeeCode", label: "Task Assign to", sourceMaster: "employees", sourceField: "employeeCode" },
+      { key: "description", label: "Task Description" },
+      { key: "status", label: "Status", options: ["New", "Pending", "Completed", "Closed", "ReOpen", "Hold", "Cancel"] }
     ]
   },
   {
