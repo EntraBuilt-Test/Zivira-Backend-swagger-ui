@@ -226,6 +226,13 @@ async function seedLegacyModels() {
     description: `${p.molecule} — ${p.category}`,
     saleUnit: p.uom,
     category: p.category,
+    // Round 13 item 4 — "Group" was never populated here at all (schema
+    // default null), leaving every row's Group column blank on the Product
+    // Upload reference table. This app's own existing ProductGroup master
+    // (product-group.model.ts, seeded a few lines below) already defines
+    // "Group" as the product's molecule name — reuse that exact real
+    // convention rather than inventing a new Rx/OTC-style scheme.
+    group: p.molecule,
     division: p.division,
     subDivision: p.division,
     status: "ACTIVE"

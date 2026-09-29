@@ -31,6 +31,12 @@ import { MASTERS } from "../masters/registry.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { nextDoctorCode } from "../utils/doctor-code.js";
+import { TourPlanModel } from "../models/tour-plan.model.js";
+import { ExpenseClaimModel } from "../models/expense-claim.model.js";
+import { DealerModel } from "../models/dealer.model.js";
+import { SfcModel } from "../models/sfc.model.js";
+import { TaskModel } from "../models/task.model.js";
+import { ProductModel } from "../models/product.model.js";
 
 const TENANT = "zivira-labs";
 const ROTATION: readonly string[] = ["A", "B", "C"];
@@ -141,16 +147,73 @@ async function fixYearFields() {
 }
 
 
+const OLD_DEMO_NAME = "Demo Medical Representative";
+const NEW_DEMO_NAME = "Rahul Deshmuth";
+
 async function renameDemoRep() {
-  // Round 12 item 2 — the seeded demo employee was literally named "Demo
-  // Medical Representative" everywhere (dropdowns, DCR rows, tables). Renamed
-  // to a real-looking name, exact spelling as given: "Rahul Deshmuth".
-  console.log("\n── Renaming 'Demo Medical Representative' -> 'Rahul Deshmuth' ──");
-  const result = await EmployeeModel.updateMany(
-    { tenantSlug: TENANT, name: "Demo Medical Representative" },
-    { $set: { name: "Rahul Deshmuth" } }
+  // Round 12 item 2 / Round 13 mandate 2 — the seeded demo employee was
+  // literally named "Demo Medical Representative" everywhere (dropdowns,
+  // DCR rows, tables). Round 12 added this function but it was never
+  // actually invoked against the live database (this script is a CLI the
+  // user has to run — it doing nothing until run is exactly why the name
+  // was still showing everywhere in Round 13's fresh screenshots). Beyond
+  // the Employee record itself, several OTHER collections embed the
+  // employee's name as a plain denormalized string at the time each record
+  // was created (TourPlanModel.employeeName, ExpenseClaimModel.employeeName,
+  // DealerModel/SfcModel.employeeName, TaskModel.assignedToName/
+  // assignedByName) rather than joining live against Employee — those
+  // already-existing historical records keep the OLD name forever unless
+  // corrected here too, even after the Employee record itself is renamed.
+  console.log(`\n── Renaming '${OLD_DEMO_NAME}' -> '${NEW_DEMO_NAME}' (Employee + every embedded copy) ──`);
+
+  const employee = await EmployeeModel.findOne({ tenantSlug: TENANT, name: OLD_DEMO_NAME }).lean();
+  const employeeCode = (employee as any)?.employeeCode as string | undefined;
+
+  const empResult = await EmployeeModel.updateMany(
+    { tenantSlug: TENANT, name: OLD_DEMO_NAME },
+    { $set: { name: NEW_DEMO_NAME } }
   );
-  console.log(result.modifiedCount ? `  [FIXED] ${result.modifiedCount} employee record(s) renamed.` : "  No 'Demo Medical Representative' records found — nothing to fix.");
+  console.log(empResult.modifiedCount ? `  [FIXED] employees: ${empResult.modifiedCount} record(s) renamed.` : "  employees: no matching record found.");
+
+  if (employeeCode) {
+    const tp = await TourPlanModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    if (tp.modifiedCount) console.log(`  [FIXED] tour plans: ${tp.modifiedCount} record(s) embedded employeeName corrected.`);
+
+    const ec = await ExpenseClaimModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    if (ec.modifiedCount) console.log(`  [FIXED] expense claims: ${ec.modifiedCount} record(s) embedded employeeName corrected.`);
+
+    const dl = await DealerModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    if (dl.modifiedCount) console.log(`  [FIXED] dealers: ${dl.modifiedCount} record(s) embedded employeeName corrected.`);
+
+    const sfc = await SfcModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: OLD_DEMO_NAME }, { $set: { employeeName: NEW_DEMO_NAME } });
+    if (sfc.modifiedCount) console.log(`  [FIXED] sfc: ${sfc.modifiedCount} record(s) embedded employeeName corrected.`);
+
+    const taskTo = await TaskModel.updateMany({ tenantSlug: TENANT, assignedToEmployeeCode: employeeCode, assignedToName: OLD_DEMO_NAME }, { $set: { assignedToName: NEW_DEMO_NAME } });
+    if (taskTo.modifiedCount) console.log(`  [FIXED] tasks (assignedToName): ${taskTo.modifiedCount} record(s) corrected.`);
+
+    const taskBy = await TaskModel.updateMany({ tenantSlug: TENANT, assignedByEmployeeCode: employeeCode, assignedByName: OLD_DEMO_NAME }, { $set: { assignedByName: NEW_DEMO_NAME } });
+    if (taskBy.modifiedCount) console.log(`  [FIXED] tasks (assignedByName): ${taskBy.modifiedCount} record(s) corrected.`);
+  }
+
+  // Generic-masters registry rows (Leave Cancellation, Chemist Release/Lock,
+  // Device Id Deletion, etc.) that seeded a literal fieldForceName string —
+  // these don't carry an employeeCode at all, so match on the exact old
+  // name value directly rather than via employeeCode.
+  let genericFixed = 0;
+  for (const config of MASTERS) {
+    const hasFieldForceName = config.fields.some((f) => f.key === "fieldForceName");
+    if (!hasFieldForceName) continue;
+    const Model = getMasterModel(config.key);
+    const result = await Model.updateMany(
+      { tenantSlug: TENANT, fieldForceName: OLD_DEMO_NAME },
+      { $set: { fieldForceName: NEW_DEMO_NAME } }
+    );
+    if (result.modifiedCount) {
+      genericFixed += result.modifiedCount;
+      console.log(`  [FIXED] ${config.key}.fieldForceName: ${result.modifiedCount} record(s) corrected.`);
+    }
+  }
+  if (!genericFixed) console.log("  generic masters: no embedded fieldForceName copies found.");
 }
 
 async function backfillDoctorCodes() {
@@ -213,6 +276,45 @@ async function normalizeGenericMasterFieldForceNames() {
   console.log(totalFixed ? `  Total corrected: ${totalFixed}` : "  No mismatched fieldForceName values found — nothing to fix.");
 }
 
+// Round 13 item 4 — same category -> molecule ("Group") mapping exact-10.ts
+// now seeds new Product rows with; backfills the Group value on any
+// already-existing Product record that was created before that fix and so
+// is still stuck at the schema's null default.
+const CATEGORY_TO_GROUP: Record<string, string> = {
+  Ophthalmology: "Carboxymethylcellulose",
+  Cardiology: "Olopatadine",
+  Diabetology: "Moxifloxacin",
+  Dermatology: "Loteprednol",
+  Pediatrics: "Timolol",
+  Neurology: "Brimonidine",
+  Gynaecology: "Ketotifen",
+  Orthopedics: "Nepafenac",
+  ENT: "Bimatoprost",
+  "General Medicine": "Cyclosporine"
+};
+
+async function backfillProductGroups() {
+  console.log("\n── Backfilling blank Product Group values ──");
+  const missing = await ProductModel.find({
+    tenantSlug: TENANT,
+    $or: [{ group: null }, { group: { $exists: false } }, { group: "" }]
+  });
+  if (!missing.length) {
+    console.log("  No blank Group values found — nothing to fix.");
+    return;
+  }
+  let fixed = 0;
+  for (const doc of missing) {
+    const group = CATEGORY_TO_GROUP[(doc as any).category];
+    if (!group) continue;
+    (doc as any).group = group;
+    await doc.save();
+    fixed++;
+    console.log(`  [FIXED] ${(doc as any).name} (${(doc as any).category}): Group = ${group}`);
+  }
+  console.log(`  Total corrected: ${fixed}`);
+}
+
 export async function runDataCorrections() {
   await connectMongo();
   console.log(`Connected. Running targeted data corrections for tenant "${TENANT}" (no records deleted, no other fields touched)...`);
@@ -223,6 +325,7 @@ export async function runDataCorrections() {
   await renameDemoRep();
   await backfillDoctorCodes();
   await normalizeGenericMasterFieldForceNames();
+  await backfillProductGroups();
 
   console.log("\nDone.");
 }
