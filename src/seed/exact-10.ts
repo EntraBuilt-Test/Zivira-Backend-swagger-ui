@@ -1164,6 +1164,22 @@ async function seedActivitiesMasters() {
 // Transfers, Release, Quiz) — same fully-generic seeding as the Activities
 // menu tabs, every sourceMaster/computed reference resolving against the
 // identity masters already seeded above.
+// Round 17 item 5 — the following "Upload Tool"/"Upload Log" masters were
+// REMOVED from this list on purpose: listedDoctorUploadLog, chemistUploadLog,
+// sampleDespatchUploadLog, inputDespatchUploadLog, targetUploadLog,
+// fileUploadDesignationwise, userManualUpload, salesforceUploadLog,
+// stockistUploadLog, productUploadLog, productRateUploadLog,
+// slideUploadEDetailing, holidayFixationUploadLog, leaveBulkUploadLog,
+// transactionUpload, homepageImageUpload. Unlike every other generic
+// master here, these represent a real, growing LOG of actual uploads —
+// genericValue()'s "${field.label} ${i+1}" placeholder fallback produced
+// fake rows like "File Name 1".."File Name 10" that read as real (but
+// broken/undownloadable) upload history rather than plausible demo data.
+// The frontend's shared UploadPanel component already renders an
+// empty-state ("No uploads yet.") for zero rows, so leaving these unseeded
+// is the correct fix — see also removeUploadLogPlaceholderRows() in
+// src/seed/fix-data-corrections.ts, which strips any such fake rows a
+// PREVIOUS full reseed already wrote to the live database.
 const OPTIONS_KEYS = [
   "optionsDashboardWidget", "optionsChangePassword", "vacantMrLoginAccess", "vacantMrLoginPermission", "loginAsEmployee", "doctorCampaignMap",
   "tpDeleteSetup", "dcrEditSetup", "msisEditApproval", "mailDeleteLog", "leaveCancellation", "deviceIdDeletion",
@@ -1173,11 +1189,8 @@ const OPTIONS_KEYS = [
   "deviceLock", "mailFolderCreation", "otherSetup", "appSetupDynamicAppLink",
   "gpsGeoFenceAllocation", "geoTagDeletion", "callFeedbackCreation", "callRemarksTemplates", "menuCreation", "notificationMessage",
   "mailBoxLog",
-  "listedDoctorUploadLog", "chemistUploadLog", "sampleDespatchUploadLog", "inputDespatchUploadLog", "targetUploadLog",
-  "flashNewsSetup", "noticeBoardSetup", "quoteOfTheWeek", "talkToUsSetup", "fileUploadDesignationwise", "userManualUpload",
-  "salesforceUploadLog", "stockistUploadLog", "productUploadLog", "productRateUploadLog", "slideUploadEDetailing",
-  "holidayFixationUploadLog", "leaveBulkUploadLog", "transactionUpload",
-  "homepageImageUpload", "homepageImageFieldForcewise",
+  "flashNewsSetup", "noticeBoardSetup", "quoteOfTheWeek", "talkToUsSetup",
+  "homepageImageFieldForcewise",
   "leaveStatusReport",
   "transferMasterDetails", "unlistedToListedDrConversion",
   "delayedRelease",

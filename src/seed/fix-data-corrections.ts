@@ -170,75 +170,93 @@ async function fixYearFields() {
 // to "Rahul Deshmukh" instead, and also migrating anyone already renamed to
 // the "Deshmuth" spelling by an earlier attempt, so every source converges
 // on the one real name. Flagged to the coordinator in this round's report.
-const OLD_DEMO_NAMES = ["Demo Medical Representative", "Rahul Deshmuth"];
-const NEW_DEMO_NAME = "Rahul Deshmukh";
+// Round 17 item 2 — the SAME "two seed scripts, two different names for
+// the same employeeCode" pattern found in Round 12/16 for MR-001 also
+// affects NBH-001 and ABM-001: src/seed/base.ts (the seed that actually
+// populated this live tenant) named them "Demo National Business Head" and
+// "Demo Area Business Manager", while src/seed/exact-10.ts's own EMPLOYEES
+// list independently names the same two employeeCodes "Arvind Rao" and
+// "Vikram Shah". The generic-master rows (e.g. Chemist - Release/Lock
+// Month-wise) seed their fieldForceName from exact-10.ts's roster, so they
+// show "Arvind Rao"/"Vikram Shah" while the live Employee record under that
+// same employeeCode still says "Demo ...", making the client-side
+// name-join fail for exactly those rows (Designation/Emp Code blank) even
+// though the join logic itself is correct — this was previously
+// "best-effort mitigated" in Round 12/13 by normalizing case/whitespace,
+// which could never have fixed this since the two names aren't case/
+// whitespace variants of each other at all. Generalizing MR-001's rename
+// correction to all three employeeCodes fixes the real root cause.
+const EMPLOYEE_RENAMES: { employeeCode: string; oldNames: string[]; newName: string }[] = [
+  { employeeCode: "MR-001", oldNames: ["Demo Medical Representative", "Rahul Deshmuth"], newName: "Rahul Deshmukh" },
+  { employeeCode: "NBH-001", oldNames: ["Demo National Business Head"], newName: "Arvind Rao" },
+  { employeeCode: "ABM-001", oldNames: ["Demo Area Business Manager"], newName: "Vikram Shah" }
+];
 
 async function renameDemoRep() {
-  // Round 12 item 2 / Round 13 mandate 2 / Round 16 — the seeded demo
-  // employee was literally named "Demo Medical Representative" everywhere
-  // (dropdowns, DCR rows, tables). This function existed since Round 12 but
-  // was never actually invoked against the live database — it was only
-  // reachable via a manual CLI script the user was never going to run.
-  // Round 16 wires runDataCorrections() into the server's own boot sequence
-  // (see server.ts) so this now applies itself the moment the backend
-  // restarts, with no separate step. Beyond the Employee record itself,
-  // several OTHER collections embed the employee's name as a plain
-  // denormalized string at the time each record was created
-  // (TourPlanModel.employeeName, ExpenseClaimModel.employeeName,
+  // Round 12 item 2 / Round 13 mandate 2 / Round 16 / Round 17 item 2 — the
+  // seeded demo employees were literally named "Demo ..." everywhere
+  // (dropdowns, DCR rows, generic-master fieldForceName values). This
+  // function existed since Round 12 but was never actually invoked against
+  // the live database until Round 16 wired runDataCorrections() into the
+  // server's own boot sequence (see server.ts), so this now applies itself
+  // the moment the backend restarts, with no separate step. Beyond the
+  // Employee record itself, several OTHER collections embed the employee's
+  // name as a plain denormalized string at the time each record was
+  // created (TourPlanModel.employeeName, ExpenseClaimModel.employeeName,
   // DealerModel/SfcModel.employeeName, TaskModel.assignedToName/
   // assignedByName) rather than joining live against Employee — those
   // already-existing historical records keep the OLD name forever unless
   // corrected here too, even after the Employee record itself is renamed.
-  console.log(`\n── Renaming '${OLD_DEMO_NAMES.join("' / '")}' -> '${NEW_DEMO_NAME}' (Employee + every embedded copy) ──`);
+  // Round 17 generalized this from a single MR-001-only fix to loop over
+  // every affected employeeCode (EMPLOYEE_RENAMES above), reusing the exact
+  // same per-collection correction logic for each one.
+  for (const { employeeCode, oldNames, newName } of EMPLOYEE_RENAMES) {
+    console.log(`\n── Renaming '${oldNames.join("' / '")}' -> '${newName}' (employeeCode ${employeeCode}: Employee + every embedded copy) ──`);
 
-  const employee = await EmployeeModel.findOne({ tenantSlug: TENANT, name: { $in: OLD_DEMO_NAMES } }).lean();
-  const employeeCode = (employee as any)?.employeeCode as string | undefined;
+    const empResult = await EmployeeModel.updateMany(
+      { tenantSlug: TENANT, employeeCode, name: { $in: oldNames } },
+      { $set: { name: newName } }
+    );
+    console.log(empResult.modifiedCount ? `  [FIXED] employees: ${empResult.modifiedCount} record(s) renamed.` : "  employees: no matching record found (already corrected, or never seeded).");
 
-  const empResult = await EmployeeModel.updateMany(
-    { tenantSlug: TENANT, name: { $in: OLD_DEMO_NAMES } },
-    { $set: { name: NEW_DEMO_NAME } }
-  );
-  console.log(empResult.modifiedCount ? `  [FIXED] employees: ${empResult.modifiedCount} record(s) renamed.` : "  employees: no matching record found (already corrected, or never seeded).");
-
-  if (employeeCode) {
-    const tp = await TourPlanModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const tp = await TourPlanModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: oldNames } }, { $set: { employeeName: newName } });
     if (tp.modifiedCount) console.log(`  [FIXED] tour plans: ${tp.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const ec = await ExpenseClaimModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const ec = await ExpenseClaimModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: oldNames } }, { $set: { employeeName: newName } });
     if (ec.modifiedCount) console.log(`  [FIXED] expense claims: ${ec.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const dl = await DealerModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const dl = await DealerModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: oldNames } }, { $set: { employeeName: newName } });
     if (dl.modifiedCount) console.log(`  [FIXED] dealers: ${dl.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const sfc = await SfcModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: OLD_DEMO_NAMES } }, { $set: { employeeName: NEW_DEMO_NAME } });
+    const sfc = await SfcModel.updateMany({ tenantSlug: TENANT, employeeCode, employeeName: { $in: oldNames } }, { $set: { employeeName: newName } });
     if (sfc.modifiedCount) console.log(`  [FIXED] sfc: ${sfc.modifiedCount} record(s) embedded employeeName corrected.`);
 
-    const taskTo = await TaskModel.updateMany({ tenantSlug: TENANT, assignedToEmployeeCode: employeeCode, assignedToName: { $in: OLD_DEMO_NAMES } }, { $set: { assignedToName: NEW_DEMO_NAME } });
+    const taskTo = await TaskModel.updateMany({ tenantSlug: TENANT, assignedToEmployeeCode: employeeCode, assignedToName: { $in: oldNames } }, { $set: { assignedToName: newName } });
     if (taskTo.modifiedCount) console.log(`  [FIXED] tasks (assignedToName): ${taskTo.modifiedCount} record(s) corrected.`);
 
-    const taskBy = await TaskModel.updateMany({ tenantSlug: TENANT, assignedByEmployeeCode: employeeCode, assignedByName: { $in: OLD_DEMO_NAMES } }, { $set: { assignedByName: NEW_DEMO_NAME } });
+    const taskBy = await TaskModel.updateMany({ tenantSlug: TENANT, assignedByEmployeeCode: employeeCode, assignedByName: { $in: oldNames } }, { $set: { assignedByName: newName } });
     if (taskBy.modifiedCount) console.log(`  [FIXED] tasks (assignedByName): ${taskBy.modifiedCount} record(s) corrected.`);
-  }
 
-  // Generic-masters registry rows (Leave Cancellation, Chemist Release/Lock,
-  // Device Id Deletion, etc.) that seeded a literal fieldForceName string —
-  // these don't carry an employeeCode at all, so match on the exact old
-  // name value directly rather than via employeeCode.
-  let genericFixed = 0;
-  for (const config of MASTERS) {
-    const hasFieldForceName = config.fields.some((f) => f.key === "fieldForceName");
-    if (!hasFieldForceName) continue;
-    const Model = getMasterModel(config.key);
-    const result = await Model.updateMany(
-      { tenantSlug: TENANT, fieldForceName: { $in: OLD_DEMO_NAMES } },
-      { $set: { fieldForceName: NEW_DEMO_NAME } }
-    );
-    if (result.modifiedCount) {
-      genericFixed += result.modifiedCount;
-      console.log(`  [FIXED] ${config.key}.fieldForceName: ${result.modifiedCount} record(s) corrected.`);
+    // Generic-masters registry rows (Leave Cancellation, Chemist Release/
+    // Lock, Device Id Deletion, etc.) that seeded a literal fieldForceName
+    // string — these don't carry an employeeCode at all, so match on the
+    // exact old name value directly rather than via employeeCode.
+    let genericFixed = 0;
+    for (const config of MASTERS) {
+      const hasFieldForceName = config.fields.some((f) => f.key === "fieldForceName");
+      if (!hasFieldForceName) continue;
+      const Model = getMasterModel(config.key);
+      const result = await Model.updateMany(
+        { tenantSlug: TENANT, fieldForceName: { $in: oldNames } },
+        { $set: { fieldForceName: newName } }
+      );
+      if (result.modifiedCount) {
+        genericFixed += result.modifiedCount;
+        console.log(`  [FIXED] ${config.key}.fieldForceName: ${result.modifiedCount} record(s) corrected.`);
+      }
     }
+    if (!genericFixed) console.log("  generic masters: no embedded fieldForceName copies found.");
   }
-  if (!genericFixed) console.log("  generic masters: no embedded fieldForceName copies found.");
 }
 
 async function backfillDoctorCodes() {
@@ -340,6 +358,50 @@ async function backfillProductGroups() {
   console.log(`  Total corrected: ${fixed}`);
 }
 
+// Round 17 item 5 (systemic audit) — src/seed/exact-10.ts's generic
+// seeder (genericValue()) falls back to a literal "${field.label} ${i+1}"
+// placeholder string for any field it has no specific real-data generator
+// for. Every "Upload Tool" / "Upload Log" style master (Listed Doctor
+// Upload, Chemist Upload, Salesforce Upload, Stockist Upload, Product
+// Upload, Product Rate, Slide Upload - E-Detailing, Holiday Fixation Bulk
+// Upload, Leave Upload, Sample/Input Despatch Upload, Target Upload, File
+// Upload (Designation-wise), User Manual Upload, Transaction Upload, Home
+// Page Image Upload) was included in that OPTIONS_KEYS generic-seeding
+// pass and so ended up with 10 fake rows apiece — fileName values like
+// "File Name 1".."File Name 10" that were never real uploads, unlike every
+// other generic master where a placeholder row is at least a plausible
+// stand-in for real reference data. Since these screens are meant to show
+// a real, growing log of actual uploads (the frontend's shared UploadPanel
+// component already renders "No uploads yet." for an empty list — see
+// components/upload-panel.tsx), the correct fix is to remove the fake rows
+// entirely rather than relabel them, so the table reflects reality until
+// an admin actually uploads something. Narrowly matches only the exact
+// generated placeholder pattern, so any row from a real upload (which
+// would carry the real uploaded file's name) is never touched, keeping
+// this idempotent and safe to run on every boot.
+const UPLOAD_LOG_MASTER_KEYS = [
+  "listedDoctorUploadLog", "chemistUploadLog", "sampleDespatchUploadLog", "inputDespatchUploadLog", "targetUploadLog",
+  "fileUploadDesignationwise", "userManualUpload", "salesforceUploadLog", "stockistUploadLog", "productUploadLog",
+  "productRateUploadLog", "slideUploadEDetailing", "holidayFixationUploadLog", "leaveBulkUploadLog", "transactionUpload",
+  "homepageImageUpload"
+];
+
+async function removeUploadLogPlaceholderRows() {
+  console.log("\n── Removing fake seeded rows from Upload Log masters (fileName matching the generic placeholder pattern) ──");
+  let totalRemoved = 0;
+  for (const key of UPLOAD_LOG_MASTER_KEYS) {
+    const config = MASTERS.find((m) => m.key === key);
+    if (!config) continue;
+    const Model = getMasterModel(key);
+    const result = await Model.deleteMany({ tenantSlug: TENANT, fileName: { $regex: /^File Name \d+$/ } });
+    if (result.deletedCount) {
+      totalRemoved += result.deletedCount;
+      console.log(`  [FIXED] ${key}: removed ${result.deletedCount} fake placeholder row(s).`);
+    }
+  }
+  console.log(totalRemoved ? `  Total removed: ${totalRemoved}` : "  No fake placeholder rows found — nothing to fix.");
+}
+
 export async function runDataCorrections() {
   await connectMongo();
   console.log(`Connected. Running targeted data corrections for tenant "${TENANT}" (no records deleted, no other fields touched)...`);
@@ -351,6 +413,7 @@ export async function runDataCorrections() {
   await backfillDoctorCodes();
   await normalizeGenericMasterFieldForceNames();
   await backfillProductGroups();
+  await removeUploadLogPlaceholderRows();
 
   console.log("\nDone.");
 }

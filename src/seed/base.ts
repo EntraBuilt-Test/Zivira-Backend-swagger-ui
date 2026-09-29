@@ -79,7 +79,7 @@ export async function runBaseSeed() {
     {
       username: "mr-001",
       passwordHash: employeePasswordHash,
-      displayName: "Rahul Deshmuth",
+      displayName: "Rahul Deshmukh",
       role: "MR",
       portal: "FIELD_FORCE",
       tenantSlug: "zivira-labs",
@@ -94,7 +94,7 @@ export async function runBaseSeed() {
     {
       username: "abm-001",
       passwordHash: employeePasswordHash,
-      displayName: "Demo Area Business Manager",
+      displayName: "Vikram Shah",
       role: "ABM",
       portal: "FIELD_FORCE",
       tenantSlug: "zivira-labs",
@@ -108,7 +108,7 @@ export async function runBaseSeed() {
     { tenantSlug: "zivira-labs", employeeCode: "ABM-001" },
     {
       tenantSlug: "zivira-labs",
-      name: "Demo Area Business Manager",
+      name: "Vikram Shah",
       employeeCode: "ABM-001",
       designation: "Area Business Manager",
       division: "Cardio Diabetes",
@@ -170,7 +170,7 @@ export async function runBaseSeed() {
     { tenantSlug: "zivira-labs", employeeCode: "NBH-001" },
     {
       tenantSlug: "zivira-labs",
-      name: "Demo National Business Head",
+      name: "Arvind Rao",
       employeeCode: "NBH-001",
       designation: "National Business Head",
       division: "Cardio Diabetes",
@@ -185,7 +185,7 @@ export async function runBaseSeed() {
     { tenantSlug: "zivira-labs", employeeCode: "MR-001" },
     {
       tenantSlug: "zivira-labs",
-      name: "Rahul Deshmuth",
+      name: "Rahul Deshmukh",
       employeeCode: "MR-001",
       designation: "Medical Representative",
       division: "Cardio Diabetes",

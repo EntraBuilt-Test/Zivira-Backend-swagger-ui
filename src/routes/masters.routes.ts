@@ -553,7 +553,18 @@ mastersRouter.post(
 // other master keeps its existing soft-deactivate/reactivate behavior;
 // this is deliberately restricted the same way clear-all is below.
 // ══════════════════════════════════════════════════════════════════════
-const HARD_DELETABLE_MASTERS = new Set(["deviceIdDeletion", "mailDeleteLog", "callFeedbackCreation", "callRemarksTemplates", "notificationMessage", "fileUploadDesignationwise", "userManualUpload", "homepageImageFieldForcewise", "homepageImageUpload"]);
+const HARD_DELETABLE_MASTERS = new Set([
+  "deviceIdDeletion", "mailDeleteLog", "callFeedbackCreation", "callRemarksTemplates", "notificationMessage",
+  "fileUploadDesignationwise", "userManualUpload", "homepageImageFieldForcewise", "homepageImageUpload",
+  // Round 17 item 4 — Mail Folder Creation's own reference UI (sanpharma's
+  // Mail_Folder_Creation.aspx) genuinely has a real per-row Delete action on
+  // admin-created folders; this master was simply left off this set, so
+  // every click threw this exact 403 and the frontend's leftover error
+  // state never cleared, reading as a permanent, misleading "does not
+  // support delete" banner sitting right above working-looking Delete
+  // links. Real delete now actually happens instead of being blocked.
+  "mailFolderCreation"
+]);
 
 mastersRouter.delete(
   "/:key/:id",
