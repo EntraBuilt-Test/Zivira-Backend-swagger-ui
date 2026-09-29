@@ -23,6 +23,7 @@ import { syncPayrollStatuses } from "../utils/payroll.js";
 import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { DoctorVisitExceptionModel, DOCTOR_EXCEPTION_REASONS } from "../models/doctor-visit-exception.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { TaskModel } from "../models/task.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
@@ -837,4 +838,151 @@ fieldRouter.patch("/payroll-status/:id/explanation", asyncHandler(async (req, re
 
   await audit("FIELD_PAYROLL_EXPLANATION_SUBMITTED", "PayrollStatus", String(record._id), { tenantSlug, employeeCode: employee.employeeCode, month: record.month });
   res.json({ data: serializeDocument(record) });
+}));
+
+
+// ══════════════════════════════════════════════════════════════════════
+// Round 18 — Field Rep Reports hub: read-only "my own data" views over
+// admin-managed Activities/Options masters + Task Management. Reuses the
+// exact same generic-masters collections (getMasterModel) and real
+// TaskModel the admin side already writes to — no new schemas, and no
+// data is exposed here beyond what this one employee already owns.
+// ══════════════════════════════════════════════════════════════════════
+
+// A handful of these admin-side generic masters (Leave Entitlement - Entry,
+// Activity - Status) have no employeeCode foreign key at all — their
+// "Employee Code" column is COMPUTED from a fieldForceName lookup at
+// display time, never stored on the row itself (see registry.ts). Per the
+// coordinator's guidance, the sensible minimal read here is the same
+// fieldForceName-vs-real-name match the admin's Chemist Release/Lock fix
+// already established (case/whitespace-insensitive — Round 17 already
+// corrected the underlying employee names that used to make this an exact
+// mismatch for some employees).
+function nameMatchesEmployee(name: unknown, employee: { name: string }) {
+  if (typeof name !== "string") return false;
+  return name.trim().toLowerCase() === employee.name.trim().toLowerCase();
+}
+
+function omitFileData(row: Record<string, unknown>) {
+  const { _id, fileData, ...rest } = row;
+  return { id: String(_id), ...rest };
+}
+
+// GET /field/slides — Slide Upload - E-Detailing materials the admin has
+// uploaded, filterable by Division / Sub Division / Brand — the fields
+// this master actually stores (it has no separate Speciality/Therapy
+// fields to filter by; see registry.ts's slideUploadEDetailing entry).
+// Tenant-wide broadcast content, not per-employee, so every field rep in
+// the tenant sees the same list — matches how the admin's own upload/view
+// flow works. fileData is left out of the list response (can be large
+// base64); GET .../download below serves the actual file.
+fieldRouter.get("/slides", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const Model = getMasterModel("slideUploadEDetailing");
+  const filter: Record<string, unknown> = { tenantSlug };
+  if (typeof req.query.division === "string" && req.query.division) filter.division = req.query.division;
+  if (typeof req.query.subDivision === "string" && req.query.subDivision) filter.subDivision = req.query.subDivision;
+  if (typeof req.query.brand === "string" && req.query.brand) filter.brand = req.query.brand;
+  const rows = (await Model.find(filter).sort({ uploadedOn: -1 }).lean()) as unknown as Record<string, unknown>[];
+  res.json({ data: rows.map(omitFileData) });
+}));
+
+// GET /field/slides/:id/download — hands back the actual uploaded slide
+// file, the exact base64-stored blob the admin's own Slide Upload panel
+// writes (see uploads.routes.ts's FILE_STORING_UPLOAD_KEYS). That admin
+// download route is gated to COMPANY_ADMIN only (companyRouter.use(...,
+// requireCompanyAdmin)), so this reads the same collection under
+// requireFieldForce instead rather than trying to reuse that route
+// directly across portals.
+fieldRouter.get("/slides/:id/download", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const Model = getMasterModel("slideUploadEDetailing");
+  const row = (await Model.findOne({ _id: req.params.id, tenantSlug }).lean()) as Record<string, unknown> | null;
+  if (!row || !row.fileData) throw new HttpError(404, "Slide file not found");
+  const buffer = Buffer.from(row.fileData as string, "base64");
+  res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(String(row.fileName ?? "slide"))}"`);
+  res.send(buffer);
+}));
+
+// GET /field/manuals / GET /field/manuals/:id/download — same pattern for
+// User Manual Upload documents (also FILE_STORING_UPLOAD_KEYS, also
+// tenant-wide broadcast content). This is the same real collection Round
+// 17 cleaned the fake "Subject 1"/"File Name 1" seeded rows out of, so a
+// field rep only ever sees genuinely uploaded manuals here.
+fieldRouter.get("/manuals", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const Model = getMasterModel("userManualUpload");
+  const rows = (await Model.find({ tenantSlug }).sort({ uploadedOn: -1 }).lean()) as unknown as Record<string, unknown>[];
+  res.json({ data: rows.map(omitFileData) });
+}));
+
+fieldRouter.get("/manuals/:id/download", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const Model = getMasterModel("userManualUpload");
+  const row = (await Model.findOne({ _id: req.params.id, tenantSlug }).lean()) as Record<string, unknown> | null;
+  if (!row || !row.fileData) throw new HttpError(404, "Manual file not found");
+  const buffer = Buffer.from(row.fileData as string, "base64");
+  res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(String(row.fileName ?? "manual"))}"`);
+  res.send(buffer);
+}));
+
+// GET /field/leave-entitlement — CL/PL/SL/LOP eligibility + balance from
+// the admin's Leave Entitlement - Entry generic master, matched by real
+// name (see nameMatchesEmployee above). Extends the existing /field/leave
+// screen (which already shows leave-applications history) with the
+// balance half of "My Leave", rather than a whole separate screen.
+fieldRouter.get("/leave-entitlement", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const Model = getMasterModel("leaveEntitlementEntry");
+  const rows = (await Model.find({ tenantSlug }).sort({ year: -1 }).lean()) as unknown as Record<string, unknown>[];
+  const mine = rows.filter((r) => nameMatchesEmployee(r.fieldForceName, employee));
+  res.json({ data: mine.map((r) => ({ id: String(r._id), ...r })) });
+}));
+
+// GET /field/activity-status — same fieldForceName-match read against the
+// admin's Activity - Status generic master (also has no employee foreign
+// key stored on the row).
+fieldRouter.get("/activity-status", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const Model = getMasterModel("activityStatus");
+  const rows = (await Model.find({ tenantSlug }).sort({ createdAt: -1 }).lean()) as unknown as Record<string, unknown>[];
+  const mine = rows.filter((r) => nameMatchesEmployee(r.fieldForceName, employee));
+  res.json({ data: mine.map((r) => ({ id: String(r._id), ...r })) });
+}));
+
+// GET /field/tasks — real Task Management assignments. Unlike the two
+// generic masters above, TaskModel already has a real
+// assignedToEmployeeCode foreign key (see task.model.ts), so this is a
+// clean per-employee query with no name-matching needed.
+fieldRouter.get("/tasks", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const rows = await TaskModel.find({ tenantSlug, assignedToEmployeeCode: employee.employeeCode }).sort({ createdAt: -1 });
+  res.json({ data: rows.map(serializeDocument) });
+}));
+
+// PATCH /field/tasks/:id/status — minimal self-service transition: a field
+// rep may acknowledge a New task (-> Pending) or mark it done (->
+// Completed). Every other status in TaskModel's 7-state enum
+// (Closed/ReOpen/Hold/Cancel) is a manager/admin lifecycle decision, not
+// exposed here — deliberately the smaller subset the coordinator asked
+// for rather than handing the assignee the full enum.
+const taskStatusSchema = z.object({ status: z.enum(["Pending", "Completed"]) });
+fieldRouter.patch("/tasks/:id/status", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = taskStatusSchema.parse(req.body);
+  const task = await TaskModel.findOne({ _id: req.params.id, tenantSlug, assignedToEmployeeCode: employee.employeeCode });
+  if (!task) throw new HttpError(404, "Task not found");
+  if (task.status === "Closed" || task.status === "Cancel") {
+    throw new HttpError(400, `This task is already ${task.status.toLowerCase()} and can no longer be updated.`);
+  }
+  task.status = body.status;
+  await task.save();
+  await audit("FIELD_TASK_STATUS_UPDATED", "Task", String(task._id), { tenantSlug, employeeCode: employee.employeeCode, status: body.status });
+  res.json({ data: serializeDocument(task) });
 }));
