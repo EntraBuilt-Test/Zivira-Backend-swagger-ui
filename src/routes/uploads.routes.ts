@@ -13,6 +13,7 @@ import { ProductModel } from "../models/product.model.js";
 import { HolidayModel } from "../models/holiday.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { EmployeeModel } from "../models/employee.model.js";
+import { DispatchModel } from "../models/dispatch.model.js";
 import { audit } from "../utils/audit.js";
 
 // ONE shared Excel/CSV upload implementation reused across every "Upload
@@ -352,7 +353,88 @@ async function importTargets(tenantSlug: string, rows: Record<string, unknown>[]
   return { processed, failed: rows.length - processed, errors };
 }
 
-const REAL_TARGETS: Record<string, (tenantSlug: string, rows: Record<string, unknown>[]) => Promise<UploadResult>> = {
+// Item 2 of a post-launch fix round — the admin's Sample/Input Despatch
+// Upload screens used to be LOG-ONLY (see the note on DispatchModel):
+// nothing about the real per-employee, per-product dispatch lines the
+// uploaded sheet describes was ever parsed anywhere, which is why the
+// field-rep Inventory screen had nothing to show. This actually parses
+// the real sheet (Employee ID / {Sample ERP Code|Input Code} / Despatch
+// Qty — the exact columns the admin's own download-template button
+// already generates) and groups rows by employee into one real
+// DispatchModel batch per employee+type+month+year, resolving each code
+// against the real productMaster (SAMPLE) or inputMaster (INPUT) generic
+// master for its display name rather than inventing one.
+function importDespatchRows(type: "INPUT" | "SAMPLE") {
+  return async function importDespatch(
+    tenantSlug: string,
+    rows: Record<string, unknown>[],
+    extraFields?: Record<string, unknown>
+  ): Promise<UploadResult> {
+    const month = String(extraFields?.month ?? "").trim();
+    const year = String(extraFields?.year ?? "").trim();
+    const overwriteMode = String(extraFields?.overwriteMode ?? "Only Insert");
+    if (!month || !year) {
+      return { processed: 0, failed: rows.length, errors: ["Month and Year are required for a Despatch upload"] };
+    }
+    const codeField = type === "SAMPLE" ? "sampleerpcode" : "inputcode";
+    const CatalogModel = getMasterModel(type === "SAMPLE" ? "productMaster" : "inputMaster");
+    const catalogCodeKey = type === "SAMPLE" ? "productCode" : "inputCode";
+    const catalogNameKey = type === "SAMPLE" ? "productName" : "inputName";
+
+    const errors: string[] = [];
+    const byEmployee = new Map<string, { code: string; name: string; dispatchQty: number }[]>();
+    for (const [i, row] of rows.entries()) {
+      const employeeCode = pick(row, "employeeid", "employeecode");
+      const code = pick(row, codeField, "code");
+      const qty = Number(pick(row, "despatchqty", "dispatchqty", "qty") ?? NaN);
+      if (!employeeCode || !code || !Number.isFinite(qty) || qty < 0) {
+        errors.push(`Row ${i + 2}: missing/invalid Employee ID, ${type === "SAMPLE" ? "Sample ERP Code" : "Input Code"}, or Despatch Qty`);
+        continue;
+      }
+      const catalogRow = (await CatalogModel.findOne({ tenantSlug, [catalogCodeKey]: code }).lean()) as unknown as Record<string, unknown> | null;
+      const name = catalogRow ? String(catalogRow[catalogNameKey] ?? code) : code;
+      if (!byEmployee.has(employeeCode)) byEmployee.set(employeeCode, []);
+      byEmployee.get(employeeCode)!.push({ code, name, dispatchQty: qty });
+    }
+
+    let processed = 0;
+    const dispatchDate = new Date(`${year}-${String(MONTHS.indexOf(month) + 1).padStart(2, "0")}-01T00:00:00.000Z`);
+    for (const [employeeCode, items] of byEmployee.entries()) {
+      try {
+        const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode });
+        const existing = await DispatchModel.findOne({ tenantSlug, employeeCode, type, month, year });
+        if (existing && overwriteMode !== "OverWrite with Existing Records") {
+          errors.push(`${employeeCode}: a ${type} despatch batch for ${month} ${year} already exists (Only Insert mode) — skipped`);
+          continue;
+        }
+        await DispatchModel.findOneAndUpdate(
+          { tenantSlug, employeeCode, type, month, year },
+          {
+            $set: {
+              tenantSlug, employeeCode, type, month, year, dispatchDate,
+              employeeName: employee?.name ?? "",
+              items: items.map((it) => ({ code: it.code, name: it.name, dispatchQty: it.dispatchQty, receivedQty: null, remarks: null })),
+              // Re-uploading a batch (Overwrite mode) resets it back to
+              // Pending — a fresh dispatch replaces whatever was there,
+              // it doesn't silently keep a stale receipt.
+              receivedDate: null,
+              status: "Pending"
+            }
+          },
+          { upsert: true }
+        );
+        processed += items.length;
+      } catch (err) {
+        errors.push(`${employeeCode}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { processed, failed: rows.length - processed, errors };
+  };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const REAL_TARGETS: Record<string, (tenantSlug: string, rows: Record<string, unknown>[], extraFields?: Record<string, unknown>) => Promise<UploadResult>> = {
   listedDoctorUploadLog: importDoctors,
   chemistUploadLog: importChemists,
   stockistUploadLog: importStockists,
@@ -360,7 +442,9 @@ const REAL_TARGETS: Record<string, (tenantSlug: string, rows: Record<string, unk
   salesforceUploadLog: importSalesforce,
   holidayFixationUploadLog: importHolidays,
   leaveBulkUploadLog: importLeaves,
-  targetUploadLog: importTargets
+  targetUploadLog: importTargets,
+  sampleDespatchUploadLog: importDespatchRows("SAMPLE"),
+  inputDespatchUploadLog: importDespatchRows("INPUT")
 };
 
 // Masters whose upload log rows keep the raw uploaded file itself (as
@@ -383,8 +467,6 @@ const DEACTIVATABLE_MODELS: Record<string, mongoose.Model<any>> = {
 // metadata is stored on the upload-log master, but no fabricated data
 // model is invented just to look busy.
 const LOG_ONLY_UPLOAD_KEYS = new Set([
-  "sampleDespatchUploadLog",
-  "inputDespatchUploadLog",
   "productRateUploadLog",
   "slideUploadEDetailing",
   "homepageImageUpload",
@@ -476,7 +558,7 @@ uploadsRouter.post(
     const importer = REAL_TARGETS[config.key];
     let result: UploadResult;
     if (importer) {
-      result = await importer(tenantSlug, rows);
+      result = await importer(tenantSlug, rows, extraFields);
     } else {
       result = { processed: rows.length, failed: 0, errors: [] };
     }

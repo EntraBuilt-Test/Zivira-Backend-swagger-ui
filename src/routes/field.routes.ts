@@ -35,6 +35,8 @@ import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { SlideDownloadModel } from "../models/slide-download.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
+import { DispatchModel } from "../models/dispatch.model.js";
+import { InventoryStockModel } from "../models/inventory-stock.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -1902,4 +1904,134 @@ fieldRouter.post("/chemist-calls", asyncHandler(async (req, res) => {
   );
 
   res.status(201).json({ data: serializeDocument(call) });
+}));
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Item 2 of a post-launch fix round — field-rep "Inventory" (receiving
+// Sample/Input dispatches). Real data source: DispatchModel, now actually
+// populated by the admin's Sample/Input Despatch Upload screens (see
+// importDespatchRows in uploads.routes.ts) instead of being log-only.
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /field/dispatches?type=SAMPLE|INPUT — this employee's own dispatch
+// batches, newest first. receivedDate is null until the rep has actually
+// saved one (calendar-icon modal) or submitted the receive screen.
+fieldRouter.get("/dispatches", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const filter: Record<string, unknown> = { tenantSlug, employeeCode: employee.employeeCode };
+  if (req.query.type === "SAMPLE" || req.query.type === "INPUT") filter.type = req.query.type;
+  const rows = await DispatchModel.find(filter).sort({ dispatchDate: -1, createdAt: -1 });
+  res.json({
+    data: rows.map((r) => ({
+      id: String(r._id),
+      type: r.type,
+      dispatchDate: r.dispatchDate,
+      month: r.month,
+      year: r.year,
+      itemCount: r.items.length,
+      receivedDate: r.receivedDate,
+      status: r.status
+    }))
+  });
+}));
+
+// GET /field/dispatches/:id — full line-item detail, each item annotated
+// with this rep's real current Available Inventory for that code (read
+// from InventoryStockModel — 0 if nothing has ever been received into it
+// yet, never fabricated).
+fieldRouter.get("/dispatches/:id", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  if (!mongoose.isValidObjectId(req.params.id)) throw new HttpError(404, "Dispatch not found");
+  const dispatch = await DispatchModel.findOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
+  if (!dispatch) throw new HttpError(404, "Dispatch not found");
+
+  const stockRows = await InventoryStockModel.find({ tenantSlug, employeeCode: employee.employeeCode, type: dispatch.type });
+  const stockByCode = new Map(stockRows.map((s) => [s.code, s.availableQty]));
+
+  res.json({
+    data: {
+      id: String(dispatch._id),
+      type: dispatch.type,
+      dispatchDate: dispatch.dispatchDate,
+      receivedDate: dispatch.receivedDate,
+      status: dispatch.status,
+      items: dispatch.items.map((it) => ({
+        code: it.code,
+        name: it.name,
+        dispatchQty: it.dispatchQty,
+        receivedQty: it.receivedQty,
+        remarks: it.remarks,
+        availableInventory: stockByCode.get(it.code) ?? 0
+      }))
+    }
+  });
+}));
+
+const receivedDateSchema = z.object({ receivedDate: z.string().min(1) });
+
+// POST /field/dispatches/:id/received-date — the calendar-icon modal:
+// sets ONLY the Received Date, no line-item quantities yet (matches the
+// reference screen's Dispatched Date (read-only) / Received Date (date
+// picker) / Save modal exactly).
+fieldRouter.post("/dispatches/:id/received-date", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  if (!mongoose.isValidObjectId(req.params.id)) throw new HttpError(404, "Dispatch not found");
+  const body = receivedDateSchema.parse(req.body);
+  const dispatch = await DispatchModel.findOneAndUpdate(
+    { _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode },
+    { $set: { receivedDate: new Date(body.receivedDate) } },
+    { new: true }
+  );
+  if (!dispatch) throw new HttpError(404, "Dispatch not found");
+  res.json({ data: { id: String(dispatch._id), receivedDate: dispatch.receivedDate } });
+}));
+
+const receiveItemSchema = z.object({
+  code: z.string().min(1),
+  receivedQty: z.number().min(0),
+  remarks: z.string().trim().optional().nullable()
+});
+const receiveDispatchSchema = z.object({ items: z.array(receiveItemSchema).min(1) });
+
+// POST /field/dispatches/:id/receive — the eye-icon detail screen's real
+// Submit: persists each line's Received Qty + Remarks, marks the dispatch
+// Received (setting receivedDate too if the rep never separately used the
+// calendar-icon modal), and increments this rep's real running
+// InventoryStockModel by each item's received qty — the actual "available
+// stock" other features would read, not a fabricated figure.
+fieldRouter.post("/dispatches/:id/receive", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  if (!mongoose.isValidObjectId(req.params.id)) throw new HttpError(404, "Dispatch not found");
+  const body = receiveDispatchSchema.parse(req.body);
+  const dispatch = await DispatchModel.findOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
+  if (!dispatch) throw new HttpError(404, "Dispatch not found");
+
+  const byCode = new Map(body.items.map((it) => [it.code, it]));
+  for (const item of dispatch.items) {
+    const submitted = byCode.get(item.code);
+    if (!submitted) continue;
+    item.receivedQty = submitted.receivedQty;
+    item.remarks = submitted.remarks?.trim() || null;
+  }
+  dispatch.status = "Received";
+  if (!dispatch.receivedDate) dispatch.receivedDate = new Date();
+  await dispatch.save();
+
+  for (const item of dispatch.items) {
+    const submitted = byCode.get(item.code);
+    if (!submitted || submitted.receivedQty <= 0) continue;
+    await InventoryStockModel.findOneAndUpdate(
+      { tenantSlug, employeeCode: employee.employeeCode, type: dispatch.type, code: item.code },
+      { $inc: { availableQty: submitted.receivedQty }, $set: { name: item.name } },
+      { upsert: true }
+    );
+  }
+
+  await audit("FIELD_DISPATCH_RECEIVED", "Dispatch", String(dispatch._id), { tenantSlug, employeeCode: employee.employeeCode });
+  res.json({ data: serializeDocument(dispatch) });
 }));
