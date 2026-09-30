@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import { z } from "zod";
 import { asyncHandler } from "../http/async-handler.js";
 import { HttpError } from "../http/errors.js";
@@ -1064,6 +1065,17 @@ fieldRouter.get("/quizzes", asyncHandler(async (req, res) => {
 
 fieldRouter.get("/quizzes/:id", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
+  // Round 20 follow-up — a second report of the exact same "Cast to
+  // ObjectId failed for value 'undefined'" error (on a DIFFERENT quiz that
+  // does have real questions) means something can still hand this route a
+  // non-ObjectId string, most likely a stale frontend/backend deploy still
+  // running pre-fix code somewhere in the pipeline. Validating the id
+  // shape here means this route can never again leak that raw Mongoose
+  // CastError to the UI, regardless of what a stale client sends — a
+  // malformed id now gets a clean, honest 400 instead of a scary 500.
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    throw new HttpError(400, "Invalid quiz reference — please go back to My Quizzes and open it again.");
+  }
   const quiz = await QuizModel.findOne({ _id: req.params.id, tenantSlug, isActive: true }).lean();
   if (!quiz) throw new HttpError(404, "Quiz not found");
   // Round 20 — defense in depth alongside the list-route filter above: even
@@ -1083,6 +1095,11 @@ fieldRouter.post("/quizzes/:id/attempts", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const body = quizAttemptSchema.parse(req.body);
+  // Round 20 follow-up — same defense as GET /quizzes/:id above: never let
+  // a malformed/undefined id reach Mongoose as a raw CastError.
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    throw new HttpError(400, "Invalid quiz reference — please go back to My Quizzes and open it again.");
+  }
   const quiz = await QuizModel.findOne({ _id: req.params.id, tenantSlug, isActive: true });
   if (!quiz) throw new HttpError(404, "Quiz not found");
   const questions = quiz.questions as unknown as Array<{ options: string[]; correctOptionIndex: number; points: number }>;
