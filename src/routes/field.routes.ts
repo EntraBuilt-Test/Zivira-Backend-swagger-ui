@@ -1512,3 +1512,118 @@ fieldRouter.post("/campaign-visits/:id/resolve", asyncHandler(async (req, res) =
   await audit("FIELD_CAMPAIGN_VISIT_RESOLVED", "CampaignVisit", String(visit._id), { tenantSlug, employeeCode: employee.employeeCode, status: body.status });
   res.json({ data: serializeDocument(visit) });
 }));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 3 — Deviation workflow. An MR browsing OFF Phase 1's planned
+// campaign (the frontend's "Plan" toggle switched off) can pick a
+// territory, see doctors there, and request an off-plan visit. No
+// existing category master covers deviation reasons, so a small fixed
+// enum is used here rather than inventing new masters infrastructure.
+// ══════════════════════════════════════════════════════════════════════
+const DEVIATION_TYPES = ["Plan Change", "New Doctor", "Coverage Gap", "Emergency Call", "Other"] as const;
+
+fieldRouter.get("/deviation/types", asyncHandler(async (_req, res) => {
+  res.json({ data: DEVIATION_TYPES });
+}));
+
+// Distinct territories for the tenant's doctor master — backs the
+// territory picker + search (screenshot e5f1620f). Not scoped to this
+// rep's own mapped coverage on purpose: a deviation is, by definition, a
+// visit outside the rep's normal patch.
+fieldRouter.get("/deviation/territories", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const filter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+  if (q) filter.territory = { $regex: q, $options: "i" };
+  const territories = await DoctorModel.distinct("territory", filter);
+  res.json({ data: (territories as string[]).filter(Boolean).sort() });
+}));
+
+// Doctors in a picked territory, excluding anyone already in today's plan
+// (any CampaignVisitModel row for this employee/doctor/today that isn't
+// Cancelled/Rejected) — screenshot e5f1620f's doctor/chemist list.
+fieldRouter.get("/deviation/doctors", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const territory = typeof req.query.territory === "string" ? req.query.territory.trim() : "";
+  if (!territory) throw new HttpError(400, "territory is required");
+  const today = dateOnlyUTC(new Date());
+  const [doctors, alreadyPlanned] = await Promise.all([
+    DoctorModel.find({ tenantSlug, territory, status: "ACTIVE" }).sort({ name: 1 }),
+    CampaignVisitModel.find({
+      tenantSlug, employeeCode: employee.employeeCode, visitDate: today,
+      status: { $nin: ["Cancelled", "Rejected"] }
+    }).select("doctorId")
+  ]);
+  const excluded = new Set(alreadyPlanned.map((v) => v.doctorId));
+  const list = doctors.filter((d) => !excluded.has(String(d._id)));
+  res.json({ data: list.map(serializeDocument) });
+}));
+
+const deviationVisitSchema = z.object({
+  doctorId: z.string().min(1),
+  deviationType: z.enum(DEVIATION_TYPES),
+  remarks: z.string().optional().default("")
+});
+
+// "You're Deviating Plan — Do you want to continue?" (Yes) → Remarks modal
+// Continue (screenshots a963d244 / 78468fd6). Creates a Pending Approval
+// deviation row — it does NOT count toward Phase 2's checkout gate and
+// does NOT appear in Campaign Execution as a live visit until a manager
+// approves it.
+fieldRouter.post("/deviation-visits", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = deviationVisitSchema.parse(req.body);
+  const today = dateOnlyUTC(new Date());
+
+  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, status: "ACTIVE" });
+  if (!doctor) throw new HttpError(404, "Doctor not found");
+
+  const existing = await CampaignVisitModel.findOne({
+    tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, visitDate: today,
+    status: { $nin: ["Cancelled", "Rejected"] }
+  });
+  if (existing) throw new HttpError(409, "This doctor is already in today's plan.");
+
+  const row = await CampaignVisitModel.create({
+    tenantSlug,
+    employeeCode: employee.employeeCode,
+    employeeName: employee.name,
+    doctorId: body.doctorId,
+    doctorName: doctor.name,
+    visitDate: today,
+    source: "deviation",
+    status: "Pending Approval",
+    deviationType: body.deviationType,
+    notes: body.remarks
+  });
+
+  try {
+    const MirrorModel = getMasterModel("campaignVisitEntry");
+    await MirrorModel.create({
+      tenantSlug,
+      fieldForceName: employee.name,
+      campaignName: "",
+      doctorName: doctor.name,
+      visitDate: today,
+      source: "deviation",
+      status: "Pending Approval",
+      deviationType: body.deviationType
+    });
+  } catch (err) {
+    console.error("[deviation-visits] failed to mirror into campaignVisitEntry:", err);
+  }
+
+  await audit("FIELD_DEVIATION_VISIT_REQUESTED", "CampaignVisit", String(row._id), {
+    tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, deviationType: body.deviationType
+  });
+  await notifyReportingManager(
+    tenantSlug,
+    employee,
+    "Deviation visit awaiting approval",
+    `${employee.name} (${employee.employeeCode}) requested an off-plan visit to ${doctor.name} (${body.deviationType}).`
+  );
+
+  res.status(201).json({ data: serializeDocument(row) });
+}));

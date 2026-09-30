@@ -903,3 +903,67 @@ managerRouter.get("/campaign-visits", asyncHandler(async (req, res) => {
   const rows = await CampaignVisitModel.find(filter).sort({ visitDate: -1, createdAt: -1 }).limit(500);
   res.json({ data: rows.map(serializeDocument) });
 }));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 3 — Deviation approval queue. Scoped to this manager's own team
+// exactly like every other approval screen above (reportingManager match).
+// ══════════════════════════════════════════════════════════════════════
+managerRouter.get("/deviation-visits", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = await EmployeeModel.find(
+    { tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, status: "ACTIVE" },
+    { employeeCode: 1 }
+  ).lean();
+  const teamCodes = team.map((e: any) => e.employeeCode);
+  if (teamCodes.length === 0) {
+    res.json({ data: [] });
+    return;
+  }
+  const status = typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : "Pending Approval";
+  const rows = await CampaignVisitModel.find({
+    tenantSlug: mgr.tenantSlug, employeeCode: { $in: teamCodes }, source: "deviation", status
+  }).sort({ createdAt: -1 }).limit(500);
+  res.json({ data: rows.map(serializeDocument) });
+}));
+
+managerRouter.post("/deviation-visits/:id/approve", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const visit = await CampaignVisitModel.findById(req.params.id);
+  if (!visit || visit.tenantSlug !== mgr.tenantSlug || visit.source !== "deviation") throw new HttpError(404, "Deviation visit not found");
+  const employee = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, employeeCode: visit.employeeCode });
+  if (!employee || employee.reportingManager !== mgr.employeeCode) throw new HttpError(403, "Not in your team");
+  visit.status = "Planned";
+  visit.approvedBy = mgr.employeeCode;
+  visit.approvedAt = new Date();
+  await visit.save();
+  await audit("MANAGER_DEVIATION_APPROVED", "CampaignVisit", String(visit._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode });
+  await notifyFieldRepByCode(
+    mgr.tenantSlug,
+    visit.employeeCode,
+    "Deviation visit approved",
+    `${mgr.name} (${mgr.employeeCode}) approved your off-plan visit to ${visit.doctorName}.`
+  );
+  res.json({ data: serializeDocument(visit) });
+}));
+
+managerRouter.post("/deviation-visits/:id/reject", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const visit = await CampaignVisitModel.findById(req.params.id);
+  if (!visit || visit.tenantSlug !== mgr.tenantSlug || visit.source !== "deviation") throw new HttpError(404, "Deviation visit not found");
+  const employee = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, employeeCode: visit.employeeCode });
+  if (!employee || employee.reportingManager !== mgr.employeeCode) throw new HttpError(403, "Not in your team");
+  const { reason } = z.object({ reason: z.string().optional() }).parse(req.body);
+  visit.status = "Rejected";
+  visit.rejectedBy = mgr.employeeCode;
+  visit.rejectedAt = new Date();
+  if (reason) visit.rejectReason = reason;
+  await visit.save();
+  await audit("MANAGER_DEVIATION_REJECTED", "CampaignVisit", String(visit._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode });
+  await notifyFieldRepByCode(
+    mgr.tenantSlug,
+    visit.employeeCode,
+    "Deviation visit rejected",
+    `${mgr.name} (${mgr.employeeCode}) rejected your off-plan visit to ${visit.doctorName}.${reason ? ` Reason: ${reason}` : ""}`
+  );
+  res.json({ data: serializeDocument(visit) });
+}));

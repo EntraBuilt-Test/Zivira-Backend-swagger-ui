@@ -1275,7 +1275,8 @@ export const MASTERS: MasterConfig[] = [
       { key: "doctorName", label: "Doctor" },
       { key: "visitDate", label: "Visit Date", type: "date" },
       { key: "source", label: "Source", options: ["planned", "deviation"] },
-      { key: "status", label: "Status", options: ["Planned", "Completed", "Cancelled"] }
+      { key: "status", label: "Status", options: ["Planned", "Completed", "Cancelled", "Pending Approval", "Rejected"] },
+      { key: "deviationType", label: "Deviation Reason" }
     ]
   },
   {
