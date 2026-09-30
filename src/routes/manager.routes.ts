@@ -23,6 +23,7 @@ import { syncPayrollStatuses } from "../utils/payroll.js";
 import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { computeRepAnalysisRows } from "../utils/rep-manager-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
+import { ChemistCallModel } from "../models/chemist-call.model.js";
 
 export const managerRouter = Router();
 managerRouter.use(requireAuth);
@@ -966,4 +967,83 @@ managerRouter.post("/deviation-visits/:id/reject", asyncHandler(async (req, res)
     `${mgr.name} (${mgr.employeeCode}) rejected your off-plan visit to ${visit.doctorName || visit.chemistName}.${reason ? ` Reason: ${reason}` : ""}`
   );
   res.json({ data: serializeDocument(visit) });
+}));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 6 — real Team Checkout/Attendance status, replacing the Manager
+// Portal's unwired ModulePlaceholder for Attendance (confirmed: that
+// screen had no real data source at all). Reuses Phase 2's exact
+// AttendanceModel and "day still open from before" logic — no new
+// schema, same checkInAt/checkOutAt fields, scoped to this manager's team
+// the same way every other manager screen already is.
+// ══════════════════════════════════════════════════════════════════════
+function dateOnlyUTCManager(d: Date) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+managerRouter.get("/team-checkout-status", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = await EmployeeModel.find(
+    { tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, status: "ACTIVE" },
+    { employeeCode: 1, name: 1 }
+  ).sort({ name: 1 }).lean();
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const results = await Promise.all(
+    team.map(async (emp: any) => {
+      const [todayAttendance, openAttendance] = await Promise.all([
+        AttendanceModel.findOne({ tenantSlug: mgr.tenantSlug, employeeCode: emp.employeeCode, attendanceDate: today }),
+        AttendanceModel.findOne({
+          tenantSlug: mgr.tenantSlug, employeeCode: emp.employeeCode,
+          checkInAt: { $ne: null }, checkOutAt: null
+        }).sort({ attendanceDate: -1 })
+      ]);
+      const hasOpenPriorDay = Boolean(openAttendance && openAttendance.attendanceDate.getTime() < today.getTime());
+      return {
+        employeeCode: emp.employeeCode,
+        employeeName: emp.name,
+        checkedInToday: Boolean(todayAttendance?.checkInAt),
+        checkedOutToday: Boolean(todayAttendance?.checkOutAt),
+        checkInAt: todayAttendance?.checkInAt ?? null,
+        checkOutAt: todayAttendance?.checkOutAt ?? null,
+        hasOpenPriorDay,
+        openPriorDay: hasOpenPriorDay ? dateOnlyUTCManager(openAttendance!.attendanceDate) : null
+      };
+    })
+  );
+
+  res.json({ data: results });
+}));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 6 — team Chemist Call visibility, the same read/detail pattern
+// GET /manager/dcrs already gives for doctor DCRs. Reuses Phase 5's real
+// ChemistCallModel as-is — no new schema.
+// ══════════════════════════════════════════════════════════════════════
+managerRouter.get("/chemist-calls", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = await EmployeeModel.find(
+    { tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, status: "ACTIVE" },
+    { employeeCode: 1 }
+  ).lean();
+  const teamCodes = team.map((e: any) => e.employeeCode);
+  if (teamCodes.length === 0) {
+    res.json({ data: [] });
+    return;
+  }
+  const calls = await ChemistCallModel.find({ tenantSlug: mgr.tenantSlug, employeeCode: { $in: teamCodes } })
+    .sort({ visitDateOnly: -1, createdAt: -1 })
+    .limit(200);
+  res.json({ data: calls.map(serializeDocument) });
+}));
+
+managerRouter.get("/chemist-calls/:id", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const call = await ChemistCallModel.findById(req.params.id);
+  if (!call || call.tenantSlug !== mgr.tenantSlug) throw new HttpError(404, "Chemist Call not found");
+  const employee = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, employeeCode: call.employeeCode });
+  if (!employee || employee.reportingManager !== mgr.employeeCode) throw new HttpError(403, "Not in your team");
+  res.json({ data: serializeDocument(call) });
 }));
