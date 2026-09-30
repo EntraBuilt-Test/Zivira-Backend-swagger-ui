@@ -32,6 +32,7 @@ import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { nextDoctorCode } from "../utils/doctor-code.js";
 import { TaskModel } from "../models/task.model.js";
 import { TaskModeModel } from "../models/task-mode.model.js";
+import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
 // generic CRUD: Change Password, Vacant MR Login (Access + Permission) and
@@ -1099,94 +1100,19 @@ mastersActionsRouter.get(
     const tenantSlug = req.auth!.tenantSlug!;
     const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
     const year = Number(req.query.year) || new Date().getUTCFullYear();
-    const monthStr = `${year}-${String(month).padStart(2, "0")}`;
 
     // Round 12 item 8 — sanpharma's real search form filters this report by
     // FieldForce Name too, not just Month/Year.
-    const employeeFilter: Record<string, unknown> = { tenantSlug };
-    if (typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()) {
-      employeeFilter.employeeCode = req.query.employeeCode.trim();
-    }
-    const employees = await EmployeeModel.find(employeeFilter).lean();
-    const byEmpCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
+    const employeeCode =
+      typeof req.query.employeeCode === "string" && req.query.employeeCode.trim()
+        ? req.query.employeeCode.trim()
+        : undefined;
 
-    const doctors = await DoctorModel.find({ tenantSlug }).lean();
-    // Doctors mapped to each employee, split by real territoryType — used
-    // as the Coverage %'s denominator.
-    const mappedDoctorsByEmpAndType = new Map<string, Map<string, Set<string>>>();
-    for (const d of doctors as any[]) {
-      const code = d.mappedEmployeeCode;
-      if (!code) continue;
-      const tt = d.territoryType || "HQ";
-      if (!mappedDoctorsByEmpAndType.has(code)) mappedDoctorsByEmpAndType.set(code, new Map());
-      const byType = mappedDoctorsByEmpAndType.get(code)!;
-      if (!byType.has(tt)) byType.set(tt, new Set());
-      byType.get(tt)!.add(String(d._id));
-    }
-    const territoryTypeByDoctorId = new Map((doctors as any[]).map((d) => [String(d._id), d.territoryType || "HQ"]));
-
-    const dcrRows = await DcrModel.find({
-      tenantSlug,
-      month: monthStr,
-      status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED", "AUTO_APPROVED"] }
-    }).lean();
-
-    type Bucket = { calls: number; days: Set<string>; doctors: Set<string> };
-    const buckets = new Map<string, Map<string, Bucket>>(); // employeeCode -> territoryType -> bucket
-    for (const row of dcrRows as any[]) {
-      const tt = row.doctorId ? territoryTypeByDoctorId.get(String(row.doctorId)) || "HQ" : "HQ";
-      if (!buckets.has(row.employeeCode)) buckets.set(row.employeeCode, new Map());
-      const byType = buckets.get(row.employeeCode)!;
-      if (!byType.has(tt)) byType.set(tt, { calls: 0, days: new Set(), doctors: new Set() });
-      const b = byType.get(tt)!;
-      b.calls += 1;
-      if (row.visitDateOnly) b.days.add(row.visitDateOnly);
-      if (row.doctorId) b.doctors.add(String(row.doctorId));
-    }
-
-    const result = employees.map((emp: any) => {
-      const empByType = buckets.get(emp.employeeCode) || new Map();
-      const mappedByType = mappedDoctorsByEmpAndType.get(emp.employeeCode) || new Map();
-      const territoryTypes: Record<string, unknown> = {};
-      for (const tt of ["HQ", "EX", "OS"]) {
-        const b = empByType.get(tt);
-        const totalMapped = mappedByType.get(tt)?.size || 0;
-        const tc = b?.calls || 0;
-        const dw = b?.days.size || 0;
-        const seen = b?.doctors.size || 0;
-        territoryTypes[tt] = {
-          tc,
-          dw,
-          met: seen,
-          seen,
-          coverage: totalMapped > 0 ? Number(((seen / totalMapped) * 100).toFixed(1)) : "-",
-          calAvg: dw > 0 ? Number((tc / dw).toFixed(1)) : "-",
-          amt: "-",
-          amtPerCall: "-"
-        };
-      }
-      let firstLevelManager = "-";
-      let secondLevelManager = "-";
-      const l1 = emp.reportingManager ? byEmpCode.get(emp.reportingManager) : null;
-      if (l1) {
-        firstLevelManager = (l1 as any).name || "-";
-        const l2 = (l1 as any).reportingManager ? byEmpCode.get((l1 as any).reportingManager) : null;
-        if (l2) secondLevelManager = (l2 as any).name || "-";
-      }
-      return {
-        empCode: emp.employeeCode,
-        doj: emp.joinDate || null,
-        fieldForceName: emp.name,
-        designation: emp.designation || "-",
-        hq: emp.territory || "-",
-        firstLevelManager,
-        secondLevelManager,
-        noOfFwd: 0,
-        noOfFwdExp: 0,
-        ttlDrs: (mappedByType.get("HQ")?.size || 0) + (mappedByType.get("EX")?.size || 0) + (mappedByType.get("OS")?.size || 0),
-        territoryTypes
-      };
-    });
+    // Round 19 item 4 — aggregation extracted to computeCoverageAnalysis2()
+    // (src/utils/coverage-analysis.ts) so the field-scoped "My Coverage"
+    // route (GET /field/coverage) can reuse the exact same real computation
+    // instead of duplicating it.
+    const result = await computeCoverageAnalysis2(tenantSlug, { month, year, employeeCode });
 
     res.json({ data: result, month, year });
   })
@@ -2299,6 +2225,38 @@ mastersActionsRouter.post(
       deadlineTo: body.deadlineTo ? new Date(body.deadlineTo) : null
     });
     await audit("TASK_ASSIGNED", "Task", String(row._id), { tenantSlug, assignedTo: body.assignedToEmployeeCode });
+
+    // Round 19 item 3 — Task Assignment previously never triggered a real
+    // Notice, unlike every other manager-facing action in this file. Same
+    // MANAGER_ROLES branch the broadcast "Notification from Admin" flow
+    // above uses, so an assigned manager sees it via GET /manager/notices
+    // and an assigned MR sees it via GET /field/notices. Best-effort —
+    // never fails the task-assignment request itself.
+    try {
+      const assigneeRole = (assignee as any).role;
+      if (MANAGER_ROLES.includes(assigneeRole)) {
+        await notifyManager({
+          tenantSlug: tenantSlug!,
+          managerEmployeeCode: body.assignedToEmployeeCode,
+          managerEmail: (assignee as any).email,
+          managerName: (assignee as any).name,
+          title: "New Task Assigned",
+          message: `You have been assigned a new task (${body.modeOfTask}, priority: ${body.priority})`
+        });
+      } else {
+        await notifyFieldRep({
+          tenantSlug: tenantSlug!,
+          employeeCode: body.assignedToEmployeeCode,
+          employeeEmail: (assignee as any).email,
+          employeeName: (assignee as any).name,
+          title: "New Task Assigned",
+          message: `You have been assigned a new task (${body.modeOfTask}, priority: ${body.priority})`
+        });
+      }
+    } catch (err) {
+      console.error("[task/action/create] failed to notify assignee", body.assignedToEmployeeCode, err);
+    }
+
     res.status(201).json({ data: serializeDocument(row) });
   })
 );

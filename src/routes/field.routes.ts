@@ -25,6 +25,10 @@ import { DoctorVisitExceptionModel, DOCTOR_EXCEPTION_REASONS } from "../models/d
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { TaskModel } from "../models/task.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
+import { QuizModel } from "../models/quiz.model.js";
+import { QuizAttemptModel } from "../models/quiz-attempt.model.js";
+import { NoticeModel } from "../models/notice.model.js";
+import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -985,4 +989,274 @@ fieldRouter.patch("/tasks/:id/status", asyncHandler(async (req, res) => {
   await task.save();
   await audit("FIELD_TASK_STATUS_UPDATED", "Task", String(task._id), { tenantSlug, employeeCode: employee.employeeCode, status: body.status });
   res.json({ data: serializeDocument(task) });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════
+// Round 19 — Reports hub additions: Quiz-taking, Camp/Market Survey entry,
+// Notice read-tracking, and "My Coverage" (field-scoped Coverage Analysis).
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── Item 1: Quiz-taking ─────────────────────────────────────────────────
+// QuizModel has no employee/role targeting field at all (checked the full
+// schema) — every quiz is meant to be visible to every field rep, so this
+// simply lists all active quizzes rather than inventing a targeting scheme
+// the admin side doesn't support yet. Mirrors the admin's shapeQuiz()
+// helper (quiz.routes.ts) — never sends correctOptionIndex or
+// uploadedFileData to the client taking the quiz.
+function shapeQuizForAttempt(quiz: Record<string, unknown>) {
+  const { uploadedFileData: _uploadedFileData, questions, ...rest } = quiz as any;
+  const qs = Array.isArray(questions) ? questions : [];
+  return {
+    ...rest,
+    questions: qs.map((q: any) => ({ questionText: q.questionText, options: q.options, points: q.points }))
+  };
+}
+
+fieldRouter.get("/quizzes", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const quizzes = await QuizModel.find({ tenantSlug, isActive: true }).sort({ createdAt: -1 }).lean();
+  const attempts = await QuizAttemptModel.find({ tenantSlug, employeeCode: employee.employeeCode }).lean();
+  const attemptsByQuiz = new Map<string, typeof attempts>();
+  for (const a of attempts) {
+    const list = attemptsByQuiz.get(a.quizId) || [];
+    list.push(a);
+    attemptsByQuiz.set(a.quizId, list);
+  }
+  const data = quizzes.map((q) => {
+    const qId = String(q._id);
+    const mine = (attemptsByQuiz.get(qId) || []).slice().sort((a, b) => (b.submittedAt?.getTime?.() ?? 0) - (a.submittedAt?.getTime?.() ?? 0));
+    const best = mine.reduce((max, a) => (a.score > (max?.score ?? -1) ? a : max), mine[0] as (typeof mine)[number] | undefined);
+    return {
+      id: qId,
+      title: q.title,
+      description: q.description,
+      category: q.category,
+      questionCount: Array.isArray(q.questions) ? q.questions.length : 0,
+      totalPossible: Array.isArray(q.questions) ? q.questions.reduce((s: number, qq: any) => s + (qq.points ?? 0), 0) : 0,
+      attemptCount: mine.length,
+      bestScore: best ? best.score : null,
+      lastAttemptAt: mine[0]?.submittedAt ?? null
+    };
+  });
+  res.json({ data });
+}));
+
+fieldRouter.get("/quizzes/:id", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const quiz = await QuizModel.findOne({ _id: req.params.id, tenantSlug, isActive: true }).lean();
+  if (!quiz) throw new HttpError(404, "Quiz not found");
+  res.json({ data: shapeQuizForAttempt(quiz as unknown as Record<string, unknown>) });
+}));
+
+const quizAttemptSchema = z.object({
+  answers: z.array(z.object({ questionIndex: z.number().int().min(0), selectedOptionIndex: z.number().int().min(0) }))
+});
+fieldRouter.post("/quizzes/:id/attempts", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = quizAttemptSchema.parse(req.body);
+  const quiz = await QuizModel.findOne({ _id: req.params.id, tenantSlug, isActive: true });
+  if (!quiz) throw new HttpError(404, "Quiz not found");
+  const questions = quiz.questions as unknown as Array<{ options: string[]; correctOptionIndex: number; points: number }>;
+  const totalPossible = questions.reduce((sum, q) => sum + (q.points ?? 0), 0);
+  // Server-side scoring only — never trust a client-supplied score, and
+  // unlike the admin's own /company/quiz/:id/attempts route, employeeCode
+  // is forced from the authenticated field profile, never read from the
+  // request body, so one MR can never submit an attempt as another.
+  let score = 0;
+  for (const answer of body.answers) {
+    const question = questions[answer.questionIndex];
+    if (!question) continue;
+    if (answer.selectedOptionIndex === question.correctOptionIndex) score += question.points ?? 0;
+  }
+  const attempt = await QuizAttemptModel.create({
+    tenantSlug,
+    quizId: String(quiz._id),
+    employeeCode: employee.employeeCode,
+    answers: body.answers,
+    score,
+    totalPossible,
+    submittedAt: new Date()
+  });
+  await audit("FIELD_QUIZ_ATTEMPT_SUBMITTED", "quizAttempt", String(attempt._id), { tenantSlug, quizId: String(quiz._id), employeeCode: employee.employeeCode, score, totalPossible });
+  res.status(201).json({ data: serializeDocument(attempt) });
+}));
+
+// GET /field/quiz-attempts — this employee's full attempt history across
+// every quiz, joined with each quiz's title, for the score-history view.
+fieldRouter.get("/quiz-attempts", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const attempts = await QuizAttemptModel.find({ tenantSlug, employeeCode: employee.employeeCode }).sort({ submittedAt: -1 }).lean();
+  const quizIds = [...new Set(attempts.map((a) => a.quizId))];
+  const quizzes = await QuizModel.find({ tenantSlug, _id: { $in: quizIds } }).lean();
+  const titleByQuizId = new Map(quizzes.map((q) => [String(q._id), q.title]));
+  res.json({
+    data: attempts.map((a) => ({
+      id: String(a._id),
+      quizId: a.quizId,
+      quizTitle: titleByQuizId.get(a.quizId) || "(deleted quiz)",
+      score: a.score,
+      totalPossible: a.totalPossible,
+      submittedAt: a.submittedAt
+    }))
+  });
+}));
+
+// ── Item 2: Camp entry + Market Survey entry ────────────────────────────
+// Both are the admin's own generic masters (src/masters/registry.ts),
+// with no employeeCode foreign key stored on the row — same shape as
+// leaveEntitlementEntry/activityStatus above, so history reads use the
+// same nameMatchesEmployee() match against organizer/employee. Submission
+// forces organizer/employee to the caller's own real name server-side so
+// one MR can never author an entry as someone else.
+//
+// campEntry maps cleanly to a field-rep self-submission (doctor/products
+// fields reuse the existing /field/doctors and /field/products lookups).
+// marketSurveyEntry's hq/patch/chemist fields reference master collections
+// (territoryHqMaster/patchNameMaster/dealers) with no existing field-portal
+// list endpoint of their own; rather than building three new single-use
+// picker endpoints this round, those three fields are accepted as free
+// text on submission (a competitor survey's HQ/patch/chemist context is
+// informational, not a real FK the rest of the system joins against).
+function nextCampCode(existingCodes: string[]) {
+  let max = 0;
+  for (const code of existingCodes) {
+    const m = /^CMP-(\d+)$/.exec(String(code || ""));
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `CMP-${String(max + 1).padStart(4, "0")}`;
+}
+
+fieldRouter.get("/camps", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const Model = getMasterModel("campEntry");
+  const rows = (await Model.find({ tenantSlug }).sort({ createdAt: -1 }).lean()) as unknown as Record<string, unknown>[];
+  const mine = rows.filter((r) => nameMatchesEmployee(r.organizer, employee));
+  res.json({ data: mine.map((r) => ({ id: String((r as any)._id), ...r })) });
+}));
+
+const campEntrySchema = z.object({
+  campName: z.string().min(1),
+  campDate: z.string().min(1),
+  hospital: z.string().optional().default(""),
+  doctor: z.string().optional().default(""),
+  noOfPatients: z.coerce.number().int().min(0).optional().default(0),
+  productsDisplayed: z.string().optional().default(""),
+  remarks: z.string().optional().default("")
+});
+fieldRouter.post("/camps", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = campEntrySchema.parse(req.body);
+  const Model = getMasterModel("campEntry");
+  const existing = (await Model.find({ tenantSlug }).select({ campCode: 1 }).lean()) as unknown as Array<{ campCode?: string }>;
+  const campCode = nextCampCode(existing.map((r) => r.campCode || ""));
+  const row = await Model.create({
+    tenantSlug,
+    campCode,
+    campName: body.campName,
+    campDate: body.campDate,
+    hospital: body.hospital,
+    doctor: body.doctor,
+    organizer: employee.name,
+    noOfPatients: body.noOfPatients,
+    productsDisplayed: body.productsDisplayed,
+    remarks: body.remarks,
+    status: "Active"
+  });
+  await audit("FIELD_CAMP_ENTRY_CREATED", "campEntry", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, campCode });
+  res.status(201).json({ data: { id: String(row._id), ...row.toObject() } });
+}));
+
+fieldRouter.get("/market-surveys", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const Model = getMasterModel("marketSurveyEntry");
+  const rows = (await Model.find({ tenantSlug }).sort({ createdAt: -1 }).lean()) as unknown as Record<string, unknown>[];
+  const mine = rows.filter((r) => nameMatchesEmployee(r.employee, employee));
+  res.json({ data: mine.map((r) => ({ id: String((r as any)._id), ...r })) });
+}));
+
+const marketSurveySchema = z.object({
+  surveyDate: z.string().min(1),
+  hq: z.string().optional().default(""),
+  patch: z.string().optional().default(""),
+  chemist: z.string().optional().default(""),
+  competitorCompany: z.string().optional().default(""),
+  competitorBrand: z.string().min(1),
+  competitorProduct: z.string().optional().default(""),
+  competitorMrp: z.coerce.number().min(0).optional().default(0),
+  availability: z.enum(["Available", "Out of Stock", "Short Supply"]).optional().default("Available"),
+  feedback: z.string().optional().default(""),
+  remarks: z.string().optional().default("")
+});
+fieldRouter.post("/market-surveys", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = marketSurveySchema.parse(req.body);
+  const Model = getMasterModel("marketSurveyEntry");
+  const row = await Model.create({
+    tenantSlug,
+    surveyDate: body.surveyDate,
+    employee: employee.name,
+    hq: body.hq,
+    patch: body.patch,
+    chemist: body.chemist,
+    competitorCompany: body.competitorCompany,
+    competitorBrand: body.competitorBrand,
+    competitorProduct: body.competitorProduct,
+    competitorMrp: body.competitorMrp,
+    availability: body.availability,
+    feedback: body.feedback,
+    remarks: body.remarks
+  });
+  await audit("FIELD_MARKET_SURVEY_CREATED", "marketSurveyEntry", String(row._id), { tenantSlug, employeeCode: employee.employeeCode });
+  res.status(201).json({ data: { id: String(row._id), ...row.toObject() } });
+}));
+
+// ── Item 3: Notification visibility (unread count + mark-as-read) ──────
+// readBy already existed on NoticeModel but was never written to for
+// field-rep reads. Filter matches the exact same "from my manager" set
+// GET /field/notices already uses (postedBy:"system", audience:"MR",
+// targetEmployeeCode:mine) so the unread badge and the notices list stay
+// consistent with each other.
+fieldRouter.get("/notices/unread-count", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const count = await NoticeModel.countDocuments({
+    tenantSlug,
+    postedBy: "system",
+    audience: "MR",
+    targetEmployeeCode: employee.employeeCode,
+    readBy: { $ne: employee.employeeCode }
+  });
+  res.json({ data: { count } });
+}));
+
+fieldRouter.post("/notices/mark-read", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  await NoticeModel.updateMany(
+    { tenantSlug, postedBy: "system", audience: "MR", targetEmployeeCode: employee.employeeCode },
+    { $addToSet: { readBy: employee.employeeCode } }
+  );
+  res.json({ data: { ok: true } });
+}));
+
+// ── Item 4: "My Coverage" — field-scoped Coverage Analysis 2 ───────────
+// Reuses the exact same aggregation the admin's Coverage Analysis 2 report
+// runs (computeCoverageAnalysis2, extracted from masters-actions.routes.ts
+// this round into src/utils/coverage-analysis.ts) — employeeCode is forced
+// to the caller's own resolved employee code, never read from the query
+// string, so a field rep can only ever see their own coverage.
+fieldRouter.get("/coverage", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
+  const year = Number(req.query.year) || new Date().getUTCFullYear();
+  const rows = await computeCoverageAnalysis2(tenantSlug, { month, year, employeeCode: employee.employeeCode });
+  res.json({ data: rows[0] ?? null, month, year });
 }));
