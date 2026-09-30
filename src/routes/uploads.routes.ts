@@ -183,6 +183,8 @@ async function importProducts(tenantSlug: string, rows: Record<string, unknown>[
       if (!productName || !category) { errors.push(`Row ${i + 2}: missing Product Name/Category`); continue; }
       const brandName = pick(row, "brandname", "brand") ?? undefined;
       const subDivision = pick(row, "subdivision") ?? undefined;
+      const division = pick(row, "division") ?? "";
+      const pack = pick(row, "pack") ?? null;
       await ProductModel.findOneAndUpdate(
         { tenantSlug, productName, brandName: brandName ?? null },
         {
@@ -192,12 +194,40 @@ async function importProducts(tenantSlug: string, rows: Record<string, unknown>[
             productName,
             brandName: brandName ?? null,
             category,
-            division: pick(row, "division") ?? "",
+            division,
             ...(subDivision ? { subDivision } : {}),
             group: pick(row, "group") ?? null,
             saleUnit: pick(row, "saleunit", "unit") ?? null,
             description: pick(row, "description") ?? null,
+            ...(pack ? { pack } : {}),
             status: "ACTIVE"
+          }
+        },
+        { upsert: true, setDefaultsOnInsert: true }
+      );
+      // Mirror into the "Product Master" admin tab's own real collection
+      // (productMaster generic master, getMasterModel("productMaster")) —
+      // that screen (division-master/product/product-detail) reads a
+      // DIFFERENT collection than this upload writes into (the dedicated
+      // ProductModel every other real feature, like GET /field/products,
+      // actually uses), so an uploaded product never showed up there at
+      // all. No real Product Code column exists in this upload's own
+      // template (Product Name/Category/Group/Brand Name/Division/Sub
+      // Division/Sale Unit/Description only — confirmed by reading
+      // product-upload-panel.tsx's own template generator), so
+      // productCode is left unset here rather than fabricated; the mirror
+      // row is keyed on productName+brand instead, same as ProductModel
+      // above, so a re-upload updates the same row instead of duplicating.
+      const ProductMasterMirror = getMasterModel("productMaster");
+      await ProductMasterMirror.findOneAndUpdate(
+        { tenantSlug, productName, brand: brandName ?? null },
+        {
+          $set: {
+            tenantSlug, productName,
+            brand: brandName ?? null,
+            division,
+            ...(pack ? { pack } : {}),
+            status: "Active"
           }
         },
         { upsert: true, setDefaultsOnInsert: true }
