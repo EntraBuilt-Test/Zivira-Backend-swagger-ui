@@ -22,6 +22,7 @@ import { computeComplianceRows } from "../utils/compliance.js";
 import { syncPayrollStatuses } from "../utils/payroll.js";
 import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { computeRepAnalysisRows } from "../utils/rep-manager-analysis.js";
+import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 
 export const managerRouter = Router();
 managerRouter.use(requireAuth);
@@ -876,4 +877,29 @@ managerRouter.get("/analytics/rep-manager", asyncHandler(async (req, res) => {
       jointCallPercent: teamVisits > 0 ? Math.round((teamJointVisits / teamVisits) * 100) : 0
     }
   });
+}));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 1 — "Call Manager" reference build: Campaign visibility for the
+// Manager portal. Team-scoped the same way GET /manager/team already is
+// (reportingManager === this manager's own employeeCode) — real
+// CampaignVisitModel rows, not the admin-visibility mirror, so status/
+// source stay live if a later phase updates them (e.g. Completed once a
+// DCR is logged against one).
+// ══════════════════════════════════════════════════════════════════════
+managerRouter.get("/campaign-visits", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = await EmployeeModel.find(
+    { tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, status: "ACTIVE" },
+    { employeeCode: 1 }
+  ).lean();
+  const teamCodes = team.map((e: any) => e.employeeCode);
+  if (teamCodes.length === 0) {
+    res.json({ data: [] });
+    return;
+  }
+  const filter: Record<string, unknown> = { tenantSlug: mgr.tenantSlug, employeeCode: { $in: teamCodes } };
+  if (typeof req.query.date === "string" && req.query.date.trim()) filter.visitDate = req.query.date.trim();
+  const rows = await CampaignVisitModel.find(filter).sort({ visitDate: -1, createdAt: -1 }).limit(500);
+  res.json({ data: rows.map(serializeDocument) });
 }));

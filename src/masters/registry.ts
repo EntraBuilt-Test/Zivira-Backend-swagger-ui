@@ -1238,6 +1238,47 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Phase 1 of the "Call Manager" reference build — the admin-authored
+    // Campaign catalog a field rep picks from in Campaign Planning
+    // (GET /field/campaigns). A real generic master (not a bespoke model)
+    // since it is plain admin-entered catalog data with the standard
+    // Add/Edit/Deactivate lifecycle every other master already gets for
+    // free via GenericMasterTable — no FK relationships of its own to
+    // protect, unlike campaign_visits below.
+    key: "campaignMaster",
+    title: "Campaign",
+    keyFields: ["campaignName"],
+    fields: [
+      { key: "campaignName", label: "Campaign Name" },
+      { key: "brand", label: "Brand / Product Focus", sourceMaster: "brandMaster", sourceField: "brandName" },
+      { key: "startDate", label: "Start Date", type: "date" },
+      { key: "endDate", label: "End Date", type: "date" },
+      { key: "description", label: "Description" },
+      { key: "status", label: "Status", options: ACTIVE_INACTIVE }
+    ]
+  },
+  {
+    // Phase 1 — admin-visible mirror of every real CampaignVisitModel row a
+    // field rep creates via Campaign Planning (POST /field/campaign-visits).
+    // Same write-through-mirror pattern already used for Camp/Market Survey
+    // (a real, FK-clean dedicated model is the source of truth; a generic
+    // master gets a mirrored row purely so GenericMasterTable gives the
+    // admin real, filterable visibility under Daily MR Work without a
+    // bespoke admin screen). Never read back into by the backend — writes
+    // only, same as the Camp/Market Survey precedent.
+    key: "campaignVisitEntry",
+    title: "Campaign Visit",
+    keyFields: ["fieldForceName", "doctorName", "visitDate"],
+    fields: [
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "campaignName", label: "Campaign" },
+      { key: "doctorName", label: "Doctor" },
+      { key: "visitDate", label: "Visit Date", type: "date" },
+      { key: "source", label: "Source", options: ["planned", "deviation"] },
+      { key: "status", label: "Status", options: ["Planned", "Completed", "Cancelled"] }
+    ]
+  },
+  {
     key: "marketSurveyEntry",
     title: "Market Survey",
     keyFields: ["surveyDate", "employee", "competitorBrand"],

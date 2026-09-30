@@ -30,6 +30,7 @@ import { QuizModel } from "../models/quiz.model.js";
 import { QuizAttemptModel } from "../models/quiz-attempt.model.js";
 import { NoticeModel } from "../models/notice.model.js";
 import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
+import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -1304,4 +1305,102 @@ fieldRouter.get("/coverage", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getUTCFullYear();
   const rows = await computeCoverageAnalysis2(tenantSlug, { month, year, employeeCode: employee.employeeCode });
   res.json({ data: rows[0] ?? null, month, year });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════
+// Phase 1 — "Call Manager" reference build: Campaign Planning & Execution.
+// See src/models/campaign-visit.model.ts for the schema rationale (a real
+// dedicated model, not a generic master, so the later Deviation phase has
+// a clean employeeCode/doctorId FK relationship to build on via the same
+// `source` field this round already adds but does not yet expose a UI
+// for).
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /field/campaigns — the admin-authored Campaign catalog
+// (campaignMaster generic master). No employee/territory targeting exists
+// on it yet (same "untargeted = show everyone" precedent as Quiz — Round
+// 19 item 1), so every active campaign is shown to every field rep.
+fieldRouter.get("/campaigns", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const Model = getMasterModel("campaignMaster");
+  const rows = (await Model.find({ tenantSlug, status: "Active" }).sort({ startDate: -1 }).lean()) as unknown as Record<string, unknown>[];
+  res.json({ data: rows.map((r) => ({ id: String((r as any)._id), ...r })) });
+}));
+
+// GET /field/campaign-visits — this employee's own planned (or, later,
+// deviation) campaign visits. `date=YYYY-MM-DD` scopes to one day (used by
+// Campaign Execution's "Today's Campaign" — the same rows Campaign
+// Planning just wrote); omitted, it returns the employee's full plan
+// history, newest first (used by the Campaign Planning tab's own list).
+fieldRouter.get("/campaign-visits", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const filter: Record<string, unknown> = { tenantSlug, employeeCode: employee.employeeCode };
+  if (typeof req.query.date === "string" && req.query.date.trim()) filter.visitDate = req.query.date.trim();
+  const rows = await CampaignVisitModel.find(filter).sort({ visitDate: -1, createdAt: -1 });
+  res.json({ data: rows.map(serializeDocument) });
+}));
+
+const campaignVisitSchema = z.object({
+  campaignId: z.string().min(1),
+  doctorId: z.string().min(1),
+  visitDate: z.string().min(1),
+  notes: z.string().optional().default("")
+});
+
+// POST /field/campaign-visits — Campaign Planning's submit action. Doctor
+// must be one of THIS employee's own mapped/active doctors (same real
+// coverage list GET /field/doctors already serves) — never trusted from
+// the client beyond the id, so an MR can't plan a visit to a doctor
+// outside their own territory. Campaign must be a real, active
+// campaignMaster row. Always created with source: "planned" — the later
+// Deviation phase is the only thing that will ever create a "deviation"
+// row here.
+fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = campaignVisitSchema.parse(req.body);
+
+  const CampaignModel = getMasterModel("campaignMaster");
+  const campaign = await CampaignModel.findOne({ _id: body.campaignId, tenantSlug, status: "Active" }).lean();
+  if (!campaign) throw new HttpError(404, "Campaign not found");
+
+  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode, status: "ACTIVE" });
+  if (!doctor) throw new HttpError(404, "Doctor not found in your coverage");
+
+  const row = await CampaignVisitModel.create({
+    tenantSlug,
+    campaignId: body.campaignId,
+    campaignName: (campaign as any).campaignName,
+    employeeCode: employee.employeeCode,
+    employeeName: employee.name,
+    doctorId: body.doctorId,
+    doctorName: doctor.name,
+    visitDate: body.visitDate,
+    source: "planned",
+    status: "Planned",
+    notes: body.notes
+  });
+
+  // Admin visibility mirror — same write-through pattern already used for
+  // Camp/Market Survey (mirrorApprovalRow) — real source of truth stays
+  // CampaignVisitModel; this is purely so GenericMasterTable gives the
+  // admin a real, filterable view under Daily MR Work.
+  try {
+    const MirrorModel = getMasterModel("campaignVisitEntry");
+    await MirrorModel.create({
+      tenantSlug,
+      fieldForceName: employee.name,
+      campaignName: (campaign as any).campaignName,
+      doctorName: doctor.name,
+      visitDate: body.visitDate,
+      source: "planned",
+      status: "Planned"
+    });
+  } catch (err) {
+    console.error("[campaign-visits] failed to mirror into campaignVisitEntry:", err);
+  }
+
+  await audit("FIELD_CAMPAIGN_VISIT_PLANNED", "CampaignVisit", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, campaignId: body.campaignId, doctorId: body.doctorId, visitDate: body.visitDate });
+  res.status(201).json({ data: serializeDocument(row) });
 }));
