@@ -2976,7 +2976,11 @@ export const MASTERS: MasterConfig[] = [
       { key: "subDivision", label: "Sub Division" },
       { key: "brand", label: "Brand", sourceMaster: "productMaster", sourceField: "productName" },
       { key: "fileName", label: "File Name" },
-      { key: "uploadedOn", label: "Uploaded On", type: "date" }
+      { key: "uploadedOn", label: "Uploaded On", type: "date" },
+      // Phase 4 — auto-derived server-side for a real PDF upload (see
+      // uploads.routes.ts); read-only display column here, never entered
+      // by the admin directly.
+      { key: "pages", label: "Pages", type: "number" }
     ]
   },
   {

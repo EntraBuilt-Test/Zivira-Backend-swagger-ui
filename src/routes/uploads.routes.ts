@@ -417,6 +417,23 @@ uploadsRouter.post(
     if (FILE_STORING_UPLOAD_KEYS.has(config.key)) {
       extraFields.fileData = req.file.buffer.toString("base64");
       extraFields.mimeType = req.file.mimetype || "application/octet-stream";
+      // Phase 4 (E-Detailing Download) — page count for the field portal's
+      // "Pages: N" display. No PDF library is installed for this project,
+      // so this counts real /Type /Page object markers directly in the PDF
+      // byte stream (a well-known dependency-free approximation — distinct
+      // from /Type /Pages, the page-tree root, hence the negative
+      // lookahead). Only ever set for an actual application/pdf upload;
+      // any other file type (pptx, images, ...) is left with no pages
+      // field at all rather than faking a number.
+      if (config.key === "slideUploadEDetailing" && (req.file.mimetype || "").toLowerCase() === "application/pdf") {
+        try {
+          const text = req.file.buffer.toString("latin1");
+          const matches = text.match(/\/Type\s*\/Page(?!s)/g);
+          if (matches && matches.length > 0) extraFields.pages = matches.length;
+        } catch {
+          // best-effort only — a parse failure just means no page count shown
+        }
+      }
     }
 
     if (String(req.body.deactivateExisting).toLowerCase() === "true") {

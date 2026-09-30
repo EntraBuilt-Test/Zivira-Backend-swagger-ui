@@ -31,6 +31,7 @@ import { QuizAttemptModel } from "../models/quiz-attempt.model.js";
 import { NoticeModel } from "../models/notice.model.js";
 import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
+import { SlideDownloadModel } from "../models/slide-download.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -991,6 +992,45 @@ fieldRouter.get("/slides/:id/download", asyncHandler(async (req, res) => {
   res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(String(row.fileName ?? "slide"))}"`);
   res.send(buffer);
+}));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 4 — "Master" -> E-Detailing Download / "My Activity" -> E-Detailing
+// Practice. "Download" in this web context means: fetch the file (the
+// existing GET /field/slides/:id/download above already does that) AND
+// record it in the rep's own download-state so the Practice tab knows
+// what's available offline/practiced. The file itself is never duplicated
+// here — Practice re-opens it via the same download route by slideId.
+// ══════════════════════════════════════════════════════════════════════
+fieldRouter.post("/slides/:id/mark-downloaded", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    throw new HttpError(400, "Invalid slide reference.");
+  }
+  const Model = getMasterModel("slideUploadEDetailing");
+  const slide = (await Model.findOne({ _id: req.params.id, tenantSlug }).lean()) as Record<string, unknown> | null;
+  if (!slide) throw new HttpError(404, "Slide not found");
+
+  const record = await SlideDownloadModel.findOneAndUpdate(
+    { tenantSlug, employeeCode: employee.employeeCode, slideId: req.params.id },
+    {
+      tenantSlug, employeeCode: employee.employeeCode, slideId: req.params.id,
+      fileName: slide.fileName ?? "", division: slide.division ?? "", subDivision: slide.subDivision ?? "",
+      brand: slide.brand ?? "", mimeType: slide.mimeType ?? "", pages: slide.pages ?? null,
+      downloadedAt: new Date()
+    },
+    { upsert: true, new: true }
+  );
+  await audit("FIELD_SLIDE_DOWNLOADED", "SlideDownload", String(record._id), { tenantSlug, employeeCode: employee.employeeCode, slideId: req.params.id });
+  res.status(201).json({ data: serializeDocument(record) });
+}));
+
+fieldRouter.get("/slide-downloads", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const rows = await SlideDownloadModel.find({ tenantSlug, employeeCode: employee.employeeCode }).sort({ downloadedAt: -1 });
+  res.json({ data: rows.map(serializeDocument) });
 }));
 
 // GET /field/manuals / GET /field/manuals/:id/download — same pattern for
