@@ -1004,10 +1004,19 @@ fieldRouter.patch("/tasks/:id/status", asyncHandler(async (req, res) => {
 // helper (quiz.routes.ts) — never sends correctOptionIndex or
 // uploadedFileData to the client taking the quiz.
 function shapeQuizForAttempt(quiz: Record<string, unknown>) {
-  const { uploadedFileData: _uploadedFileData, questions, ...rest } = quiz as any;
+  // Round 20 fix — this previously spread `...rest` (which carries the
+  // Mongo `_id` ObjectId field) without ever setting a plain `id` string,
+  // so the frontend's activeQuiz.id was always undefined. The take-quiz
+  // screen then posted to `/field/quizzes/undefined/attempts`, which
+  // Mongoose rejected with "Cast to ObjectId failed for value 'undefined'".
+  // GET /field/quizzes (the list route below) already built its own `id`
+  // field manually and never had this bug — only the single-quiz detail
+  // route did.
+  const { _id, uploadedFileData: _uploadedFileData, questions, ...rest } = quiz as any;
   const qs = Array.isArray(questions) ? questions : [];
   return {
     ...rest,
+    id: String(_id),
     questions: qs.map((q: any) => ({ questionText: q.questionText, options: q.options, points: q.points }))
   };
 }
@@ -1023,22 +1032,33 @@ fieldRouter.get("/quizzes", asyncHandler(async (req, res) => {
     list.push(a);
     attemptsByQuiz.set(a.quizId, list);
   }
-  const data = quizzes.map((q) => {
-    const qId = String(q._id);
-    const mine = (attemptsByQuiz.get(qId) || []).slice().sort((a, b) => (b.submittedAt?.getTime?.() ?? 0) - (a.submittedAt?.getTime?.() ?? 0));
-    const best = mine.reduce((max, a) => (a.score > (max?.score ?? -1) ? a : max), mine[0] as (typeof mine)[number] | undefined);
-    return {
-      id: qId,
-      title: q.title,
-      description: q.description,
-      category: q.category,
-      questionCount: Array.isArray(q.questions) ? q.questions.length : 0,
-      totalPossible: Array.isArray(q.questions) ? q.questions.reduce((s: number, qq: any) => s + (qq.points ?? 0), 0) : 0,
-      attemptCount: mine.length,
-      bestScore: best ? best.score : null,
-      lastAttemptAt: mine[0]?.submittedAt ?? null
-    };
-  });
+  const data = quizzes
+    // Round 20 — the admin's Quiz Authoring screen lets an admin save a
+    // quiz shell (title/category/etc.) before ever adding questions to it
+    // (QuizModel.questions defaults to [], and the admin's own create/edit
+    // routes never require at least one) — a normal in-progress authoring
+    // state, not a data bug. Showing one of these here produced exactly
+    // the broken take-screen the coordinator flagged (a quiz with no
+    // questions and only a dead "Submit Quiz" button), so quizzes with
+    // zero questions are filtered out of the field-facing list entirely —
+    // they simply aren't ready for a rep to take yet.
+    .filter((q) => Array.isArray(q.questions) && q.questions.length > 0)
+    .map((q) => {
+      const qId = String(q._id);
+      const mine = (attemptsByQuiz.get(qId) || []).slice().sort((a, b) => (b.submittedAt?.getTime?.() ?? 0) - (a.submittedAt?.getTime?.() ?? 0));
+      const best = mine.reduce((max, a) => (a.score > (max?.score ?? -1) ? a : max), mine[0] as (typeof mine)[number] | undefined);
+      return {
+        id: qId,
+        title: q.title,
+        description: q.description,
+        category: q.category,
+        questionCount: q.questions.length,
+        totalPossible: q.questions.reduce((s: number, qq: any) => s + (qq.points ?? 0), 0),
+        attemptCount: mine.length,
+        bestScore: best ? best.score : null,
+        lastAttemptAt: mine[0]?.submittedAt ?? null
+      };
+    });
   res.json({ data });
 }));
 
@@ -1046,6 +1066,13 @@ fieldRouter.get("/quizzes/:id", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const quiz = await QuizModel.findOne({ _id: req.params.id, tenantSlug, isActive: true }).lean();
   if (!quiz) throw new HttpError(404, "Quiz not found");
+  // Round 20 — defense in depth alongside the list-route filter above: even
+  // if a quiz with zero questions is somehow opened directly, fail with a
+  // clear message here rather than rendering a take-screen with nothing to
+  // answer and a submit button that can only error.
+  if (!Array.isArray((quiz as any).questions) || (quiz as any).questions.length === 0) {
+    throw new HttpError(400, "This quiz has no questions yet — check back once Admin has added some.");
+  }
   res.json({ data: shapeQuizForAttempt(quiz as unknown as Record<string, unknown>) });
 }));
 
@@ -1059,6 +1086,7 @@ fieldRouter.post("/quizzes/:id/attempts", asyncHandler(async (req, res) => {
   const quiz = await QuizModel.findOne({ _id: req.params.id, tenantSlug, isActive: true });
   if (!quiz) throw new HttpError(404, "Quiz not found");
   const questions = quiz.questions as unknown as Array<{ options: string[]; correctOptionIndex: number; points: number }>;
+  if (!questions.length) throw new HttpError(400, "This quiz has no questions yet.");
   const totalPossible = questions.reduce((sum, q) => sum + (q.points ?? 0), 0);
   // Server-side scoring only — never trust a client-supplied score, and
   // unlike the admin's own /company/quiz/:id/attempts route, employeeCode
