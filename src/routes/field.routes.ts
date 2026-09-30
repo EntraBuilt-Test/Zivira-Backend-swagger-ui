@@ -810,7 +810,7 @@ fieldRouter.get("/checkout-status", asyncHandler(async (req, res) => {
       openDate,
       checkInAt: openAttendance.checkInAt,
       outstandingCount: outstanding.length,
-      outstandingDoctors: outstanding.map((v) => v.doctorName).filter((n): n is string => Boolean(n))
+      outstandingVisits: outstanding.map((v) => ({ id: String(v._id), doctorName: v.doctorName }))
     }
   });
 }));
@@ -1485,4 +1485,30 @@ fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
 
   await audit("FIELD_CAMPAIGN_VISIT_PLANNED", "CampaignVisit", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, campaignId: body.campaignId, doctorId: body.doctorId, visitDate: body.visitDate });
   res.status(201).json({ data: serializeDocument(row) });
+}));
+
+// Phase 2 — lets the rep close out a planned campaign visit as "Cancelled"
+// (with a reason) instead of a DCR, e.g. when resolving a stranded prior
+// day's checkout block for a doctor they genuinely could not see. Reuses
+// the "Cancelled" status Phase 1's schema already reserved for this — no
+// new deviation UI or workflow introduced.
+const campaignVisitResolveSchema = z.object({
+  status: z.enum(["Completed", "Cancelled"]),
+  notes: z.string().optional()
+});
+
+fieldRouter.post("/campaign-visits/:id/resolve", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    throw new HttpError(400, "Invalid campaign visit reference.");
+  }
+  const body = campaignVisitResolveSchema.parse(req.body);
+  const visit = await CampaignVisitModel.findOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
+  if (!visit) throw new HttpError(404, "Campaign visit not found");
+  visit.status = body.status;
+  if (body.notes) visit.notes = body.notes;
+  await visit.save();
+  await audit("FIELD_CAMPAIGN_VISIT_RESOLVED", "CampaignVisit", String(visit._id), { tenantSlug, employeeCode: employee.employeeCode, status: body.status });
+  res.json({ data: serializeDocument(visit) });
 }));
