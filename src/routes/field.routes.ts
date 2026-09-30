@@ -159,6 +159,10 @@ function currentUtcMonth() {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+function dateOnlyUTC(d: Date) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 export const fieldRouter = Router();
 fieldRouter.use(requireAuth, requireFieldForce);
 
@@ -292,11 +296,10 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const body = dcrSchema.parse(req.body);
   const month = currentUtcMonth();
+  const visitDateOnly = dateOnlyUTC(new Date());
 
   // ── PRD 12.2 — daily-uniqueness guard (app-layer; rejected visits excluded) ──
   if (body.doctorId) {
-    const now = new Date();
-    const visitDateOnly = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
     const sameDayVisit = await DcrModel.findOne({
       tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId,
       visitDateOnly, status: { $ne: "REJECTED" }
@@ -358,6 +361,19 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     tenantSlug, employeeCode: employee.employeeCode,
     overVisitFlag, overrideAcknowledged: body.overrideOverVisitWarning ?? false
   });
+  // Phase 2 (checkout gating) — a submitted DCR for a doctor closes out that
+  // doctor's planned campaign visit for today, if one exists (Phase 1's
+  // CampaignVisitModel). Best-effort: never fails the DCR submit itself.
+  if (body.doctorId) {
+    try {
+      await CampaignVisitModel.updateMany(
+        { tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, visitDate: visitDateOnly, status: "Planned" },
+        { status: "Completed", dcrId: String(dcr._id) }
+      );
+    } catch (err) {
+      console.error("[Field] Failed to close out campaign visit on DCR submit:", err);
+    }
+  }
   await mirrorApprovalRow("approvalDcr", tenantSlug, {
     sfName: employee.name,
     activityDate: dcr.visitDate,
@@ -721,16 +737,82 @@ fieldRouter.post("/attendance/check-in", asyncHandler(async (req, res) => {
   res.status(201).json({ data: serializeDocument(attendance) });
 }));
 
+// Phase 2 — DCR day-checkout gating. Rather than assuming "today", this
+// closes out whatever attendance day is currently OPEN (checkInAt set,
+// checkOutAt still null) for this employee — that is either today's row,
+// or a stranded prior day the rep never checked out of (see the "day still
+// open from before" login-time check exposed via GET /checkout-status
+// below). Checkout is blocked with a 409 while that day still has
+// outstanding planned campaign visits (Phase 1's CampaignVisitModel,
+// status "Planned") — the concrete, real definition of "the day's work is
+// complete" used here, per the reference Call Manager app's Checkout gate.
 fieldRouter.post("/attendance/check-out", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const openAttendance = await AttendanceModel.findOne({
+    tenantSlug, employeeCode: employee.employeeCode,
+    checkInAt: { $ne: null }, checkOutAt: null
+  }).sort({ attendanceDate: -1 });
+  if (!openAttendance) {
+    // Nothing to check out of (never checked in) — same no-op-with-no-record
+    // behaviour as before, the frontend already handles this case.
+    res.status(200).json({ data: null });
+    return;
+  }
+  const openDate = dateOnlyUTC(openAttendance.attendanceDate);
+  const outstanding = await CampaignVisitModel.find({
+    tenantSlug, employeeCode: employee.employeeCode, visitDate: openDate, status: "Planned"
+  }).select("doctorName");
+  if (outstanding.length > 0) {
+    const names = outstanding.map((v) => v.doctorName).filter(Boolean).slice(0, 5).join(", ");
+    const suffix = outstanding.length > 5 ? ", ..." : "";
+    throw new HttpError(
+      409,
+      `You still have ${outstanding.length} planned campaign visit${outstanding.length === 1 ? "" : "s"} pending for ${openDate}${names ? ` (${names}${suffix})` : ""}. Submit a DCR for each planned doctor before checking out.`
+    );
+  }
   const attendance = await AttendanceModel.findOneAndUpdate(
-    { tenantSlug, employeeCode: employee.employeeCode, attendanceDate: today },
+    { _id: openAttendance._id },
     { checkOutAt: new Date() },
     { new: true }
   );
+  await audit("FIELD_ATTENDANCE_CHECK_OUT", "Attendance", String(attendance!._id), { tenantSlug, employeeCode: employee.employeeCode, visitDate: openDate });
   res.status(200).json({ data: attendance ? serializeDocument(attendance) : null });
+}));
+
+// Phase 2 — "day still open from before" check. The field-rep frontend
+// calls this on app load / after login; if it comes back blocked, the
+// person is forced to a blocking Checkout Required screen (see
+// components/checkout-guard.tsx) before they can use the rest of the app,
+// mirroring how attendance/checkin systems typically hard-block until the
+// outstanding item is resolved.
+fieldRouter.get("/checkout-status", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const openAttendance = await AttendanceModel.findOne({
+    tenantSlug, employeeCode: employee.employeeCode,
+    checkInAt: { $ne: null }, checkOutAt: null
+  }).sort({ attendanceDate: -1 });
+  if (!openAttendance || openAttendance.attendanceDate.getTime() >= today.getTime()) {
+    // No open attendance row, or the only open one is today's — today's own
+    // checkout is gated at checkout time above, not at login time.
+    res.json({ data: { blocked: false } });
+    return;
+  }
+  const openDate = dateOnlyUTC(openAttendance.attendanceDate);
+  const outstanding = await CampaignVisitModel.find({
+    tenantSlug, employeeCode: employee.employeeCode, visitDate: openDate, status: "Planned"
+  }).select("doctorName");
+  res.json({
+    data: {
+      blocked: true,
+      openDate,
+      checkInAt: openAttendance.checkInAt,
+      outstandingCount: outstanding.length,
+      outstandingDoctors: outstanding.map((v) => v.doctorName).filter((n): n is string => Boolean(n))
+    }
+  });
 }));
 
 // ══════════════════════════════════════════════════════════════════════
