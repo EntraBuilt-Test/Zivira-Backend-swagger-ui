@@ -1268,11 +1268,15 @@ export const MASTERS: MasterConfig[] = [
     // only, same as the Camp/Market Survey precedent.
     key: "campaignVisitEntry",
     title: "Campaign Visit",
-    keyFields: ["fieldForceName", "doctorName", "visitDate"],
+    keyFields: ["fieldForceName", "targetName", "visitDate"],
     fields: [
       { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
       { key: "campaignName", label: "Campaign" },
-      { key: "doctorName", label: "Doctor" },
+      // Phase 5 — chemist campaign visits mirror in here too; targetName is
+      // whichever of doctorName/chemistName applies (see field.routes.ts),
+      // so the admin table has one readable column regardless of type.
+      { key: "visitType", label: "Type", options: ["doctor", "chemist"] },
+      { key: "targetName", label: "Doctor / Chemist" },
       { key: "visitDate", label: "Visit Date", type: "date" },
       { key: "source", label: "Source", options: ["planned", "deviation"] },
       { key: "status", label: "Status", options: ["Planned", "Completed", "Cancelled", "Pending Approval", "Rejected"] },

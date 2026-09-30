@@ -10,6 +10,8 @@ import { DoctorModel } from "../models/doctor.model.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { UserModel } from "../models/user.model.js";
 import { ProductModel } from "../models/product.model.js";
+import { ProductBrandModel } from "../models/product-brand.model.js";
+import { DealerModel } from "../models/dealer.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
@@ -32,6 +34,7 @@ import { NoticeModel } from "../models/notice.model.js";
 import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { SlideDownloadModel } from "../models/slide-download.model.js";
+import { ChemistCallModel } from "../models/chemist-call.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -1465,19 +1468,24 @@ fieldRouter.get("/campaign-visits", asyncHandler(async (req, res) => {
 
 const campaignVisitSchema = z.object({
   campaignId: z.string().min(1),
-  doctorId: z.string().min(1),
+  // Phase 5 — chemist campaign planning reuses this exact route,
+  // parameterized by visitType, instead of a parallel endpoint.
+  visitType: z.enum(["doctor", "chemist"]).optional().default("doctor"),
+  doctorId: z.string().optional(),
+  chemistId: z.string().optional(),
   visitDate: z.string().min(1),
   notes: z.string().optional().default("")
 });
 
-// POST /field/campaign-visits — Campaign Planning's submit action. Doctor
-// must be one of THIS employee's own mapped/active doctors (same real
-// coverage list GET /field/doctors already serves) — never trusted from
-// the client beyond the id, so an MR can't plan a visit to a doctor
-// outside their own territory. Campaign must be a real, active
-// campaignMaster row. Always created with source: "planned" — the later
-// Deviation phase is the only thing that will ever create a "deviation"
-// row here.
+// POST /field/campaign-visits — Campaign Planning's submit action. The
+// doctor must be one of THIS employee's own mapped/active doctors (same
+// real coverage list GET /field/doctors already serves) — never trusted
+// from the client beyond the id, so an MR can't plan a visit to a doctor
+// outside their own territory. A chemist (Phase 5) is validated against
+// the real Chemist Master (DealerModel) the same way, matched on
+// employeeCode. Campaign must be a real, active campaignMaster row.
+// Always created with source: "planned" — Deviation is the only thing
+// that ever creates a "deviation" row here.
 fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
@@ -1487,8 +1495,21 @@ fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
   const campaign = await CampaignModel.findOne({ _id: body.campaignId, tenantSlug, status: "Active" }).lean();
   if (!campaign) throw new HttpError(404, "Campaign not found");
 
-  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode, status: "ACTIVE" });
-  if (!doctor) throw new HttpError(404, "Doctor not found in your coverage");
+  let targetId: string;
+  let targetName: string;
+  if (body.visitType === "chemist") {
+    if (!body.chemistId) throw new HttpError(400, "chemistId is required");
+    const chemist = await DealerModel.findOne({ _id: body.chemistId, tenantSlug, employeeCode: employee.employeeCode, status: "ACTIVE" });
+    if (!chemist) throw new HttpError(404, "Chemist not found in your coverage");
+    targetId = body.chemistId;
+    targetName = chemist.dealerName;
+  } else {
+    if (!body.doctorId) throw new HttpError(400, "doctorId is required");
+    const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode, status: "ACTIVE" });
+    if (!doctor) throw new HttpError(404, "Doctor not found in your coverage");
+    targetId = body.doctorId;
+    targetName = doctor.name;
+  }
 
   const row = await CampaignVisitModel.create({
     tenantSlug,
@@ -1496,8 +1517,11 @@ fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
     campaignName: (campaign as any).campaignName,
     employeeCode: employee.employeeCode,
     employeeName: employee.name,
-    doctorId: body.doctorId,
-    doctorName: doctor.name,
+    visitType: body.visitType,
+    doctorId: body.visitType === "doctor" ? targetId : null,
+    doctorName: body.visitType === "doctor" ? targetName : "",
+    chemistId: body.visitType === "chemist" ? targetId : null,
+    chemistName: body.visitType === "chemist" ? targetName : "",
     visitDate: body.visitDate,
     source: "planned",
     status: "Planned",
@@ -1514,7 +1538,8 @@ fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
       tenantSlug,
       fieldForceName: employee.name,
       campaignName: (campaign as any).campaignName,
-      doctorName: doctor.name,
+      visitType: body.visitType,
+      targetName,
       visitDate: body.visitDate,
       source: "planned",
       status: "Planned"
@@ -1523,7 +1548,7 @@ fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
     console.error("[campaign-visits] failed to mirror into campaignVisitEntry:", err);
   }
 
-  await audit("FIELD_CAMPAIGN_VISIT_PLANNED", "CampaignVisit", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, campaignId: body.campaignId, doctorId: body.doctorId, visitDate: body.visitDate });
+  await audit("FIELD_CAMPAIGN_VISIT_PLANNED", "CampaignVisit", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, campaignId: body.campaignId, visitType: body.visitType, targetId, visitDate: body.visitDate });
   res.status(201).json({ data: serializeDocument(row) });
 }));
 
@@ -1566,32 +1591,61 @@ fieldRouter.get("/deviation/types", asyncHandler(async (_req, res) => {
   res.json({ data: DEVIATION_TYPES });
 }));
 
-// Distinct territories for the tenant's doctor master — backs the
+// Distinct territories for the tenant's doctor/chemist master — backs the
 // territory picker + search (screenshot e5f1620f). Not scoped to this
 // rep's own mapped coverage on purpose: a deviation is, by definition, a
-// visit outside the rep's normal patch.
+// visit outside the rep's normal patch. Phase 5 — ?type=chemist reads the
+// real Chemist Master (DealerModel.patchName, its territory-equivalent
+// field) instead of DoctorModel.territory, via the same route rather than
+// a parallel one.
 fieldRouter.get("/deviation/territories", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
+  const type = req.query.type === "chemist" ? "chemist" : "doctor";
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (type === "chemist") {
+    const filter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
+    if (q) filter.patchName = { $regex: q, $options: "i" };
+    const territories = await DealerModel.distinct("patchName", filter);
+    res.json({ data: (territories as string[]).filter(Boolean).sort() });
+    return;
+  }
   const filter: Record<string, unknown> = { tenantSlug, status: "ACTIVE" };
   if (q) filter.territory = { $regex: q, $options: "i" };
   const territories = await DoctorModel.distinct("territory", filter);
   res.json({ data: (territories as string[]).filter(Boolean).sort() });
 }));
 
-// Doctors in a picked territory, excluding anyone already in today's plan
-// (any CampaignVisitModel row for this employee/doctor/today that isn't
-// Cancelled/Rejected) — screenshot e5f1620f's doctor/chemist list.
+// Doctors (or, Phase 5, chemists) in a picked territory, excluding anyone
+// already in today's plan (any CampaignVisitModel row for this
+// employee/target/today that isn't Cancelled/Rejected) — screenshot
+// e5f1620f's doctor/chemist list. Both branches return the same
+// {id, name, ...} shape the frontend's shared deviation UI expects.
 fieldRouter.get("/deviation/doctors", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
+  const type = req.query.type === "chemist" ? "chemist" : "doctor";
   const territory = typeof req.query.territory === "string" ? req.query.territory.trim() : "";
   if (!territory) throw new HttpError(400, "territory is required");
   const today = dateOnlyUTC(new Date());
+
+  if (type === "chemist") {
+    const [chemists, alreadyPlanned] = await Promise.all([
+      DealerModel.find({ tenantSlug, patchName: territory, status: "ACTIVE" }).sort({ dealerName: 1 }),
+      CampaignVisitModel.find({
+        tenantSlug, employeeCode: employee.employeeCode, visitDate: today, visitType: "chemist",
+        status: { $nin: ["Cancelled", "Rejected"] }
+      }).select("chemistId")
+    ]);
+    const excluded = new Set(alreadyPlanned.map((v) => v.chemistId));
+    const list = chemists.filter((c) => !excluded.has(String(c._id)));
+    res.json({ data: list.map((c) => ({ id: String(c._id), name: c.dealerName, city: c.city, territory: c.patchName, specialty: "" })) });
+    return;
+  }
+
   const [doctors, alreadyPlanned] = await Promise.all([
     DoctorModel.find({ tenantSlug, territory, status: "ACTIVE" }).sort({ name: 1 }),
     CampaignVisitModel.find({
-      tenantSlug, employeeCode: employee.employeeCode, visitDate: today,
+      tenantSlug, employeeCode: employee.employeeCode, visitDate: today, visitType: "doctor",
       status: { $nin: ["Cancelled", "Rejected"] }
     }).select("doctorId")
   ]);
@@ -1601,7 +1655,9 @@ fieldRouter.get("/deviation/doctors", asyncHandler(async (req, res) => {
 }));
 
 const deviationVisitSchema = z.object({
-  doctorId: z.string().min(1),
+  visitType: z.enum(["doctor", "chemist"]).optional().default("doctor"),
+  doctorId: z.string().optional(),
+  chemistId: z.string().optional(),
   deviationType: z.enum(DEVIATION_TYPES),
   remarks: z.string().optional().default("")
 });
@@ -1610,28 +1666,46 @@ const deviationVisitSchema = z.object({
 // Continue (screenshots a963d244 / 78468fd6). Creates a Pending Approval
 // deviation row — it does NOT count toward Phase 2's checkout gate and
 // does NOT appear in Campaign Execution as a live visit until a manager
-// approves it.
+// approves it. Phase 5 — the same route handles a chemist deviation via
+// visitType, per the coordinator's "parameterize, don't rebuild" ask.
 fieldRouter.post("/deviation-visits", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const body = deviationVisitSchema.parse(req.body);
   const today = dateOnlyUTC(new Date());
 
-  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, status: "ACTIVE" });
-  if (!doctor) throw new HttpError(404, "Doctor not found");
+  let targetId: string;
+  let targetName: string;
+  if (body.visitType === "chemist") {
+    if (!body.chemistId) throw new HttpError(400, "chemistId is required");
+    const chemist = await DealerModel.findOne({ _id: body.chemistId, tenantSlug, status: "ACTIVE" });
+    if (!chemist) throw new HttpError(404, "Chemist not found");
+    targetId = body.chemistId;
+    targetName = chemist.dealerName;
+  } else {
+    if (!body.doctorId) throw new HttpError(400, "doctorId is required");
+    const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, status: "ACTIVE" });
+    if (!doctor) throw new HttpError(404, "Doctor not found");
+    targetId = body.doctorId;
+    targetName = doctor.name;
+  }
 
   const existing = await CampaignVisitModel.findOne({
-    tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, visitDate: today,
+    tenantSlug, employeeCode: employee.employeeCode, visitDate: today, visitType: body.visitType,
+    ...(body.visitType === "chemist" ? { chemistId: targetId } : { doctorId: targetId }),
     status: { $nin: ["Cancelled", "Rejected"] }
   });
-  if (existing) throw new HttpError(409, "This doctor is already in today's plan.");
+  if (existing) throw new HttpError(409, `This ${body.visitType} is already in today's plan.`);
 
   const row = await CampaignVisitModel.create({
     tenantSlug,
     employeeCode: employee.employeeCode,
     employeeName: employee.name,
-    doctorId: body.doctorId,
-    doctorName: doctor.name,
+    visitType: body.visitType,
+    doctorId: body.visitType === "doctor" ? targetId : null,
+    doctorName: body.visitType === "doctor" ? targetName : "",
+    chemistId: body.visitType === "chemist" ? targetId : null,
+    chemistName: body.visitType === "chemist" ? targetName : "",
     visitDate: today,
     source: "deviation",
     status: "Pending Approval",
@@ -1645,7 +1719,8 @@ fieldRouter.post("/deviation-visits", asyncHandler(async (req, res) => {
       tenantSlug,
       fieldForceName: employee.name,
       campaignName: "",
-      doctorName: doctor.name,
+      visitType: body.visitType,
+      targetName,
       visitDate: today,
       source: "deviation",
       status: "Pending Approval",
@@ -1656,14 +1731,175 @@ fieldRouter.post("/deviation-visits", asyncHandler(async (req, res) => {
   }
 
   await audit("FIELD_DEVIATION_VISIT_REQUESTED", "CampaignVisit", String(row._id), {
-    tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, deviationType: body.deviationType
+    tenantSlug, employeeCode: employee.employeeCode, visitType: body.visitType, targetId, deviationType: body.deviationType
   });
   await notifyReportingManager(
     tenantSlug,
     employee,
     "Deviation visit awaiting approval",
-    `${employee.name} (${employee.employeeCode}) requested an off-plan visit to ${doctor.name} (${body.deviationType}).`
+    `${employee.name} (${employee.employeeCode}) requested an off-plan visit to ${targetName} (${body.deviationType}).`
   );
 
   res.status(201).json({ data: serializeDocument(row) });
+}));
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 5 — Chemist Call execution (RCPA / POB / Short Expiry / JCC), the
+// chemist-side equivalent of a doctor DCR. Investigated first: no
+// ChemistCall/RCPA/POB/Short-Expiry/JCC backend existed anywhere in this
+// codebase (confirmed by reading every model file and the registry) —
+// this is genuinely new, built on real existing masters wherever one
+// exists (see each route's own comment for what it reuses).
+// ══════════════════════════════════════════════════════════════════════
+
+// GET /field/chemists — this employee's own mapped chemists, the exact
+// same shape/scoping as GET /field/doctors above (DealerModel is the real,
+// live Chemist Master — see registry.ts's "dealers" master comment).
+fieldRouter.get("/chemists", asyncHandler(async (req, res) => {
+  const employee = await getFieldProfile(req.auth!.sub);
+  const chemists = await DealerModel.find({ tenantSlug: req.auth!.tenantSlug, employeeCode: employee.employeeCode, status: "ACTIVE" }).sort({ dealerName: 1 });
+  res.json({ data: chemists.map(serializeDocument) });
+}));
+
+// GET /field/rcpa-brands — the real Product Brand master (ProductBrandModel,
+// registry.ts's "productBrands" collection) backs RCPA's Brand column —
+// not ProductModel, which is SKU/pack-level (that's POB's source instead,
+// reusing the existing GET /field/products route directly).
+fieldRouter.get("/rcpa-brands", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const brands = await ProductBrandModel.find({ tenantSlug, status: "ACTIVE" }).sort({ sortOrder: 1, brandName: 1 }).limit(500);
+  res.json({ data: brands.map(serializeDocument) });
+}));
+
+// GET /field/short-expiry-products — seeded from the admin's real
+// rateMaster generic master (product + batchNo + expiryDate), the one
+// genuine stock/batch-with-expiry data source found in this codebase — no
+// new admin-authored master was invented for this. Only rows with a
+// parseable expiryDate are returned; the rep can still edit date/qty
+// before saving a call (screenshot d37d9359's editable fields).
+fieldRouter.get("/short-expiry-products", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const Model = getMasterModel("rateMaster");
+  const rows = (await Model.find({ tenantSlug, status: "ACTIVE" }).sort({ expiryDate: 1 }).limit(500).lean()) as unknown as Record<string, unknown>[];
+  res.json({
+    data: rows
+      .filter((r) => r.expiryDate)
+      .map((r) => ({
+        id: String((r as any)._id),
+        medicineName: [r.product, r.pack].filter(Boolean).join(" "),
+        expiryDate: r.expiryDate,
+        batchNo: r.batchNo ?? null
+      }))
+  });
+}));
+
+// GET /field/jcc-colleagues — Joint Call Coverage picker. Reuses the real
+// Employee collection, filtered to manager-level roles (the same
+// MANAGER_ROLES set manager.routes.ts already uses to decide who gets
+// manager-facing notifications) — matches the reference screenshot's
+// senior-designation names (AVP, DMM, GM, Chief Manager). A rep never
+// sees themself in this list.
+const JCC_MANAGER_ROLES = ["ABM", "RBM", "NBH", "ZBM", "BH"];
+fieldRouter.get("/jcc-colleagues", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const colleagues = await EmployeeModel.find(
+    { tenantSlug, status: "ACTIVE", role: { $in: JCC_MANAGER_ROLES }, employeeCode: { $ne: employee.employeeCode } },
+    { employeeCode: 1, name: 1, designation: 1 }
+  ).sort({ name: 1 }).limit(200).lean();
+  res.json({ data: colleagues.map((c: any) => ({ employeeCode: c.employeeCode, name: c.name, designation: c.designation ?? "" })) });
+}));
+
+// GET /field/chemist-calls?chemistId=&date= — fetches today's already-saved
+// call (if any) for prefill when the rep reopens the same chemist/day.
+fieldRouter.get("/chemist-calls", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const chemistId = typeof req.query.chemistId === "string" ? req.query.chemistId.trim() : "";
+  const date = typeof req.query.date === "string" && req.query.date.trim() ? req.query.date.trim() : dateOnlyUTC(new Date());
+  if (!chemistId) throw new HttpError(400, "chemistId is required");
+  const call = await ChemistCallModel.findOne({ tenantSlug, employeeCode: employee.employeeCode, chemistId, visitDateOnly: date });
+  res.json({ data: call ? serializeDocument(call) : null });
+}));
+
+const chemistCallRowSchemas = {
+  rcpa: z.array(z.object({
+    brandId: z.string().nullable().optional(),
+    brandName: z.string().min(1),
+    myQty: z.number().min(0).optional().default(0),
+    compBrandName: z.string().nullable().optional(),
+    compQty: z.number().nullable().optional()
+  })).optional().default([]),
+  pob: z.array(z.object({
+    productId: z.string().min(1),
+    productName: z.string().min(1),
+    qty: z.number().min(0)
+  })).optional().default([]),
+  shortExpiry: z.array(z.object({
+    medicineName: z.string().min(1),
+    expiryDate: z.string().nullable().optional(),
+    qty: z.number().min(0).optional().default(0)
+  })).optional().default([]),
+  jcc: z.array(z.object({
+    employeeCode: z.string().nullable().optional(),
+    name: z.string().min(1),
+    designation: z.string().optional().default("")
+  })).optional().default([])
+};
+
+const chemistCallSchema = z.object({
+  chemistId: z.string().min(1),
+  visitDate: z.string().optional(), // YYYY-MM-DD; defaults to today
+  ...chemistCallRowSchemas
+});
+
+// POST /field/chemist-calls — a single Save persists RCPA + POB + Short
+// Expiry + JCC as one real record (upsert on tenantSlug/employeeCode/
+// chemistId/visitDateOnly, per the coordinator's exact spec). Chemist must
+// be one of this employee's own mapped/active chemists — same coverage
+// guard as a DCR's doctor check. On save, closes out today's matching
+// CampaignVisitModel chemist row (Planned -> Completed), the same
+// auto-completion Phase 2 already wired for a doctor DCR.
+fieldRouter.post("/chemist-calls", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = chemistCallSchema.parse(req.body);
+  const dateOnly = body.visitDate && body.visitDate.trim() ? body.visitDate.trim() : dateOnlyUTC(new Date());
+
+  const chemist = await DealerModel.findOne({ _id: body.chemistId, tenantSlug, employeeCode: employee.employeeCode, status: "ACTIVE" });
+  if (!chemist) throw new HttpError(404, "Chemist not found in your coverage");
+
+  const pobRows = body.pob.filter((r) => r.qty > 0);
+  const shortExpiryRows = body.shortExpiry.filter((r) => r.qty > 0);
+
+  const call = await ChemistCallModel.findOneAndUpdate(
+    { tenantSlug, employeeCode: employee.employeeCode, chemistId: body.chemistId, visitDateOnly: dateOnly },
+    {
+      tenantSlug, employeeCode: employee.employeeCode, employeeName: employee.name,
+      chemistId: body.chemistId, chemistName: chemist.dealerName,
+      visitDate: new Date(dateOnly), visitDateOnly: dateOnly,
+      rcpa: body.rcpa, pob: pobRows, shortExpiry: shortExpiryRows, jcc: body.jcc,
+      status: "SUBMITTED"
+    },
+    { upsert: true, new: true }
+  );
+
+  try {
+    await CampaignVisitModel.updateMany(
+      { tenantSlug, employeeCode: employee.employeeCode, chemistId: body.chemistId, visitDate: dateOnly, visitType: "chemist", status: "Planned" },
+      { status: "Completed", dcrId: String(call._id) }
+    );
+  } catch (err) {
+    console.error("[chemist-calls] Failed to close out campaign visit on save:", err);
+  }
+
+  await audit("FIELD_CHEMIST_CALL_SAVED", "ChemistCall", String(call._id), { tenantSlug, employeeCode: employee.employeeCode, chemistId: body.chemistId, visitDate: dateOnly });
+  await notifyReportingManager(
+    tenantSlug,
+    employee,
+    "New Chemist Call submitted",
+    `${employee.name} (${employee.employeeCode}) submitted a Chemist Call for ${chemist.dealerName}.`
+  );
+
+  res.status(201).json({ data: serializeDocument(call) });
 }));

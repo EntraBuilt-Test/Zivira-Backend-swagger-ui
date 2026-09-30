@@ -27,8 +27,15 @@ const campaignVisitSchema = new Schema(
     campaignName: { type: String, trim: true, default: "" }, // denormalized for cheap display, same precedent as tour-plan/expense-claim's stored names
     employeeCode: { type: String, required: true, trim: true, index: true },
     employeeName: { type: String, trim: true, default: "" },
-    doctorId: { type: String, required: true, index: true }, // string id of a real DoctorModel row
+    // Phase 5 — chemist campaign visits reuse this exact model rather than a
+    // parallel one, per the coordinator's own instruction. visitType picks
+    // which of the two target fields below is populated; doctorId is no
+    // longer schema-required so a chemist row can omit it.
+    visitType: { type: String, enum: ["doctor", "chemist"], default: "doctor", index: true },
+    doctorId: { type: String, default: null, index: true }, // string id of a real DoctorModel row
     doctorName: { type: String, trim: true, default: "" },
+    chemistId: { type: String, default: null, index: true }, // string id of a real DealerModel ("Chemist") row
+    chemistName: { type: String, trim: true, default: "" },
     visitDate: { type: String, required: true, index: true }, // YYYY-MM-DD, same convention as Dcr.visitDateOnly
     // "planned" rows come from Campaign Planning; "deviation" rows are an
     // off-plan doctor the rep picked on the fly (Phase 3), pending manager

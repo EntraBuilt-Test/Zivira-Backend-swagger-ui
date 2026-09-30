@@ -941,7 +941,7 @@ managerRouter.post("/deviation-visits/:id/approve", asyncHandler(async (req, res
     mgr.tenantSlug,
     visit.employeeCode,
     "Deviation visit approved",
-    `${mgr.name} (${mgr.employeeCode}) approved your off-plan visit to ${visit.doctorName}.`
+    `${mgr.name} (${mgr.employeeCode}) approved your off-plan visit to ${visit.doctorName || visit.chemistName}.`
   );
   res.json({ data: serializeDocument(visit) });
 }));
@@ -963,7 +963,7 @@ managerRouter.post("/deviation-visits/:id/reject", asyncHandler(async (req, res)
     mgr.tenantSlug,
     visit.employeeCode,
     "Deviation visit rejected",
-    `${mgr.name} (${mgr.employeeCode}) rejected your off-plan visit to ${visit.doctorName}.${reason ? ` Reason: ${reason}` : ""}`
+    `${mgr.name} (${mgr.employeeCode}) rejected your off-plan visit to ${visit.doctorName || visit.chemistName}.${reason ? ` Reason: ${reason}` : ""}`
   );
   res.json({ data: serializeDocument(visit) });
 }));
