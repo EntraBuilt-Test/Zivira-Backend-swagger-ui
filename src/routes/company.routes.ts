@@ -41,6 +41,8 @@ import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
+import { ChemistCallModel } from "../models/chemist-call.model.js";
+import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
 import { enrichWithEmployeeNames } from "../utils/enrich-employee-names.js";
 import { computeComplianceRows } from "../utils/compliance.js";
@@ -1671,6 +1673,114 @@ companyRouter.get("/analytics/alerts", asyncHandler(async (req, res) => {
       high: alerts.filter(a => a.severity === "HIGH").length,
       medium: alerts.filter(a => a.severity === "MEDIUM").length,
       low: alerts.filter(a => a.severity === "LOW").length
+    }
+  });
+}));
+
+// ══════════════════════════════════════════════════════════════════════
+// Round F item 1 — Activities landing page's 4 stat cards. Previously 100%
+// hardcoded static numbers in admin-activities-dashboard.tsx ("1,420 /
+// 1,600 Target", "8.4 mins", "₹4.82 Lakhs", "9 GPS Mismatches" — none of it
+// ever read from Mongo). This endpoint replaces every one of those numbers
+// with a real, live aggregation. Two things were investigated and found to
+// have NO real backing data anywhere in this codebase, so they are
+// reported here rather than faked: (1) a registered clinic/chemist GPS
+// coordinate to diff a rep's capture against (no Doctor/Chemist model has
+// a lat/lng field) — "gpsNotCapturedToday" is the closest honest proxy
+// (DCRs submitted today with no gpsLocation at all), not a "mismatch
+// distance"; (2) any e-detailing session-duration tracking (no model
+// anywhere stores minutes/seconds per VA session) — there is no real
+// "Avg E-Detailing mins" to report, so it is omitted entirely rather than
+// shown as a fake average.
+// ══════════════════════════════════════════════════════════════════════
+companyRouter.get("/activities/summary", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const now = new Date();
+  const toDateOnly = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  const todayStr = toDateOnly(now);
+  const yesterday = new Date(now);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const yesterdayStr = toDateOnly(yesterday);
+
+  const [
+    callsToday,
+    callsYesterday,
+    doctorDetailingToday,
+    gpsNotCapturedToday,
+    gpsNotCapturedDetailingToday,
+    chemistCallsToday,
+    pendingLeave,
+    pendingExpense,
+    pendingTourPlan,
+    pendingDeviation
+  ] = await Promise.all([
+    DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr }),
+    DcrModel.countDocuments({ tenantSlug, visitDateOnly: yesterdayStr }),
+    DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr, productsDetailed: { $exists: true, $not: { $size: 0 } } }),
+    DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr, "gpsLocation.latitude": null }),
+    DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr, productsDetailed: { $exists: true, $not: { $size: 0 } }, "gpsLocation.latitude": null }),
+    ChemistCallModel.find({ tenantSlug, visitDateOnly: todayStr }, { pob: 1 }).lean(),
+    LeaveApplicationModel.countDocuments({ tenantSlug, status: "PENDING" }),
+    ExpenseClaimModel.countDocuments({ tenantSlug, status: "SUBMITTED" }),
+    TourPlanModel.countDocuments({ tenantSlug, status: "SUBMITTED" }),
+    CampaignVisitModel.countDocuments({ tenantSlug, source: "deviation", status: "Pending Approval" })
+  ]);
+
+  // Chemist & Stockist Orders — real POB bookings today. Rupee value is
+  // best-effort via rateMaster's MRP (keyed on product name, same as the
+  // rest of this codebase's rateMaster lookups) — flagged partial when any
+  // ordered product has no matching Active rate row, rather than silently
+  // under-counting.
+  let chemistOrderCount = 0;
+  let chemistOrderQty = 0;
+  const productNames = new Set<string>();
+  for (const call of chemistCallsToday as unknown as { pob?: { productName: string; qty: number }[] }[]) {
+    const pob = Array.isArray(call.pob) ? call.pob : [];
+    if (pob.length > 0) chemistOrderCount++;
+    for (const row of pob) {
+      chemistOrderQty += Number(row.qty) || 0;
+      if (row.productName) productNames.add(row.productName);
+    }
+  }
+  let chemistOrderValue = 0;
+  let chemistOrderValuePartial = false;
+  if (productNames.size > 0) {
+    const RateMaster = getMasterModel("rateMaster");
+    const rateRows = await RateMaster.find({ tenantSlug, product: { $in: Array.from(productNames) }, status: "Active" }, { product: 1, mrp: 1 }).lean();
+    const mrpByProduct = new Map<string, number>();
+    for (const r of rateRows as unknown as { product: string; mrp: number }[]) {
+      const mrp = Number(r.mrp) || 0;
+      if (mrp > 0 && !mrpByProduct.has(r.product)) mrpByProduct.set(r.product, mrp);
+    }
+    for (const call of chemistCallsToday as unknown as { pob?: { productName: string; qty: number }[] }[]) {
+      for (const row of call.pob || []) {
+        const mrp = mrpByProduct.get(row.productName);
+        if (mrp) chemistOrderValue += mrp * (Number(row.qty) || 0);
+        else chemistOrderValuePartial = true;
+      }
+    }
+  }
+
+  res.json({
+    data: {
+      date: todayStr,
+      totalCallsLoggedToday: callsToday,
+      totalCallsLoggedYesterday: callsYesterday,
+      callsDeltaPct: callsYesterday > 0 ? Math.round(((callsToday - callsYesterday) / callsYesterday) * 1000) / 10 : null,
+      doctorDetailingVisitsToday: doctorDetailingToday,
+      gpsNotCapturedToday,
+      gpsNotCapturedDetailingToday,
+      chemistStockistOrdersToday: chemistOrderCount,
+      chemistStockistOrderQtyToday: chemistOrderQty,
+      chemistStockistOrderValueToday: Math.round(chemistOrderValue),
+      chemistStockistOrderValuePartial: chemistOrderValuePartial,
+      pendingApprovals: {
+        leave: pendingLeave,
+        expense: pendingExpense,
+        tourPlan: pendingTourPlan,
+        deviation: pendingDeviation,
+        total: pendingLeave + pendingExpense + pendingTourPlan + pendingDeviation
+      }
     }
   });
 }));
