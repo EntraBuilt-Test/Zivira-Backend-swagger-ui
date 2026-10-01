@@ -690,6 +690,151 @@ companyRouter.get(
   })
 );
 
+// Round F item 4 — the Masters page's "Recent Master Modifications &
+// Audit Trail" table (admin-masters-dashboard.tsx) was 100% hardcoded
+// mock rows (fake doctor/product names, a fake "42 Audit Records" count,
+// dead Filter/Module/Export/View-Diff/pagination controls) -- confirmed
+// by reading the component source. This reads the SAME real, already
+// pervasively-written AuditLogModel the /activity endpoint above uses
+// (every one of the ~110 real audit() call sites across this whole
+// backend), scoped to this tenant via metadata.tenantSlug exactly like
+// that endpoint, with real search/module filtering and real pagination.
+// Two honest limitations, disclosed rather than faked: audit() never
+// records an actor user (its own signature has no actor param), so
+// "Updated By" falls back to whatever identifying field metadata happens
+// to carry (employeeCode/managerCode/adminUser) or "System" when none do;
+// and no call site anywhere captures a structured before/after diff, so
+// "View Diff" returns this entry's real metadata as-is rather than a
+// fabricated old-value/new-value pair that doesn't exist in the data.
+function auditModuleFor(entry: { action: string; entityType: string }) {
+  const match = entry.action.match(/^MASTER_(.+)_(CREATED|UPDATED|DEACTIVATED|REACTIVATED)$/);
+  const masterKeyUpper = match ? match[1] : entry.entityType.toUpperCase();
+  return MASTER_TITLE_BY_UPPER_KEY[masterKeyUpper] ?? entry.entityType;
+}
+
+function auditChangeType(action: string): string {
+  if (/CREATED|SUBMITTED|PLANNED|LOGGED|ADDED/.test(action)) return "Created";
+  if (/APPROVED/.test(action)) return "Approved";
+  if (/REJECTED/.test(action)) return "Rejected";
+  if (/DEACTIVATED|SUSPENDED|VOIDED/.test(action)) return "Deactivated";
+  if (/REACTIVATED/.test(action)) return "Reactivated";
+  if (/UPDATED|MODIFIED|EDITED|RECEIVED/.test(action)) return "Modified";
+  return "Other";
+}
+
+function auditUpdatedBy(metadata: Record<string, unknown> | undefined): string {
+  if (!metadata) return "System";
+  const candidate = metadata.adminUser ?? metadata.managerCode ?? metadata.employeeCode ?? metadata.actorCode;
+  return candidate ? String(candidate) : "System";
+}
+
+function auditEntityName(entry: { entityType: string; entityId?: string; metadata?: Record<string, unknown> }): string {
+  const m = entry.metadata ?? {};
+  const nameLike = m.campaignName ?? m.name ?? m.doctorName ?? m.chemistName ?? m.tpId ?? m.productName;
+  if (nameLike) return String(nameLike);
+  return entry.entityId ? `${entry.entityType} ${entry.entityId}` : entry.entityType;
+}
+
+companyRouter.get(
+  "/audit-log",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const moduleFilter = typeof req.query.module === "string" ? req.query.module.trim() : "";
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
+
+    const filter: Record<string, unknown> = { "metadata.tenantSlug": tenantSlug };
+    if (search) {
+      const re = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      filter.$or = [{ action: re }, { entityType: re }, { entityId: re }, { "metadata.employeeCode": re }, { "metadata.name": re }];
+    }
+    if (moduleFilter && moduleFilter !== "All Modules") {
+      const upperKey = Object.keys(MASTER_TITLE_BY_UPPER_KEY).find((k) => MASTER_TITLE_BY_UPPER_KEY[k] === moduleFilter);
+      filter.$and = [
+        upperKey
+          ? { $or: [{ action: new RegExp(`^MASTER_${upperKey}_`) }, { entityType: moduleFilter }] }
+          : { entityType: moduleFilter }
+      ];
+    }
+
+    const [total, entries] = await Promise.all([
+      AuditLogModel.countDocuments(filter),
+      AuditLogModel.find(filter).sort({ createdAt: -1 }).skip((page - 1) * pageSize).limit(pageSize).lean()
+    ]);
+
+    const data = entries.map((e: any) => ({
+      id: String(e._id),
+      module: auditModuleFor(e),
+      entityName: auditEntityName(e),
+      entityType: e.entityType,
+      changeType: auditChangeType(e.action),
+      action: e.action,
+      updatedBy: auditUpdatedBy(e.metadata),
+      timestamp: e.createdAt,
+      metadata: e.metadata ?? null
+    }));
+
+    res.json({ data, total, page, pageSize });
+  })
+);
+
+// Real modules present in this tenant's audit log, for the "All Modules"
+// filter dropdown — never a hardcoded list, so it only ever shows filters
+// that actually have matching log entries.
+companyRouter.get(
+  "/audit-log/modules",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const entries = await AuditLogModel.find({ "metadata.tenantSlug": tenantSlug }, { action: 1, entityType: 1 }).lean();
+    const modules = new Set<string>();
+    for (const e of entries as any[]) modules.add(auditModuleFor(e));
+    res.json({ data: Array.from(modules).sort() });
+  })
+);
+
+// Real CSV export of this tenant's actual audit log (respects the same
+// search/module filters as the table above) -- not a stubbed download.
+companyRouter.get(
+  "/audit-log/export",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const moduleFilter = typeof req.query.module === "string" ? req.query.module.trim() : "";
+
+    const filter: Record<string, unknown> = { "metadata.tenantSlug": tenantSlug };
+    if (search) {
+      const re = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      filter.$or = [{ action: re }, { entityType: re }, { entityId: re }, { "metadata.employeeCode": re }, { "metadata.name": re }];
+    }
+    if (moduleFilter && moduleFilter !== "All Modules") {
+      const upperKey = Object.keys(MASTER_TITLE_BY_UPPER_KEY).find((k) => MASTER_TITLE_BY_UPPER_KEY[k] === moduleFilter);
+      filter.$and = [
+        upperKey
+          ? { $or: [{ action: new RegExp(`^MASTER_${upperKey}_`) }, { entityType: moduleFilter }] }
+          : { entityType: moduleFilter }
+      ];
+    }
+
+    const entries = await AuditLogModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
+    const rows = entries.map((e: any) => [
+      auditModuleFor(e),
+      auditEntityName(e),
+      auditChangeType(e.action),
+      auditUpdatedBy(e.metadata),
+      new Date(e.createdAt).toISOString()
+    ]);
+    const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+    const csv = [["Module", "Entity Name", "Change Type", "Updated By", "Timestamp"], ...rows]
+      .map((r) => r.map(esc).join(","))
+      .join("\r\n");
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="audit-log-${tenantSlug}-${Date.now()}.csv"`);
+    res.send(csv);
+  })
+);
+
 // ===END===
 
 // ─── Sub-Division Routes ──────────────────────────────────────────
