@@ -466,6 +466,27 @@ managerRouter.get("/tour-plans", asyncHandler(async (req, res) => {
   res.json({ data: await enrichTourPlansWithNames(mgr.tenantSlug, tps) });
 }));
 
+// DELETE /manager/tour-plans/:tpId — Item B (post-launch robustness round):
+// manager equivalent of the field-rep delete above. Scoped to Tour Plans
+// this manager is the assignedManager for (their own chain), so a manager
+// can't delete another manager's team's TP. Also removes the mirrored
+// "approvalTp" master row -- same split-collection cleanup as the field
+// delete handler.
+managerRouter.delete("/tour-plans/:tpId", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const tp = await TourPlanModel.findOneAndDelete({ tenantSlug: mgr.tenantSlug, tpId: req.params.tpId, assignedManager: mgr.employeeCode });
+  if (!tp) throw new HttpError(404, "Tour Plan not found");
+  try {
+    const ApprovalTpModel = getMasterModel("approvalTp");
+    await ApprovalTpModel.deleteMany({ tenantSlug: mgr.tenantSlug, tpId: tp.tpId });
+  } catch (err) {
+    console.error("Failed to remove mirrored approvalTp row on Tour Plan delete:", err);
+  }
+  await audit("MANAGER_TOUR_PLAN_DELETED", "TourPlan", tp.tpId, { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode, employeeCode: (tp as any).employeeCode });
+  await notifyFieldRepByCode(mgr.tenantSlug, (tp as any).employeeCode, "Tour Plan removed by Manager", `Your Tour Plan ${tp.tpId} for ${(tp as any).month} was deleted by your manager.`).catch(() => {});
+  res.json({ data: { deleted: true, tpId: tp.tpId } });
+}));
+
 // GET /manager/tour-plans/cross-team — ALL TPs across the tenant, for
 // cross-manager visibility (PRD: "New 'Cross-Team TPs' tab — shows TPs from
 // all MRs across the tenant, not just own team.")

@@ -16,6 +16,7 @@ import { AttendanceModel } from "../models/attendance.model.js";
 import { DcrModel } from "../models/dcr.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { EmployeeModel } from "../models/employee.model.js";
+import { SlideDownloadModel } from "../models/slide-download.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { audit } from "../utils/audit.js";
 import { nextDoctorCode } from "../utils/doctor-code.js";
@@ -1838,6 +1839,60 @@ companyRouter.get("/analytics/alerts", asyncHandler(async (req, res) => {
 // "Avg E-Detailing mins" to report, so it is omitted entirely rather than
 // shown as a fake average.
 // ══════════════════════════════════════════════════════════════════════
+// GET /company/edetailing-summary -- Item A (post-launch robustness
+// round): the admin Activities dashboard's "E-Detailing VA Session
+// Metrics" panel used to show fabricated numbers (average screen
+// duration, VA interactive slips, per-product "engagement %") that have
+// no real backing data anywhere -- the only real e-detailing-adjacent
+// event this codebase actually tracks is a field rep DOWNLOADING an
+// admin-authored slide for offline practice (SlideDownloadModel). This
+// returns real download counts only; it deliberately does not report any
+// duration/engagement metric, since none is ever recorded.
+companyRouter.get("/edetailing-summary", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const weekStart = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+  const [downloadsToday, downloadsThisWeek] = await Promise.all([
+    SlideDownloadModel.find({ tenantSlug, downloadedAt: { $gte: todayStart } }).lean(),
+    SlideDownloadModel.find({ tenantSlug, downloadedAt: { $gte: weekStart } }).lean()
+  ]);
+
+  const slideCounts = new Map<string, { fileName: string; brand: string; count: number }>();
+  for (const d of downloadsThisWeek as any[]) {
+    const key = String(d.slideId);
+    const existing = slideCounts.get(key);
+    if (existing) existing.count += 1;
+    else slideCounts.set(key, { fileName: d.fileName || "Untitled slide", brand: d.brand || "", count: 1 });
+  }
+  const topSlides = Array.from(slideCounts.values()).sort((a, b) => b.count - a.count).slice(0, 5);
+
+  const repCounts = new Map<string, number>();
+  for (const d of downloadsThisWeek as any[]) {
+    repCounts.set(d.employeeCode, (repCounts.get(d.employeeCode) ?? 0) + 1);
+  }
+  const repCodes = Array.from(repCounts.keys());
+  const employees = repCodes.length
+    ? await EmployeeModel.find({ tenantSlug, employeeCode: { $in: repCodes } }, { employeeCode: 1, name: 1 }).lean()
+    : [];
+  const nameByCode = new Map((employees as any[]).map((e) => [e.employeeCode, e.name]));
+  const topReps = Array.from(repCounts.entries())
+    .map(([employeeCode, count]) => ({ employeeCode, employeeName: nameByCode.get(employeeCode) ?? employeeCode, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  res.json({
+    data: {
+      downloadsToday: downloadsToday.length,
+      downloadsThisWeek: downloadsThisWeek.length,
+      distinctRepsThisWeek: repCounts.size,
+      topSlides,
+      topReps
+    }
+  });
+}));
+
 companyRouter.get("/activities/summary", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const now = new Date();

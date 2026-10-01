@@ -672,6 +672,29 @@ fieldRouter.post("/tour-plans", asyncHandler(async (req, res) => {
   res.status(201).json({ data: enriched });
 }));
 
+// DELETE /field/tour-plans/:tpId — Item B (post-launch robustness round):
+// the "Cycle History & Approvals" list on the field Tour Plan screen
+// accumulated every cycle ever submitted with no way to remove one. Only
+// the owning MR's own Tour Plan can be deleted here. Also removes the
+// mirrored row in the "approvalTp" generic master (written by the POST
+// handler above) so the admin-facing TP Approval master screen doesn't keep
+// showing a row for a Tour Plan that no longer exists -- the exact
+// split-collection pattern flagged for this round.
+fieldRouter.delete("/tour-plans/:tpId", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const tp = await TourPlanModel.findOneAndDelete({ tenantSlug, tpId: req.params.tpId, employeeCode: employee.employeeCode });
+  if (!tp) throw new HttpError(404, "Tour Plan not found");
+  try {
+    const ApprovalTpModel = getMasterModel("approvalTp");
+    await ApprovalTpModel.deleteMany({ tenantSlug, tpId: tp.tpId });
+  } catch (err) {
+    console.error("Failed to remove mirrored approvalTp row on Tour Plan delete:", err);
+  }
+  await audit("FIELD_TOUR_PLAN_DELETED", "TourPlan", tp.tpId, { tenantSlug, employeeCode: employee.employeeCode });
+  res.json({ data: { deleted: true, tpId: tp.tpId } });
+}));
+
 // PATCH /field/tour-plans/:tpId/locations — the escape hatch for the
 // one-active-TP-per-month guard above: once an MR already has a live Tour
 // Plan for the month, POST /tour-plans correctly refuses to create a second
