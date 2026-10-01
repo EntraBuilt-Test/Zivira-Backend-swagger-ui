@@ -43,6 +43,7 @@ import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
+import { DispatchModel } from "../models/dispatch.model.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
 import { enrichWithEmployeeNames } from "../utils/enrich-employee-names.js";
@@ -1839,6 +1840,61 @@ companyRouter.get("/analytics/alerts", asyncHandler(async (req, res) => {
 // "Avg E-Detailing mins" to report, so it is omitted entirely rather than
 // shown as a fake average.
 // ══════════════════════════════════════════════════════════════════════
+// GET /company/chemist-calls-today -- Item 4 (post-launch robustness
+// round): real backing for the Activities dashboard's "Chemist Orders &
+// POB" tab, which used to be a static tab label with no real view behind
+// it. Lists today's real ChemistCallModel entries with their POB (product
+// order booking) rows -- the same real data /company/activities/summary's
+// "Chemist & Stockist Orders Today" card already counts, surfaced here as
+// an actual itemized list. Honest scope note: there is no approval/status
+// concept on ChemistCallModel (it's a logged fact, not an approval-gated
+// request), so this is a real read-only list, not a fake approval queue.
+companyRouter.get("/chemist-calls-today", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const now = new Date();
+  const todayStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  const calls = await ChemistCallModel.find({ tenantSlug, visitDateOnly: todayStr }).sort({ visitDate: -1 }).limit(200).lean();
+  const data = (calls as any[])
+    .filter((c) => Array.isArray(c.pob) && c.pob.length > 0)
+    .map((c) => ({
+      id: String(c._id),
+      employeeCode: c.employeeCode,
+      employeeName: c.employeeName,
+      chemistName: c.chemistName,
+      visitDate: c.visitDate,
+      pob: (c.pob as any[]).map((p) => ({ productName: p.productName, qty: p.qty }))
+    }));
+  res.json({ data });
+}));
+
+// GET /company/dispatches-today -- Item 4 (post-launch robustness round):
+// real backing for the "Sample / Promo Dispatches" tab. Lists today's real
+// DispatchModel batches (dispatchDate within today, or still Pending
+// regardless of date -- pending ones are exactly what an admin cares about
+// here). Same honest scope note as chemist-calls-today: a dispatch only
+// has Pending/Received, not an approval workflow, so this is a real list
+// view, not an approval queue.
+companyRouter.get("/dispatches-today", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const dispatches = await DispatchModel.find({
+    tenantSlug,
+    $or: [{ dispatchDate: { $gte: todayStart } }, { status: "Pending" }]
+  }).sort({ dispatchDate: -1 }).limit(200).lean();
+  const data = (dispatches as any[]).map((d) => ({
+    id: String(d._id),
+    employeeCode: d.employeeCode,
+    employeeName: d.employeeName,
+    type: d.type,
+    dispatchDate: d.dispatchDate,
+    status: d.status,
+    itemCount: Array.isArray(d.items) ? d.items.length : 0,
+    totalQty: Array.isArray(d.items) ? d.items.reduce((sum: number, it: any) => sum + (Number(it.dispatchQty) || 0), 0) : 0
+  }));
+  res.json({ data });
+}));
+
 // GET /company/edetailing-summary -- Item A (post-launch robustness
 // round): the admin Activities dashboard's "E-Detailing VA Session
 // Metrics" panel used to show fabricated numbers (average screen

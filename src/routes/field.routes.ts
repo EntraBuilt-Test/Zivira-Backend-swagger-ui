@@ -1001,8 +1001,63 @@ fieldRouter.get("/checkout-status", asyncHandler(async (req, res) => {
 // LeaveApplicationModel (previously only wired to the HR/ESS portal) —
 // no schema changes needed.
 // ══════════════════════════════════════════════════════════════════════
-fieldRouter.get("/leave-reasons", asyncHandler(async (_req, res) => {
-  res.json({ data: LEAVE_REASONS });
+// Coordinator follow-up round (Item 1) -- this used to be a flat hardcoded
+// list no matter what admin configured on the real "Leave Setup" screen
+// (leaveTypeCatalog = which leave types exist/are active, leaveTypeSetup =
+// which of the 4 standard CL/PL/SL/LOP types each employment-type grade is
+// eligible for). Now driven by that real data:
+//   - Only leaveTypeCatalog rows with status "Active" are offered.
+//   - Of those, one whose shortName matches a governed column (cl/pl/sl/
+//     lop, case-insensitive) is only offered if that column is "Yes" on
+//     the leaveTypeSetup matrix; a catalog row that isn't one of the 4
+//     governed columns (a custom leave type) is always offered as long as
+//     it's Active, since the SetUp matrix has no opinion on it.
+//   - Honest scoping note: EmployeeModel has no employmentType
+//     (Trainee/Probation/Confirmed) field anywhere in this codebase, so
+//     there is no real per-employee grade to look up here. Per-employee
+//     grade-based eligibility can't be genuinely enforced without adding
+//     that field first. As the closest real approximation, this reads the
+//     "Confirmed" row (the standard default grade for an active
+//     employee) rather than fabricating a match -- flagged in the round
+//     report rather than silently pretending this is fully per-employee.
+//   - If admin has never configured any Active leave types at all (a
+//     fresh tenant), this falls back to the original fixed list rather
+//     than handing the field rep an empty dropdown.
+fieldRouter.get("/leave-reasons", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  try {
+    const CatalogModel = getMasterModel("leaveTypeCatalog");
+    const SetupModel = getMasterModel("leaveTypeSetup");
+    const [catalogRows, setupRows] = await Promise.all([
+      CatalogModel.find({ tenantSlug, status: "Active" }).lean(),
+      SetupModel.find({ tenantSlug }).lean()
+    ]);
+    if (!catalogRows.length) {
+      res.json({ data: LEAVE_REASONS });
+      return;
+    }
+    const confirmedRow = (setupRows as any[]).find((r) => String(r.employmentType ?? "") === "Confirmed");
+    const governedCols = ["cl", "pl", "sl", "lop"];
+    const names: string[] = [];
+    for (const row of catalogRows as any[]) {
+      const shortName = String(row.shortName ?? "").trim().toLowerCase();
+      const label = String(row.name ?? row.shortName ?? "").trim();
+      if (!label) continue;
+      if (governedCols.includes(shortName)) {
+        // No setup row configured yet for Confirmed -> default to allowed,
+        // same as the panel's own "default checked" behaviour on first load.
+        const allowed = confirmedRow ? String(confirmedRow[shortName] ?? "Yes") === "Yes" : true;
+        if (allowed) names.push(label);
+      } else {
+        names.push(label);
+      }
+    }
+    if (!names.includes("Other")) names.push("Other");
+    res.json({ data: names });
+  } catch (err) {
+    console.error("[field/leave-reasons] falling back to fixed list:", err);
+    res.json({ data: LEAVE_REASONS });
+  }
 }));
 
 fieldRouter.get("/leave-applications", asyncHandler(async (req, res) => {

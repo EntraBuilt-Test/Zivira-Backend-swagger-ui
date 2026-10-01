@@ -493,6 +493,25 @@ managerRouter.delete("/leave-applications/:id", asyncHandler(async (req, res) =>
   res.json({ data: { deleted: true, id: String(leave._id) } });
 }));
 
+// GET /manager/leave-entitlement -- Item 3 (post-launch robustness round):
+// the Manager Portal had a Leave Requests (approvals) tab but nothing
+// showing the team's actual leave entitlement/balance, even though admin's
+// real Leave Entitlement - Entry screen already sets real per-employee
+// CL/PL/SL/LOP data (the same leaveEntitlementEntry collection the field
+// rep's own balance cards read). Team-scoped real read from that same
+// collection, matched by employee name the same way the field endpoint
+// does, so a manager sees exactly what their team members see of their
+// own balances.
+managerRouter.get("/leave-entitlement", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = await EmployeeModel.find({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode }).select("employeeCode name designation territory");
+  const namesByLower = new Map(team.map((e: any) => [String(e.name).trim().toLowerCase(), e]));
+  const Model = getMasterModel("leaveEntitlementEntry");
+  const rows = (await Model.find({ tenantSlug: mgr.tenantSlug }).sort({ year: -1 }).lean()) as unknown as Record<string, unknown>[];
+  const teamRows = rows.filter((r) => namesByLower.has(String(r.fieldForceName ?? "").trim().toLowerCase()));
+  res.json({ data: teamRows.map((r) => ({ id: String(r._id), ...r })) });
+}));
+
 // GET /manager/dashboard
 managerRouter.get("/dashboard", asyncHandler(async (req, res) => {
   const mgr = await getManagerProfile(req.auth!.sub);
@@ -838,6 +857,7 @@ managerRouter.patch("/expense-claims/:claimId/approve", asyncHandler(async (req,
   await claim.save();
 
   await audit("MANAGER_EXPENSE_CLAIM_APPROVED", "ExpenseClaim", String(claim._id), { tenantSlug: mgr.tenantSlug, byManager: mgr.employeeCode, claimId: claim.claimId });
+  await markExpenseApprovalRow(mgr.tenantSlug, claim.employeeName || claim.employeeCode, claim.month, "Approved");
   await notifyFieldRepByCode(
     mgr.tenantSlug,
     claim.employeeCode,
@@ -863,6 +883,39 @@ async function reverseExpenseApprovalRow(tenantSlug: string, employeeName: strin
     }
   } catch (err) {
     console.error("[reverseExpenseApprovalRow] failed:", err);
+  }
+}
+
+// Coordinator follow-up round (Item 2) -- the expenseApprovalActive mirror
+// was only ever touched at submit time (additive) and at delete time
+// (reversal, Round 28). Approve/reject never kept it in sync at all: an
+// approved claim's real manager-approval date never showed up, and a
+// REJECTED claim kept inflating the month's claimedAmount total forever
+// (the same money double-counted as "claimed" even though the claim was
+// turned down). This keeps it in sync on both:
+//   - approve: stamps a real mgrApprovalDate and marks status "Approved".
+//   - reject: reverses the claim's amount out of claimedAmount (same
+//     reversal the delete endpoint uses) and marks status "Rejected".
+// Honest limitation: this mirror aggregates ALL of an employee's claims
+// for a month into one row with a single "status" column, so if an
+// employee has two claims the same month and only one is actioned, this
+// overwrites that one shared status/date rather than tracking per-claim
+// state (the mirror's own schema has no per-claim granularity to do
+// otherwise) -- the claimedAmount reversal on reject is exact either way
+// since it's a straight numeric subtraction, independent of how many
+// claims share the row.
+async function markExpenseApprovalRow(tenantSlug: string, employeeName: string, month: string, status: "Approved" | "Rejected") {
+  try {
+    const [year, monthNum] = month.split("-");
+    const monthName = new Date(Date.UTC(Number(year), Number(monthNum) - 1, 1)).toLocaleString("en-US", { month: "long" });
+    const Model = getMasterModel("expenseApprovalActive");
+    const existing = await Model.findOne({ tenantSlug, fieldForceName: employeeName, month: monthName, year });
+    if (existing) {
+      const dateField = status === "Approved" ? "mgrApprovalDate" : "adminApprovalDate";
+      await Model.updateOne({ _id: existing._id }, { $set: { status, [dateField]: new Date().toISOString().slice(0, 10) } });
+    }
+  } catch (err) {
+    console.error("[markExpenseApprovalRow] failed:", err);
   }
 }
 
@@ -898,6 +951,8 @@ managerRouter.patch("/expense-claims/:claimId/reject", asyncHandler(async (req, 
   await claim.save();
 
   await audit("MANAGER_EXPENSE_CLAIM_REJECTED", "ExpenseClaim", String(claim._id), { tenantSlug: mgr.tenantSlug, byManager: mgr.employeeCode, claimId: claim.claimId, reason });
+  await reverseExpenseApprovalRow(mgr.tenantSlug, claim.employeeName || claim.employeeCode, claim.month, claim.amountRs);
+  await markExpenseApprovalRow(mgr.tenantSlug, claim.employeeName || claim.employeeCode, claim.month, "Rejected");
   await notifyFieldRepByCode(
     mgr.tenantSlug,
     claim.employeeCode,
