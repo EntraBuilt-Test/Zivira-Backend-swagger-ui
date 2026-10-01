@@ -28,8 +28,16 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 export const uploadsRouter = Router();
 
+// Round F item 2 -- widened from stripping only whitespace/underscore/dot/
+// dash to stripping ALL non-alphanumeric characters. Found while auditing
+// every upload template against its importer: several real templates use
+// punctuation the old version left in place (e.g. "Territory/Cluster(For
+// DCR)", "City Name(For Expense)"), so those columns could never match any
+// alias no matter what the importer looked for. Strictly a superset match
+// (anything that matched before still matches), so this cannot break an
+// existing working template.
 function normalizeHeader(h: string) {
-  return String(h).trim().toLowerCase().replace(/[\s_.-]+/g, "");
+  return String(h).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function parseWorkbookRows(buffer: Buffer): Record<string, unknown>[] {
@@ -57,17 +65,36 @@ function pick(row: Record<string, unknown>, ...aliases: string[]): string | unde
 
 type UploadResult = { processed: number; failed: number; errors: string[] };
 
+function parseLooseDate(raw: string | undefined): Date | null {
+  if (!raw) return null;
+  // DOB/DOW columns are labeled "(DD/MM/YY)" on the real template.
+  const m = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (m) {
+    let [, d, mo, y] = m;
+    if (y.length === 2) y = Number(y) < 50 ? `20${y}` : `19${y}`;
+    const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 async function importDoctors(tenantSlug: string, rows: Record<string, unknown>[]): Promise<UploadResult> {
   let processed = 0;
   const errors: string[] = [];
   for (const [i, row] of rows.entries()) {
     try {
-      const name = pick(row, "doctorname", "name");
+      // "Listed Doctor Name" is this upload's real column (see
+      // listed-doctor-upload-panel.tsx's PARAMS) -- "doctorname"/"name"
+      // alone never matched it, so every uploaded row used to fail here.
+      const name = pick(row, "doctorname", "name", "listeddoctorname");
       if (!name) { errors.push(`Row ${i + 2}: missing Doctor Name`); continue; }
       const doctorCode = pick(row, "doctorcode", "code");
-      const territory = pick(row, "territory", "hq", "city") || "Unassigned";
+      const territory = pick(row, "territory", "hq", "territoryclusterfordcr") || pick(row, "city", "citynameforexpense") || "Unassigned";
       const cat = pick(row, "category");
       const filter = doctorCode ? { tenantSlug, doctorCode } : { tenantSlug, name, territory };
+      const dob = parseLooseDate(pick(row, "dob", "dobddmmyy"));
+      const anniversaryDate = parseLooseDate(pick(row, "dow", "dowddmmyy"));
       await DoctorModel.findOneAndUpdate(
         filter,
         {
@@ -78,10 +105,19 @@ async function importDoctors(tenantSlug: string, rows: Record<string, unknown>[]
             specialty: pick(row, "specialty", "speciality") || "General Physician",
             category: ["A", "B", "C"].includes(cat ?? "") ? cat : "C",
             state: pick(row, "state") || territory,
-            city: pick(row, "city") || territory,
+            city: pick(row, "city", "citynameforexpense") || territory,
             territory,
+            territoryType: (["HQ", "EX", "OS"].includes(pick(row, "territorytype") ?? "") ? pick(row, "territorytype") : undefined) ?? undefined,
             qualification: pick(row, "qualification") ?? null,
-            phone: pick(row, "phone", "mobile") ?? null,
+            phone: pick(row, "phone", "mobile", "mobileno", "phoneno") ?? null,
+            email: pick(row, "email", "emailid") ?? null,
+            gender: pick(row, "gender") ?? null,
+            address1: pick(row, "address") ?? null,
+            clinicName: pick(row, "hospitalname") ?? null,
+            country: pick(row, "country") ?? null,
+            postalCode: pick(row, "pincode") ?? null,
+            ...(dob ? { dob } : {}),
+            ...(anniversaryDate ? { anniversaryDate } : {}),
             status: "ACTIVE"
           }
         },
@@ -102,7 +138,7 @@ async function importChemists(tenantSlug: string, rows: Record<string, unknown>[
     try {
       const dealerName = pick(row, "dealername", "chemistname", "name");
       if (!dealerName) { errors.push(`Row ${i + 2}: missing Chemist/Dealer Name`); continue; }
-      const city = pick(row, "city") ?? undefined;
+      const city = pick(row, "city", "cityname") ?? undefined;
       await DealerModel.findOneAndUpdate(
         { tenantSlug, dealerName, city: city ?? null },
         {
@@ -113,8 +149,8 @@ async function importChemists(tenantSlug: string, rows: Record<string, unknown>[
             employeeCode: pick(row, "employeecode", "empcode") ?? null,
             patchName: pick(row, "patchname", "patch") ?? null,
             contactPersonName: pick(row, "contactperson", "contactpersonname") ?? null,
-            dealerPhone: pick(row, "phone", "dealerphone", "mobile") ?? null,
-            dealerEmail: pick(row, "email", "dealeremail") ?? null,
+            dealerPhone: pick(row, "phone", "dealerphone", "mobile", "mobileno", "shoplandlineno") ?? null,
+            dealerEmail: pick(row, "email", "dealeremail", "emailid") ?? null,
             country: pick(row, "country") ?? null,
             state: pick(row, "state") ?? null,
             city: city ?? null,
@@ -351,14 +387,28 @@ async function importLeaves(tenantSlug: string, rows: Record<string, unknown>[])
   return { processed, failed: rows.length - processed, errors };
 }
 
-async function importTargets(tenantSlug: string, rows: Record<string, unknown>[]): Promise<UploadResult> {
+// Round F item 2 — the Target Upload template
+// (target-upload-panel.tsx's downloadTemplate) generated "HQ Code" /
+// "Sale ERP Code" / "Target Qty" / "Target Rate" while this importer only
+// ever recognized "targetunit" / "unitprice" and required "Field Force
+// Name" / "Product" columns the template never had at all -- a real
+// Target Upload would fail on every single row ("missing Field Force
+// Name/Product"), 0 ever imported. Fixed on both sides: the template
+// (see that component) now generates the columns this importer actually
+// needs, and the importer here additionally accepts "Target Qty"/
+// "Target Rate" as aliases so an already-distributed old-style sheet
+// still imports instead of silently losing data. Year falls back to the
+// panel's Financial Year picker (extraFields.financialYear, "YYYY -
+// YYYY") when a row has no Year column of its own.
+async function importTargets(tenantSlug: string, rows: Record<string, unknown>[], extraFields?: Record<string, unknown>): Promise<UploadResult> {
   let processed = 0;
   const errors: string[] = [];
   const TargetModel = getMasterModel("targetMaster");
+  const fyStartYear = String(extraFields?.financialYear ?? "").trim().split(/\s*-\s*/)[0] || undefined;
   for (const [i, row] of rows.entries()) {
     try {
-      const targetUnit = Number(pick(row, "targetunit") ?? 0);
-      const unitPrice = Number(pick(row, "unitprice") ?? 0);
+      const targetUnit = Number(pick(row, "targetunit", "targetqty") ?? 0);
+      const unitPrice = Number(pick(row, "unitprice", "targetrate") ?? 0);
       const fieldForceName = pick(row, "fieldforcename", "employeename") ?? null;
       const product = pick(row, "product", "productname") ?? null;
       if (!fieldForceName || !product) { errors.push(`Row ${i + 2}: missing Field Force Name/Product`); continue; }
@@ -366,11 +416,11 @@ async function importTargets(tenantSlug: string, rows: Record<string, unknown>[]
         tenantSlug,
         status: "Active",
         division: pick(row, "division") ?? null,
-        hq: pick(row, "hq") ?? null,
+        hq: pick(row, "hq", "hqcode") ?? null,
         fieldForceName,
         product,
         month: pick(row, "month") ?? null,
-        year: pick(row, "year") ?? null,
+        year: pick(row, "year") ?? fyStartYear ?? null,
         targetUnit,
         unitPrice,
         targetValue: targetUnit * unitPrice
