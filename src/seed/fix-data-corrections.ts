@@ -402,6 +402,33 @@ async function removeUploadLogPlaceholderRows() {
   console.log(totalRemoved ? `  Total removed: ${totalRemoved}` : "  No fake placeholder rows found — nothing to fix.");
 }
 
+// Round G item 2 — POST /field/expense-claims used to prefer a Tour
+// Plan's own assignedManager snapshot (set once, at TP creation time) over
+// the employee's live reportingManager field, so any claim filed against
+// an old Tour Plan kept routing to an employee's PREVIOUS manager forever
+// after a real reassignment — it would never show up in the correct
+// manager's Pending queue. That write-path bug is fixed (see
+// field.routes.ts), but it already produced real, currently-stuck
+// SUBMITTED claims pointing at the wrong manager. This re-points any
+// still-pending (SUBMITTED) claim whose assignedManager no longer matches
+// its employee's current reportingManager — never touches an already
+// APPROVED/REJECTED claim's history, only claims still awaiting review.
+async function fixStaleExpenseClaimAssignedManagers() {
+  console.log("\n── Re-pointing stuck SUBMITTED expense claims to each employee's current manager ──");
+  const pending = await ExpenseClaimModel.find({ tenantSlug: TENANT, status: "SUBMITTED" }).lean();
+  let fixed = 0;
+  for (const claim of pending as any[]) {
+    const employee = await EmployeeModel.findOne({ tenantSlug: TENANT, employeeCode: claim.employeeCode }).lean();
+    const currentManager = (employee as any)?.reportingManager;
+    if (currentManager && currentManager !== claim.assignedManager) {
+      await ExpenseClaimModel.updateOne({ _id: claim._id }, { $set: { assignedManager: currentManager } });
+      fixed++;
+      console.log(`  [FIXED] Claim ${claim.claimId} (${claim.employeeCode}): ${claim.assignedManager ?? "(none)"} -> ${currentManager}`);
+    }
+  }
+  console.log(fixed ? `  Total re-pointed: ${fixed}` : "  No stale-manager SUBMITTED claims found — nothing to fix.");
+}
+
 export async function runDataCorrections() {
   await connectMongo();
   console.log(`Connected. Running targeted data corrections for tenant "${TENANT}" (no records deleted, no other fields touched)...`);
@@ -414,6 +441,7 @@ export async function runDataCorrections() {
   await normalizeGenericMasterFieldForceNames();
   await backfillProductGroups();
   await removeUploadLogPlaceholderRows();
+  await fixStaleExpenseClaimAssignedManagers();
 
   console.log("\nDone.");
 }

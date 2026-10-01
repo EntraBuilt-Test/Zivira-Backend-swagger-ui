@@ -698,13 +698,26 @@ fieldRouter.post("/expense-claims", asyncHandler(async (req, res) => {
     throw new HttpError(400, "No manager assigned to route this claim to — contact your admin.");
   }
 
+  // Round G item 2 — this used to prefer the Tour Plan's own
+  // assignedManager snapshot (set once, at TP creation time) over the
+  // employee's live reportingManager field. If an employee's manager was
+  // ever reassigned after an old Tour Plan was created (a normal org-chart
+  // change), every new expense claim filed against that old TP kept
+  // silently routing to the EMPLOYEE'S PREVIOUS manager forever — it would
+  // never appear in the current, correct manager's Pending queue at all,
+  // with no error anywhere. Every other manager-scoping query in this
+  // backend (DCR, Tour Plan, Deviation approvals, etc.) always reads the
+  // employee's CURRENT reportingManager live, never a stored snapshot —
+  // this now matches that same, correct pattern. tp.assignedManager is
+  // kept only as a last-resort fallback for the edge case where the
+  // employee record itself has no reportingManager at all.
   const created = await createExpenseClaimWithRetry(tenantSlug, employee.employeeCode, tp.month, (claimId) =>
     ExpenseClaimModel.create({
       tenantSlug,
       claimId,
       employeeCode: employee.employeeCode,
       employeeName: employee.name,
-      assignedManager: tp.assignedManager || employee.reportingManager,
+      assignedManager: employee.reportingManager || tp.assignedManager,
       tpId: tp.tpId,
       month: tp.month,
       gstBranchCode: tp.gstBranchCode,
