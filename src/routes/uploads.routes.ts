@@ -14,6 +14,7 @@ import { HolidayModel } from "../models/holiday.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { DispatchModel } from "../models/dispatch.model.js";
+import { DespatchLogModel } from "../models/despatch-log.model.js";
 import { audit } from "../utils/audit.js";
 
 // ONE shared Excel/CSV upload implementation reused across every "Upload
@@ -503,6 +504,28 @@ function importDespatchRows(type: "INPUT" | "SAMPLE") {
           },
           { upsert: true }
         );
+        // Round F item 3 — mirror into DespatchLogModel, the collection
+        // admin's own Activities > Sample/Input Dispatch View & Status
+        // screens actually read (masters-actions.routes.ts's
+        // despatchViewList/despatchStatusList). Investigated and
+        // confirmed: nothing anywhere in this codebase ever wrote a
+        // DespatchLogModel row before this — those two admin screens were
+        // permanently stuck at 0 regardless of real dispatch activity,
+        // even after this round's own real Dispatch Upload went live, a
+        // second split-collection gap of the same class as Product
+        // Master. One mirror row per item per month, keyed so a re-upload
+        // (Overwrite mode) updates the same row instead of duplicating.
+        const monthKey = `${year}-${String(MONTHS.indexOf(month) + 1).padStart(2, "0")}`;
+        for (const it of items) {
+          await DespatchLogModel.findOneAndUpdate(
+            { tenantSlug, despatchType: type, employeeCode, month: monthKey, itemName: it.name },
+            {
+              $set: { despatchQty: it.dispatchQty, closingBalance: it.dispatchQty, despatchDate: dispatchDate },
+              $setOnInsert: { openingBalance: 0, issuedQty: 0 }
+            },
+            { upsert: true, setDefaultsOnInsert: true }
+          );
+        }
         processed += items.length;
       } catch (err) {
         errors.push(`${employeeCode}: ${err instanceof Error ? err.message : String(err)}`);
