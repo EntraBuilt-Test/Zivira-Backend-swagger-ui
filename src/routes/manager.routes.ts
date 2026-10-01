@@ -304,6 +304,36 @@ managerRouter.get("/dcrs", asyncHandler(async (req, res) => {
   res.json({ data: await attachPunchTimes(mgr.tenantSlug, codes, withNames) });
 }));
 
+// DELETE /manager/dcrs/:id -- manager equivalent of the field DCR delete.
+// Scoped to this manager's own team. Same safety rule: SUBMITTED/REJECTED
+// only -- an already-approved DCR is blocked. Same CampaignVisitModel
+// revert + approvalDcr mirror cleanup as the field endpoint.
+managerRouter.delete("/dcrs/:id", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const dcr = await DcrModel.findById(req.params.id);
+  if (!dcr || dcr.tenantSlug !== mgr.tenantSlug) throw new HttpError(404, "DCR not found");
+  const inTeam = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, employeeCode: dcr.employeeCode });
+  if (!inTeam) throw new HttpError(403, "This DCR does not belong to your team");
+  if (dcr.status !== "SUBMITTED" && dcr.status !== "REJECTED") {
+    throw new HttpError(400, `This DCR is already ${dcr.status.replace(/_/g, " ").toLowerCase()} and can't be deleted.`);
+  }
+  const dcrId = String(dcr._id);
+  await DcrModel.deleteOne({ _id: dcr._id });
+  try {
+    await CampaignVisitModel.updateMany({ tenantSlug: mgr.tenantSlug, dcrId }, { $set: { status: "Planned" }, $unset: { dcrId: "" } });
+  } catch (err) {
+    console.error("Failed to revert campaign visit on DCR delete:", err);
+  }
+  try {
+    const ApprovalDcrModel = getMasterModel("approvalDcr");
+    await ApprovalDcrModel.deleteMany({ tenantSlug: mgr.tenantSlug, sfName: inTeam.name, activityDate: dcr.visitDate });
+  } catch (err) {
+    console.error("Failed to remove mirrored approvalDcr row on DCR delete:", err);
+  }
+  await audit("MANAGER_DCR_DELETED", "Dcr", dcrId, { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode, employeeCode: dcr.employeeCode, priorStatus: dcr.status });
+  res.json({ data: { deleted: true, id: dcrId } });
+}));
+
 // POST /manager/dcrs/:id/approve
 managerRouter.post("/dcrs/:id/approve", asyncHandler(async (req, res) => {
   const mgr = await getManagerProfile(req.auth!.sub);
@@ -434,6 +464,33 @@ managerRouter.post("/leave-applications/:id/reject", asyncHandler(async (req, re
     `${mgr.name} (${mgr.employeeCode}) rejected your ${leave.days} day(s) leave request (${leave.leaveType}).${reason ? ` Reason: ${reason}` : ""}`
   );
   res.json({ data: serializeDocument(leave) });
+}));
+
+// DELETE /manager/leave-applications/:id -- manager equivalent of the field
+// delete. Scoped to this manager's own team. Same safety rule as field:
+// PENDING/REJECTED only -- APPROVED is blocked, pointing at the existing
+// Leave Cancellation (After Approval) admin flow instead of bypassing it
+// with a raw delete. No balance restoration applies here either, for the
+// same reason as the field endpoint: nothing in this codebase decrements a
+// leave balance from applications.
+managerRouter.delete("/leave-applications/:id", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const leave = await LeaveApplicationModel.findById(req.params.id);
+  if (!leave || leave.tenantSlug !== mgr.tenantSlug) throw new HttpError(404, "Leave request not found");
+  const inTeam = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, employeeCode: leave.employeeCode });
+  if (!inTeam) throw new HttpError(403, "This leave request does not belong to your team");
+  if (leave.status === "APPROVED") {
+    throw new HttpError(400, "This leave is already approved -- cancel it via Leave Cancellation (After Approval) instead of deleting it here.");
+  }
+  await LeaveApplicationModel.deleteOne({ _id: leave._id });
+  try {
+    const ApprovalLeaveModel = getMasterModel("approvalLeave");
+    await ApprovalLeaveModel.deleteMany({ tenantSlug: mgr.tenantSlug, fieldForceName: inTeam.name, fromDate: leave.fromDate.toISOString().slice(0, 10) });
+  } catch (err) {
+    console.error("Failed to remove mirrored approvalLeave row on leave delete:", err);
+  }
+  await audit("MANAGER_LEAVE_DELETED", "LeaveApplication", String(leave._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode, employeeCode: leave.employeeCode, priorStatus: leave.status });
+  res.json({ data: { deleted: true, id: String(leave._id) } });
 }));
 
 // GET /manager/dashboard
@@ -788,6 +845,42 @@ managerRouter.patch("/expense-claims/:claimId/approve", asyncHandler(async (req,
     `${mgr.name} (${mgr.employeeCode}) approved your expense claim ${claim.claimId}.`
   );
   res.json({ data: serializeDocument(claim) });
+}));
+
+// Coordinator follow-up round -- reversal counterpart to
+// mirrorExpenseApprovalRow (field.routes.ts), duplicated here since
+// manager.routes.ts has its own delete endpoint and no shared module
+// between the two routers for this helper.
+async function reverseExpenseApprovalRow(tenantSlug: string, employeeName: string, month: string, amountRs: number) {
+  try {
+    const [year, monthNum] = month.split("-");
+    const monthName = new Date(Date.UTC(Number(year), Number(monthNum) - 1, 1)).toLocaleString("en-US", { month: "long" });
+    const Model = getMasterModel("expenseApprovalActive");
+    const existing = await Model.findOne({ tenantSlug, fieldForceName: employeeName, month: monthName, year });
+    if (existing) {
+      const currentClaimed = Number((existing as any).claimedAmount) || 0;
+      await Model.updateOne({ _id: existing._id }, { $set: { claimedAmount: Math.max(0, currentClaimed - amountRs) } });
+    }
+  } catch (err) {
+    console.error("[reverseExpenseApprovalRow] failed:", err);
+  }
+}
+
+// DELETE /manager/expense-claims/:claimId -- manager equivalent of the
+// field delete. Scoped to claims assigned to this manager. Same safety
+// rule: APPROVED (settled) claims are blocked; SUBMITTED/REJECTED can be
+// deleted, reversing the amount out of the expenseApprovalActive mirror.
+managerRouter.delete("/expense-claims/:claimId", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const claim = await ExpenseClaimModel.findOne({ tenantSlug: mgr.tenantSlug, claimId: req.params.claimId, assignedManager: mgr.employeeCode });
+  if (!claim) throw new HttpError(404, "Expense claim not found");
+  if (claim.status === "APPROVED") {
+    throw new HttpError(400, "This claim is already approved and settled — it can't be deleted.");
+  }
+  await ExpenseClaimModel.deleteOne({ _id: claim._id });
+  await reverseExpenseApprovalRow(mgr.tenantSlug, claim.employeeName || claim.employeeCode, claim.month, claim.amountRs);
+  await audit("MANAGER_EXPENSE_CLAIM_DELETED", "ExpenseClaim", claim.claimId, { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode, employeeCode: claim.employeeCode, amountRs: claim.amountRs, priorStatus: claim.status });
+  res.json({ data: { deleted: true, claimId: claim.claimId } });
 }));
 
 managerRouter.patch("/expense-claims/:claimId/reject", asyncHandler(async (req, res) => {

@@ -92,6 +92,25 @@ async function mirrorExpenseApprovalRow(tenantSlug: string, employeeName: string
   }
 }
 
+// Coordinator follow-up round -- reversal counterpart for the additive
+// mirror above, used by the new expense-claim delete endpoints below so a
+// deleted claim's amount doesn't keep inflating the admin-facing
+// "Expense Approval (Active)" claimedAmount total forever.
+async function reverseExpenseApprovalRow(tenantSlug: string, employeeName: string, month: string, amountRs: number) {
+  try {
+    const [year, monthNum] = month.split("-");
+    const monthName = new Date(Date.UTC(Number(year), Number(monthNum) - 1, 1)).toLocaleString("en-US", { month: "long" });
+    const Model = getMasterModel("expenseApprovalActive");
+    const existing = await Model.findOne({ tenantSlug, fieldForceName: employeeName, month: monthName, year });
+    if (existing) {
+      const currentClaimed = Number((existing as any).claimedAmount) || 0;
+      await Model.updateOne({ _id: existing._id }, { $set: { claimedAmount: Math.max(0, currentClaimed - amountRs) } });
+    }
+  } catch (err) {
+    console.error("[reverseExpenseApprovalRow] failed:", err);
+  }
+}
+
 // New "Leave Apply" tab — fixed dropdown of leave reasons shown on the
 // FieldRepo Leave Apply form. Kept as a constant (mirrors GIFT_ITEM_TYPES
 // above) so the frontend dropdown and backend validation never drift.
@@ -346,6 +365,48 @@ fieldRouter.get("/dcrs", asyncHandler(async (req, res) => {
   const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 1000) : 500;
   const dcrs = await DcrModel.find({ tenantSlug: req.auth!.tenantSlug, employeeCode: employee.employeeCode }).sort({ visitDate: -1, createdAt: -1 }).limit(limit).populate("doctorId");
   res.json({ data: dcrs.map(serializeDocument) });
+}));
+
+// DELETE /field/dcrs/:id -- coordinator follow-up round. Safety rule: only
+// SUBMITTED or REJECTED DCRs can be deleted -- once a manager has approved
+// one (MANAGER_APPROVED/APPROVED/AUTO_APPROVED), it's the real, final
+// compliance record of that visit and is blocked from self-service delete.
+// Cleans up two things so no stale/orphaned reference is left behind:
+//   1. If this DCR closed out a planned CampaignVisitModel row (Phase 2
+//      checkout gating sets dcrId + status "Completed" on submit), that row
+//      is reverted back to "Planned" with dcrId cleared -- otherwise it
+//      would permanently point at a DCR that no longer exists.
+//   2. The mirrored "approvalDcr" generic-master row (admin's DCR Approval
+//      queue) is removed -- same split-collection cleanup pattern as the
+//      Tour Plan / Leave deletes above.
+// Every admin/manager screen that reports on DCRs (visit-summary,
+// Activities summary, the Activities dashboard's recent-activity panel)
+// reads DcrModel live on each request, so deleting the document here is
+// enough for those counts to be correct afterward -- nothing else caches a
+// DCR count that would need a separate decrement.
+fieldRouter.delete("/dcrs/:id", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const dcr = await DcrModel.findOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
+  if (!dcr) throw new HttpError(404, "DCR not found");
+  if (dcr.status !== "SUBMITTED" && dcr.status !== "REJECTED") {
+    throw new HttpError(400, `This DCR is already ${dcr.status.replace(/_/g, " ").toLowerCase()} and can't be deleted.`);
+  }
+  const dcrId = String(dcr._id);
+  await DcrModel.deleteOne({ _id: dcr._id });
+  try {
+    await CampaignVisitModel.updateMany({ tenantSlug, dcrId }, { $set: { status: "Planned" }, $unset: { dcrId: "" } });
+  } catch (err) {
+    console.error("Failed to revert campaign visit on DCR delete:", err);
+  }
+  try {
+    const ApprovalDcrModel = getMasterModel("approvalDcr");
+    await ApprovalDcrModel.deleteMany({ tenantSlug, sfName: employee.name, activityDate: dcr.visitDate });
+  } catch (err) {
+    console.error("Failed to remove mirrored approvalDcr row on DCR delete:", err);
+  }
+  await audit("FIELD_DCR_DELETED", "Dcr", dcrId, { tenantSlug, employeeCode: employee.employeeCode, priorStatus: dcr.status });
+  res.json({ data: { deleted: true, id: dcrId } });
 }));
 
 fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
@@ -817,6 +878,28 @@ fieldRouter.post("/expense-claims", asyncHandler(async (req, res) => {
   res.status(201).json({ data: serializeDocument(created) });
 }));
 
+// DELETE /field/expense-claims/:claimId -- coordinator follow-up round.
+// Safety rule: only SUBMITTED or REJECTED claims can be deleted. An
+// APPROVED claim is treated as settled with the manager -- deleting it
+// would silently erase a real reimbursement record with no reversal of
+// whatever downstream payroll/accounting process reads an approved claim,
+// so it's blocked with a clear message instead. Deleting a safe-state
+// claim also reverses its amount out of the "expenseApprovalActive"
+// mirror so the admin-facing claimed-amount total stays correct.
+fieldRouter.delete("/expense-claims/:claimId", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const claim = await ExpenseClaimModel.findOne({ tenantSlug, claimId: req.params.claimId, employeeCode: employee.employeeCode });
+  if (!claim) throw new HttpError(404, "Expense claim not found");
+  if (claim.status === "APPROVED") {
+    throw new HttpError(400, "This claim is already approved and settled with your manager — it can't be deleted.");
+  }
+  await ExpenseClaimModel.deleteOne({ _id: claim._id });
+  await reverseExpenseApprovalRow(tenantSlug, employee.name, claim.month, claim.amountRs);
+  await audit("FIELD_EXPENSE_CLAIM_DELETED", "ExpenseClaim", claim.claimId, { tenantSlug, employeeCode: employee.employeeCode, amountRs: claim.amountRs, priorStatus: claim.status });
+  res.json({ data: { deleted: true, claimId: claim.claimId } });
+}));
+
 fieldRouter.post("/attendance/check-in", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
@@ -982,6 +1065,37 @@ fieldRouter.post("/leave-applications", asyncHandler(async (req, res) => {
   );
 
   res.status(201).json({ data: serializeDocument(row) });
+}));
+
+// DELETE /field/leave-applications/:id -- coordinator follow-up round.
+// Safety rule: only PENDING or REJECTED requests can be deleted. An
+// APPROVED leave is blocked -- this codebase never auto-decrements any
+// leave balance on approval (leaveEntitlementEntry is a flat admin-set
+// CL/PL/SL/LOP allocation, not computed from applications), so there is no
+// balance to "restore" here; the reason to still block it is that an
+// approved leave is the real, already-granted attendance record, and the
+// existing "Leave Cancellation (After Approval)" admin screen/flow
+// (leaveCancellation master, written by the manager-approval mirror-write)
+// is the correct, audited path to reverse one -- a raw delete here would
+// bypass that and double-handle the same cancellation, so it's refused
+// with a message pointing at that flow instead.
+fieldRouter.delete("/leave-applications/:id", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const leave = await LeaveApplicationModel.findOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
+  if (!leave) throw new HttpError(404, "Leave request not found");
+  if (leave.status === "APPROVED") {
+    throw new HttpError(400, "This leave is already approved -- ask your admin to cancel it via Leave Cancellation (After Approval) instead of deleting it here.");
+  }
+  await LeaveApplicationModel.deleteOne({ _id: leave._id });
+  try {
+    const ApprovalLeaveModel = getMasterModel("approvalLeave");
+    await ApprovalLeaveModel.deleteMany({ tenantSlug, fieldForceName: employee.name, fromDate: leave.fromDate.toISOString().slice(0, 10) });
+  } catch (err) {
+    console.error("Failed to remove mirrored approvalLeave row on leave delete:", err);
+  }
+  await audit("FIELD_LEAVE_DELETED", "LeaveApplication", String(leave._id), { tenantSlug, employeeCode: employee.employeeCode, priorStatus: leave.status });
+  res.json({ data: { deleted: true, id: String(leave._id) } });
 }));
 
 // ══════════════════════════════════════════════════════════════════════
