@@ -250,6 +250,57 @@ fieldRouter.get("/notices", asyncHandler(async (req, res) => {
   res.json({ data: notices.map(serializeDocument) });
 }));
 
+// GET /field/circulars -- item 4 (post-launch robustness round): "File
+// Upload (Designation-wise)" was an admin-only log with a real Download
+// button on the admin side but no delivery path to the field-rep portal
+// at all. (User Manual Upload / item 6 already has a real field-rep
+// screen -- see GET /field/manuals above -- so only circulars were
+// actually missing here.) Real fix: list whatever admin uploaded that
+// targets this rep's designation, with a real download endpoint below.
+fieldRouter.get("/circulars", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const { getMasterModel } = await import("../models/master-record.model.js");
+  const circulars = await getMasterModel("fileUploadDesignationwise").find({ tenantSlug }).sort({ createdAt: -1 }).lean();
+  const mine = (circulars as any[]).filter((r) => {
+    const designations = String(r.designation ?? "").split(",").map((d) => d.trim()).filter(Boolean);
+    return designations.length === 0 || designations.includes("All") || designations.includes(employee.designation);
+  });
+  res.json({ data: mine.map((r: any) => ({ id: String(r._id), subject: r.subject ?? "", fileName: r.fileName ?? "", uploadedOn: r.uploadedOn ?? r.createdAt })) });
+}));
+
+fieldRouter.get("/circulars/:id/download", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const { getMasterModel } = await import("../models/master-record.model.js");
+  const Model = getMasterModel("fileUploadDesignationwise");
+  const row = (await Model.findOne({ _id: req.params.id, tenantSlug }).lean()) as Record<string, unknown> | null;
+  if (!row || !row.fileData) throw new HttpError(404, "File not found");
+  const buffer = Buffer.from(row.fileData as string, "base64");
+  res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
+  res.setHeader("Content-Disposition", "attachment; filename=\"" + encodeURIComponent(String(row.fileName ?? "download")) + "\"");
+  res.send(buffer);
+}));
+
+// GET /field/announcements — item 12 (post-launch robustness round): Flash
+// News, Notice Board, Quote of the Week and Talk to Us were admin-only
+// content blobs (CompanyConfigModel key "adminSettings:<kind>") with no
+// delivery path to the field-rep portal at all -- saving one in admin had
+// no visible effect anywhere else. Real fix: expose the same tenant-wide
+// settings here, read-only, so the field-rep home screen can show whatever
+// admin has actually set (and nothing, honestly, for any kind admin left
+// blank) instead of reinventing a separate feed.
+fieldRouter.get("/announcements", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const { getConfigValue } = await import("../models/company-config.model.js");
+  const [flashNews, noticeBoard, quoteOfTheWeek, talkToUs] = await Promise.all([
+    getConfigValue(tenantSlug, "adminSettings:flashNews"),
+    getConfigValue(tenantSlug, "adminSettings:noticeBoard"),
+    getConfigValue(tenantSlug, "adminSettings:quoteOfTheWeek"),
+    getConfigValue(tenantSlug, "adminSettings:talkToUs")
+  ]);
+  res.json({ data: { flashNews: flashNews ?? null, noticeBoard: noticeBoard ?? null, quoteOfTheWeek: quoteOfTheWeek ?? null, talkToUs: talkToUs ?? null } });
+}));
+
 // Request D, item 4 — the "Accompanying Manager" field on a DCR's Joint
 // Work section was free text; if more than one manager has ever had this
 // MR's Tour Plans assigned to them (their current reportingManager, plus

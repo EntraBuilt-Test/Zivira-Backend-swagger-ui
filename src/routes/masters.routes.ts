@@ -386,7 +386,19 @@ mastersRouter.post(
 // PUT /masters/:key/:id — update one record
 mastersRouter.put(
   "/:key/:id",
-  asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res, next) => {
+    // Item 12 (post-launch robustness round) -- "/masters/admin-settings/:kind"
+    // (Flash News, Notice Board, Quote of the Week, Talk to Us, etc.) is a
+    // real, dedicated route on mastersActionsRouter, mounted AFTER this
+    // router at the same "/masters" base path. Its PUT (save) request has
+    // the exact same two-segment shape as this generic "/:key/:id" route,
+    // so Express matched THIS route first and threw "Unknown master:
+    // admin-settings" (requireConfig has no such master) before the real
+    // handler ever ran -- every admin-settings save failed this way, even
+    // though the GET (single-segment "/:key", never matches "admin-
+    // settings/<kind>") worked fine. Deferring here with next() lets it
+    // fall through to the real handler.
+    if (req.params.key === "admin-settings") { next(); return; }
     const config = requireConfig(req.params.key);
     const tenantSlug = req.auth!.tenantSlug;
 

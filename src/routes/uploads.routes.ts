@@ -667,7 +667,16 @@ uploadsRouter.post(
     }
 
     const hasStatusField = config.fields.find((f) => f.key === "status");
-    const status = result.failed > 0 && result.processed === 0
+    // Item 1 (post-launch robustness round) -- this used to only mark a
+    // row "Failed" when every row threw a validation error (failed > 0 &&
+    // processed === 0). A sheet that parsed to ZERO data rows at all (a
+    // blank/header-only file, or a header row sheet_to_json could not
+    // recognize) produced failed === 0 AND processed === 0, which fell
+    // through to "Success" with Records Processed showing 0 -- a real,
+    // misleading status for an upload that imported nothing. Any upload
+    // that processed zero rows is now always reported as Failed, whether
+    // or not any row individually errored.
+    const status = result.processed === 0
       ? "Failed"
       : (hasStatusField?.options?.includes("Success") ? "Success" : "Active");
 

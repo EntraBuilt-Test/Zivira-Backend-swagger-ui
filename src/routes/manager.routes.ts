@@ -13,6 +13,7 @@ import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { AttendanceModel } from "../models/attendance.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { audit } from "../utils/audit.js";
+import { getMasterModel } from "../models/master-record.model.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { createTourPlanWithRetry } from "../utils/tour-plan-id.js";
 import { notifyManager, notifyFieldRep } from "../utils/notify.js";
@@ -102,6 +103,69 @@ managerRouter.get("/notices", asyncHandler(async (req, res) => {
   if (since && !Number.isNaN(since.getTime())) filter.createdAt = { $gt: since };
   const notices = await NoticeModel.find(filter).sort({ createdAt: -1 }).limit(50);
   res.json({ data: notices.map(serializeDocument) });
+}));
+
+// GET /manager/circulars + /manager/manuals -- items 4 and 6 (post-launch
+// robustness round). Unlike field reps (who already have a real Manuals
+// screen -- GET /field/manuals), managers had NEITHER circulars nor
+// manuals anywhere, so both are added here, same real
+// fileUploadDesignationwise/userManualUpload masters and download shape
+// as the field-rep routes.
+managerRouter.get("/circulars", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const { getMasterModel } = await import("../models/master-record.model.js");
+  const circulars = await getMasterModel("fileUploadDesignationwise").find({ tenantSlug: mgr.tenantSlug }).sort({ createdAt: -1 }).lean();
+  const mine = (circulars as any[]).filter((r) => {
+    const designations = String(r.designation ?? "").split(",").map((d) => d.trim()).filter(Boolean);
+    return designations.length === 0 || designations.includes("All") || designations.includes(mgr.designation);
+  });
+  res.json({ data: mine.map((r: any) => ({ id: String(r._id), subject: r.subject ?? "", fileName: r.fileName ?? "", uploadedOn: r.uploadedOn ?? r.createdAt })) });
+}));
+
+managerRouter.get("/circulars/:id/download", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const { getMasterModel } = await import("../models/master-record.model.js");
+  const Model = getMasterModel("fileUploadDesignationwise");
+  const row = (await Model.findOne({ _id: req.params.id, tenantSlug: mgr.tenantSlug }).lean()) as Record<string, unknown> | null;
+  if (!row || !row.fileData) throw new HttpError(404, "File not found");
+  const buffer = Buffer.from(row.fileData as string, "base64");
+  res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
+  res.setHeader("Content-Disposition", "attachment; filename=\"" + encodeURIComponent(String(row.fileName ?? "download")) + "\"");
+  res.send(buffer);
+}));
+
+managerRouter.get("/manuals", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const { getMasterModel } = await import("../models/master-record.model.js");
+  const manuals = await getMasterModel("userManualUpload").find({ tenantSlug: mgr.tenantSlug }).sort({ createdAt: -1 }).lean();
+  res.json({ data: (manuals as any[]).map((r: any) => ({ id: String(r._id), subject: r.subject ?? "", fileName: r.fileName ?? "", uploadedOn: r.uploadedOn ?? r.createdAt })) });
+}));
+
+managerRouter.get("/manuals/:id/download", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const { getMasterModel } = await import("../models/master-record.model.js");
+  const Model = getMasterModel("userManualUpload");
+  const row = (await Model.findOne({ _id: req.params.id, tenantSlug: mgr.tenantSlug }).lean()) as Record<string, unknown> | null;
+  if (!row || !row.fileData) throw new HttpError(404, "File not found");
+  const buffer = Buffer.from(row.fileData as string, "base64");
+  res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
+  res.setHeader("Content-Disposition", "attachment; filename=\"" + encodeURIComponent(String(row.fileName ?? "download")) + "\"");
+  res.send(buffer);
+}));
+
+// GET /manager/announcements — same real admin-settings feed as
+// GET /field/announcements (item 12, post-launch robustness round); see
+// that route's comment for why this exists.
+managerRouter.get("/announcements", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const { getConfigValue } = await import("../models/company-config.model.js");
+  const [flashNews, noticeBoard, quoteOfTheWeek, talkToUs] = await Promise.all([
+    getConfigValue(mgr.tenantSlug, "adminSettings:flashNews"),
+    getConfigValue(mgr.tenantSlug, "adminSettings:noticeBoard"),
+    getConfigValue(mgr.tenantSlug, "adminSettings:quoteOfTheWeek"),
+    getConfigValue(mgr.tenantSlug, "adminSettings:talkToUs")
+  ]);
+  res.json({ data: { flashNews: flashNews ?? null, noticeBoard: noticeBoard ?? null, quoteOfTheWeek: quoteOfTheWeek ?? null, talkToUs: talkToUs ?? null } });
 }));
 
 // GET /manager/team — list of employees reporting to this manager
@@ -315,6 +379,37 @@ managerRouter.post("/leave-applications/:id/approve", asyncHandler(async (req, r
     "Your leave request was approved",
     `${mgr.name} (${mgr.employeeCode}) approved your ${leave.days} day(s) leave request (${leave.leaveType}).`
   );
+  // Item 9 (post-launch robustness round) -- admin's "Leave Cancellation
+  // (After Approval)" screen reads/writes the separate "leaveCancellation"
+  // generic master, which nothing ever wrote to on a real manager approval
+  // -- the rows admin saw there were seed/demo data, never a real approved
+  // leave. Mirror-write a real row here so admin's screen reflects this
+  // approval for real and can genuinely cancel it afterwards.
+  try {
+    const approvingEmployee = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, employeeCode: leave.employeeCode }).lean();
+    if (approvingEmployee) {
+      const CancellationModel = getMasterModel("leaveCancellation");
+      await CancellationModel.findOneAndUpdate(
+        { tenantSlug: mgr.tenantSlug, fieldForceName: (approvingEmployee as any).name, fromDate: leave.fromDate },
+        {
+          $set: {
+            tenantSlug: mgr.tenantSlug,
+            fieldForceName: (approvingEmployee as any).name,
+            leaveAppliedDate: leave.createdAt,
+            fromDate: leave.fromDate,
+            toDate: leave.toDate,
+            noOfDays: leave.days,
+            approvedBy: mgr.name,
+            status: "Active"
+          }
+        },
+        { upsert: true }
+      );
+    }
+  } catch (err) {
+    console.error("Failed to mirror approved leave into leaveCancellation master:", err);
+  }
+
   res.json({ data: serializeDocument(leave) });
 }));
 
