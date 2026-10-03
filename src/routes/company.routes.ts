@@ -42,7 +42,7 @@ import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
-import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager } from "../utils/manager-analysis-compute.js";
+import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager, computeFieldworkManagerRow, computeManagerWiseCoverageRow, computeSpecialityVisitWise, computeCategoryVisitWise } from "../utils/manager-analysis-compute.js";
 import { CustomReportModel } from "../models/custom-report.model.js";
 import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
 import { CUSTOM_REPORT_CATEGORIES, ALL_METRIC_KEYS, COMPUTED_METRIC_KEYS } from "../utils/custom-report-metrics.js";
@@ -4777,5 +4777,87 @@ companyRouter.get(
     }
 
     throw new HttpError(400, "Unknown mode");
+  })
+);
+// ═══════════════════════════════════════════════════════════════════════
+// Round 38 Items 1/2/3 -- FieldWork Manager - Analysis, Manager Wise -
+// Coverage Analysis, Speciality/Category Visit Wise. All real data via
+// manager-analysis-compute.ts, scoped via org-hierarchy.ts.
+// ═══════════════════════════════════════════════════════════════════════
+
+companyRouter.get(
+  "/manager-analysis/fieldwork-manager-analysis",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!employeeCode || !fromMonth) throw new HttpError(400, "employeeCode and fromMonth are required");
+    const manager = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!manager) throw new HttpError(404, "Field force not found");
+    const months = monthRange(fromMonth, toMonth);
+    const team = await getAllDescendants(tenantSlug, employeeCode);
+    const rows = [];
+    for (const member of team) rows.push(await computeFieldworkManagerRow(tenantSlug, member, months));
+    res.json({
+      data: {
+        fieldForceName: (manager as any).name, designation: (manager as any).designation, hq: (manager as any).territory,
+        months, rows
+      }
+    });
+  })
+);
+
+companyRouter.get(
+  "/manager-analysis/manager-wise-coverage",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!employeeCode || !fromMonth) throw new HttpError(400, "employeeCode and fromMonth are required");
+    const manager = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!manager) throw new HttpError(404, "Field force not found");
+    const months = monthRange(fromMonth, toMonth);
+    const team = await getAllDescendants(tenantSlug, employeeCode);
+    const rows = [];
+    for (const member of team) rows.push(await computeManagerWiseCoverageRow(tenantSlug, member, months));
+    res.json({
+      data: {
+        fieldForceName: (manager as any).name, designation: (manager as any).designation, hq: (manager as any).territory,
+        months, rows,
+        // Round 38 Item 2 -- see manager-analysis-compute.ts's own header
+        // comment: the coordinator's legacy description was cut off with
+        // no screenshot, so this row shape is a disclosed INFERENCE
+        // (Coverage Analysis 1's pivot, looped per team member) pending
+        // user confirmation against a real screenshot.
+        resultShapeIsInference: true
+      }
+    });
+  })
+);
+
+companyRouter.get(
+  "/manager-analysis/speciality-category-visit",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    const mode = String(req.query.mode || "Specialitywise Visit");
+    if (!employeeCode || !fromMonth) throw new HttpError(400, "employeeCode and fromMonth are required");
+    const manager = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!manager) throw new HttpError(404, "Field force not found");
+    const months = monthRange(fromMonth, toMonth);
+    const team = await getAllDescendants(tenantSlug, employeeCode);
+
+    if (mode === "Categorywise Visit") {
+      const result = await computeCategoryVisitWise(tenantSlug, team, months);
+      res.json({ data: { mode, fieldForceName: (manager as any).name, months, ...result } });
+      return;
+    }
+
+    const result = await computeSpecialityVisitWise(tenantSlug, team, months);
+    res.json({ data: { mode: "Specialitywise Visit", fieldForceName: (manager as any).name, months, ...result } });
   })
 );

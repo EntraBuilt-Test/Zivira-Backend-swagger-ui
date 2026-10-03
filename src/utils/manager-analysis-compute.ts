@@ -12,6 +12,7 @@
 
 import { EmployeeModel } from "../models/employee.model.js";
 import { DcrModel } from "../models/dcr.model.js";
+import { DoctorModel } from "../models/doctor.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { buildDayStatusContext, classifyDay } from "./day-status.js";
 import { computeCustomReportMetrics } from "./custom-report-compute.js";
@@ -249,6 +250,180 @@ export async function computeJointWorkWithManager(tenantSlug: string, employeeCo
   if (dcrs.length === 0) return null;
   const dates = [...new Set((dcrs as any[]).map((d) => d.visitDateOnly))].sort();
   return { days: dates.length, dates, calls: dcrs.length };
+}
+
+// Round 38 Item 1 -- FieldWork Manager - Analysis. Reuses the exact same
+// real jointWork.accompanyingManager data Joint Workwise (Round 37) reads,
+// bucketed by the REAL designation of whichever manager accompanied each
+// rep (resolved by matching the free-text accompanyingManager name to a
+// real EmployeeModel row and reading its real designation field).
+export const FIELDWORK_DESIGNATION_CODES = ["BM", "BH", "BDE", "RBM", "Sr.RBM", "ABM", "ZBM", "BDM", "BRM", "NBM", "Sr ABM", "HM", "MH", "SM"];
+
+export async function computeFieldworkManagerRow(tenantSlug: string, member: OrgEmployee, months: string[]) {
+  // Build a name -> designation lookup once per rep's real DCR set (most
+  // tenants have a small manager roster, so this stays cheap).
+  const perMonth: Record<string, Record<string, number>> = {};
+  for (const month of months) {
+    const dcrs = await DcrModel.find({ tenantSlug, employeeCode: member.employeeCode, month, "jointWork.accompanyingManager": { $exists: true, $ne: null } }).lean();
+    const real = (dcrs as any[]).filter((d) => d.jointWork?.accompanyingManager);
+    const byDesignation: Record<string, number> = {};
+    if (real.length > 0) {
+      const names = [...new Set(real.map((d) => d.jointWork.accompanyingManager as string))];
+      const managers = await EmployeeModel.find({ tenantSlug, name: { $in: names } }).select("name designation").lean();
+      const designationByName = new Map((managers as any[]).map((m) => [m.name, m.designation]));
+      const daysByDesignation = new Map<string, Set<string>>();
+      for (const d of real) {
+        const designation = designationByName.get(d.jointWork.accompanyingManager);
+        if (!designation || !FIELDWORK_DESIGNATION_CODES.includes(designation)) continue;
+        const set = daysByDesignation.get(designation) || new Set<string>();
+        set.add(d.visitDateOnly);
+        daysByDesignation.set(designation, set);
+      }
+      for (const [designation, dates] of daysByDesignation) byDesignation[designation] = dates.size;
+    }
+    perMonth[month] = byDesignation;
+  }
+  return {
+    employeeCode: member.employeeCode, name: member.name, designation: member.designation, hq: member.territory,
+    joinDate: member.joinDate || null,
+    firstLevelManager: member.reportingManager || null,
+    perMonth
+  };
+}
+
+// Round 38 Item 2 -- Manager Wise - Coverage Analysis. The coordinator's
+// own message says the legacy result shape for this screen was cut off
+// mid-description with no screenshot -- this is a disclosed INFERENCE,
+// not a confirmed legacy match: since this is literally "Manager Wise"
+// of Round 37's single-rep Coverage Analysis 1 pivot, it reuses that
+// exact same real column structure (Call Details/Attendance/Summary/
+// Joint Work/Repeated Calls) as one row per real team member, aggregated
+// across the selected date range (counts summed, rates/averages
+// re-derived from the summed counts rather than averaging an average).
+export async function computeManagerWiseCoverageRow(tenantSlug: string, member: OrgEmployee, months: string[]) {
+  const perMonthPivots: Awaited<ReturnType<typeof computeCoverageAnalysis1>>[] = [];
+  for (const month of months) perMonthPivots.push(await computeCoverageAnalysis1(tenantSlug, member.employeeCode, month));
+  const sum = (key: "masterListDoctors" | "doctorsMet" | "listedDrsMissed" | "unlistedDrsMet") => perMonthPivots.reduce((s, p) => s + p.callDetails[key], 0);
+  const masterListDoctors = perMonthPivots.length > 0 ? perMonthPivots[perMonthPivots.length - 1].callDetails.masterListDoctors : 0; // list size isn't additive across months -- real list, latest month's real snapshot
+  const doctorsMet = sum("doctorsMet");
+  const listedDrsMissed = Math.max(masterListDoctors - doctorsMet, 0);
+  const unlistedDrsMet = sum("unlistedDrsMet");
+  const coveragePct = masterListDoctors > 0 ? +((doctorsMet / masterListDoctors) * 100).toFixed(1) : 0;
+  const attendance = {
+    daysWorked: perMonthPivots.reduce((s, p) => s + p.attendance.daysWorked, 0),
+    daysField: perMonthPivots.reduce((s, p) => s + p.attendance.daysField, 0),
+    daysNonField: perMonthPivots.reduce((s, p) => s + p.attendance.daysNonField, 0),
+    daysOnLeave: perMonthPivots.reduce((s, p) => s + p.attendance.daysOnLeave, 0)
+  };
+  const doctorsCallsSeen = perMonthPivots.reduce((s, p) => s + p.summary.doctorsCallsSeen, 0);
+  const chemistCallsSeen = perMonthPivots.reduce((s, p) => s + p.summary.chemistCallsSeen, 0);
+  const summary = {
+    doctorsCallsSeen,
+    doctorsCallAverage: attendance.daysField > 0 ? +(doctorsCallsSeen / attendance.daysField).toFixed(2) : 0,
+    chemistCallsSeen,
+    chemistCallAverage: attendance.daysField > 0 ? +(chemistCallsSeen / attendance.daysField).toFixed(2) : 0
+  };
+  const jwDays = perMonthPivots.reduce((s, p) => s + p.jointWork.days, 0);
+  const jwCallsMet = perMonthPivots.reduce((s, p) => s + p.jointWork.callsMet, 0);
+  const jwCallsSeen = perMonthPivots.reduce((s, p) => s + p.jointWork.callsSeen, 0);
+  const jointWork = { days: jwDays, callsMet: jwCallsMet, callsSeen: jwCallsSeen, callAverage: jwDays > 0 ? +(jwCallsMet / jwDays).toFixed(2) : 0 };
+  const repeatedCallsMet = perMonthPivots.reduce((s, p) => s + p.repeatedCalls.met, 0);
+  const repeatedCalls = { met: repeatedCallsMet, coveragePct: masterListDoctors > 0 ? +((repeatedCallsMet / masterListDoctors) * 100).toFixed(1) : 0 };
+  return {
+    employeeCode: member.employeeCode, name: member.name, designation: member.designation, hq: member.territory,
+    callDetails: { masterListDoctors, doctorsMet, coveragePct, listedDrsMissed, unlistedDrsMet },
+    attendance, summary, jointWork, repeatedCalls
+  };
+}
+
+// Round 38 Item 3 -- Speciality/Category Visit Wise. Real distinct
+// specialities scoped to the selected manager's real team's listed
+// doctors; real per-doctor visit-count buckets (V1/V2/V3/>V3), same
+// bucket logic as custom-report-compute.ts's Drs Visit section, grouped
+// by speciality and by month.
+export async function computeSpecialityVisitWise(tenantSlug: string, team: OrgEmployee[], months: string[]) {
+  const teamCodes = team.map((m) => m.employeeCode);
+  const myDoctors = await DoctorModel.find({ tenantSlug, mappedEmployeeCode: { $in: teamCodes }, status: "ACTIVE" }).select("specialty").lean();
+  const specialtyByDoctorId = new Map((myDoctors as any[]).map((d) => [String(d._id), d.specialty || "(Unspecified)"]));
+  const specialties = [...new Set((myDoctors as any[]).map((d) => d.specialty).filter(Boolean))].sort();
+
+  const perMonth: Record<string, Record<string, { v1: number; v2: number; v3: number; vMore: number }>> = {};
+  for (const month of months) {
+    const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: teamCodes }, month }).lean();
+    const visitCountBySpecialityDoctor = new Map<string, Map<string, number>>(); // specialty -> doctorId -> count
+    for (const d of dcrs as any[]) {
+      const docId = String(d.doctorId);
+      const specialty = specialtyByDoctorId.get(docId);
+      if (!specialty) continue;
+      const inner = visitCountBySpecialityDoctor.get(specialty) || new Map<string, number>();
+      inner.set(docId, (inner.get(docId) || 0) + 1);
+      visitCountBySpecialityDoctor.set(specialty, inner);
+    }
+    const bySpecialty: Record<string, { v1: number; v2: number; v3: number; vMore: number }> = {};
+    for (const specialty of specialties) {
+      const inner = visitCountBySpecialityDoctor.get(specialty);
+      const bucket = { v1: 0, v2: 0, v3: 0, vMore: 0 };
+      if (inner) {
+        for (const count of inner.values()) {
+          if (count === 1) bucket.v1++;
+          else if (count === 2) bucket.v2++;
+          else if (count === 3) bucket.v3++;
+          else if (count > 3) bucket.vMore++;
+        }
+      }
+      bySpecialty[specialty] = bucket;
+    }
+    perMonth[month] = bySpecialty;
+  }
+  return { specialties, perMonth };
+}
+
+export async function computeCategoryVisitWise(tenantSlug: string, team: OrgEmployee[], months: string[]) {
+  // Nil/CORE/NON CORE/SUPER CORE -- same real managerwiseCoreDoctorMap
+  // isCore Yes/No tagging as everywhere else in this codebase. Nil and
+  // SUPER CORE have no distinct real tier anywhere in this schema (only a
+  // binary isCore flag exists), so both stay honestly 0 rather than
+  // fabricated, matching every prior round's disclosure on this exact
+  // point.
+  const categories = ["Nil", "CORE", "NON CORE", "SUPER CORE"] as const;
+  const perMonth: Record<string, Record<string, { v1: number; v2: number; v3: number; vMore: number }>> = {};
+  for (const month of months) {
+    const byCategory: Record<string, { v1: number; v2: number; v3: number; vMore: number }> = {
+      Nil: { v1: 0, v2: 0, v3: 0, vMore: 0 }, CORE: { v1: 0, v2: 0, v3: 0, vMore: 0 },
+      "NON CORE": { v1: 0, v2: 0, v3: 0, vMore: 0 }, "SUPER CORE": { v1: 0, v2: 0, v3: 0, vMore: 0 }
+    };
+    for (const member of team) {
+      const dcrs = await DcrModel.find({ tenantSlug, employeeCode: member.employeeCode, month }).populate("doctorId").lean();
+      const visitCountByDoctor = new Map<string, number>();
+      const doctorCodeById = new Map<string, string | undefined>();
+      for (const d of dcrs as any[]) {
+        const docId = String(d.doctorId?._id || d.doctorId);
+        visitCountByDoctor.set(docId, (visitCountByDoctor.get(docId) || 0) + 1);
+        doctorCodeById.set(docId, d.doctorId?.doctorCode);
+      }
+      let coreCodes = new Set<string>(), nonCoreCodes = new Set<string>();
+      try {
+        const CoreMapModel = getMasterModel("managerwiseCoreDoctorMap");
+        const rows = await CoreMapModel.find({ tenantSlug, mrName: member.name }).lean();
+        coreCodes = new Set((rows as any[]).filter((r) => r.isCore === "Yes").map((r) => r.doctorCode));
+        nonCoreCodes = new Set((rows as any[]).filter((r) => r.isCore === "No").map((r) => r.doctorCode));
+      } catch { /* not configured for this tenant */ }
+      // Count each real visited doctor once, into the bucket matching
+      // their real total visit count that month, under whichever real
+      // category their doctorCode is tagged -- a doctor with no real
+      // managerwiseCoreDoctorMap tag at all contributes to no category
+      // row here (not fabricated into one).
+      for (const [docId, count] of visitCountByDoctor) {
+        const docCode = doctorCodeById.get(docId);
+        const cat: "CORE" | "NON CORE" | null = docCode && coreCodes.has(docCode) ? "CORE" : docCode && nonCoreCodes.has(docCode) ? "NON CORE" : null;
+        if (!cat) continue;
+        const bucket = byCategory[cat];
+        if (count === 1) bucket.v1++; else if (count === 2) bucket.v2++; else if (count === 3) bucket.v3++; else if (count > 3) bucket.vMore++;
+      }
+    }
+    perMonth[month] = byCategory;
+  }
+  return { categories: [...categories], perMonth };
 }
 
 export { getDirectReports, getAllDescendants, getUpwardChain };
