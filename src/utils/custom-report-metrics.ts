@@ -91,34 +91,39 @@ export const CUSTOM_REPORT_CATEGORIES: { category: string; metrics: { key: strin
     // Legacy shows one unlabeled checkbox here -- omitted per the coordinator's instruction.
     { key: "superCoreAdherCoverage", label: "SUPER CORE Coverage" }, { key: "superCoreMissed", label: "SUPER CORE Missed" }
   ]},
+  // Round 37 Item 2 -- coordinator re-confirmed the exact legacy Call Type
+  // box content precisely: HQ/EX/OS, each with Days/List/Met/Seen/
+  // Coverage(%), plus Morning Calls/Evening Calls. Replaces Round 35's
+  // smaller best-guess set now that the real content is known.
   { category: "Call Type", metrics: [
-    { key: "exMet", label: "EX Met" }, { key: "exSeen", label: "EX Seen" },
-    { key: "eveningCalls", label: "Evening Calls" }, { key: "bothCalls", label: "Both Calls" },
-    { key: "cList", label: "C List" }, { key: "cMet", label: "C Met" }, { key: "cSeen", label: "C Seen" }, { key: "cCoverage", label: "C Coverage" },
-    // Two further boxes were visible only as bare "Coverage(%)" labels in
-    // the legacy screenshot with no distinguishing text -- kept as
-    // generically-named Call Type sub-coverage slots per the coordinator's
-    // explicit "group these as best matches" instruction.
-    { key: "callTypeCoveragePct1", label: "Coverage(%)" }, { key: "callTypeCoveragePct2", label: "Coverage(%)" }
+    { key: "hqDays", label: "HQ Days" }, { key: "hqList", label: "HQ List" }, { key: "hqMet", label: "HQ Met" }, { key: "hqSeen", label: "HQ Seen" }, { key: "hqCoveragePct", label: "HQ Coverage(%)" },
+    { key: "exDays", label: "EX Days" }, { key: "exList", label: "EX List" }, { key: "exMet", label: "EX Met" }, { key: "exSeen", label: "EX Seen" }, { key: "exCoveragePct", label: "EX Coverage(%)" },
+    { key: "osDays", label: "OS Days" }, { key: "osList", label: "OS List" }, { key: "osMet", label: "OS Met" }, { key: "osSeen", label: "OS Seen" }, { key: "osCoveragePct", label: "OS Coverage(%)" },
+    { key: "morningCalls", label: "Morning Calls" }, { key: "eveningCalls", label: "Evening Calls" }
   ]},
+  // Round 37 Item 2 -- coordinator re-confirmed Class wise is the
+  // Nil/A/B/C 4-tier scheme (same shape as Doctor Category Info, but
+  // keyed to DoctorModel.category A/B/C + Nil rather than the CORE/NON
+  // CORE/SUPER CORE scheme) -- List/Met/Seen/Coverage per tier.
   { category: "Class wise", metrics: [
-    // Legacy image was cut off after "Nil List" -- mirrored the Doctor
-    // Category Info pattern (Nil/CORE/NON CORE/SUPER CORE List) per the
-    // coordinator's explicit fallback instruction. Disclosed assumption.
-    { key: "classNilList", label: "Nil List" },
-    { key: "classCoreList", label: "CORE List" },
-    { key: "classNonCoreList", label: "NON CORE List" },
-    { key: "classSuperCoreList", label: "SUPER CORE List" }
+    { key: "classNilList", label: "Nil List" }, { key: "classNilMet", label: "Nil Met" }, { key: "classNilSeen", label: "Nil Seen" }, { key: "classNilCoverage", label: "Nil Coverage" },
+    { key: "classAList", label: "A List" }, { key: "classAMet", label: "A Met" }, { key: "classASeen", label: "A Seen" }, { key: "classACoverage", label: "A Coverage" },
+    { key: "classBList", label: "B List" }, { key: "classBMet", label: "B Met" }, { key: "classBSeen", label: "B Seen" }, { key: "classBCoverage", label: "B Coverage" },
+    { key: "classCList", label: "C List" }, { key: "classCMet", label: "C Met" }, { key: "classCSeen", label: "C Seen" }, { key: "classCCoverage", label: "C Coverage" }
   ]},
-  { category: "Speciality Analysis", metrics: [{ key: "specialityAnalysis", label: "None selected" }] },
-  { category: "Campaign Info", metrics: [{ key: "campaignInfo", label: "None selected" }] },
+  // Round 37 Item 2 -- List/Met/Seen/Missed checkboxes below each
+  // multi-select, per the coordinator's exact spec.
+  { category: "Speciality Analysis", metrics: [
+    { key: "specialityList", label: "List" }, { key: "specialityMet", label: "Met" }, { key: "specialitySeen", label: "Seen" }, { key: "specialityMissed", label: "Missed" }
+  ]},
+  { category: "Campaign Info", metrics: [
+    { key: "campaignList", label: "List" }, { key: "campaignMet", label: "Met" }, { key: "campaignSeen", label: "Seen" }, { key: "campaignMissed", label: "Missed" }
+  ]},
   { category: "Product Exposure", metrics: [
-    { key: "productExposureSelect", label: "None selected" },
     { key: "noOfDetailingDrs", label: "No. of Detailing Drs" },
     { key: "noOfRxDrs", label: "No. of Rx Drs" }
   ]},
   { category: "Brand Exposure", metrics: [
-    { key: "brandExposureSelect", label: "None selected" },
     { key: "promotedDrsSelect", label: "Promoted DRs" }
   ]},
   { category: "Core Drs Info", metrics: [
@@ -128,7 +133,7 @@ export const CUSTOM_REPORT_CATEGORIES: { category: string; metrics: { key: strin
     { key: "coreDrsMissed", label: "Missed" },
     { key: "coreDrsCoveragePct", label: "Coverage(%)" }
   ]},
-  { category: "Call Feedback", metrics: [{ key: "callFeedbackSeen", label: "Seen" }] },
+  { category: "Call Feedback", metrics: [{ key: "callFeedbackSeen", label: "Seen" }] }, // multi-select of real products above; this is the one checkbox below it
   { category: "Sample/Input Info", metrics: [
     { key: "sampleGivenDrs", label: "Sample Given DRs" },
     { key: "sampleGivenProducts", label: "Sample Given Products" },
@@ -207,6 +212,21 @@ export const COMPUTED_METRIC_KEYS = new Set([
   "listedDrsMet", "listedDrsSeen", "lstDrCoveragePct", "lstDrCallAverage", "lstDrMissedCall",
   // Chemists Info
   "chemistsMet", "chemistsSeen", "chemCoveragePct", "chemCallAverage", "chemMissedChemist",
+  // Round 37 Item 2 -- Call Type (real)
+  "hqDays", "hqList", "hqMet", "hqSeen", "hqCoveragePct",
+  "exDays", "exList", "exMet", "exSeen", "exCoveragePct",
+  "osDays", "osList", "osMet", "osSeen", "osCoveragePct",
+  "morningCalls", "eveningCalls",
+  // Round 37 Item 2 -- Class wise (real for A/B/C; Nil always 0 -- no
+  // distinct "unclassified" state exists in DoctorModel.category)
+  "classNilList", "classNilMet", "classNilSeen", "classNilCoverage",
+  "classAList", "classAMet", "classASeen", "classACoverage",
+  "classBList", "classBMet", "classBSeen", "classBCoverage",
+  "classCList", "classCMet", "classCSeen", "classCCoverage",
+  // Round 37 Item 2 -- Speciality Analysis (real); Campaign Info is not
+  // computed (no real per-visit campaign-attendance schema exists), left
+  // out of this set so it is honestly reported as not-yet-computed.
+  "specialityList", "specialityMet", "specialitySeen", "specialityMissed",
   // Drs Visit
   "visit1Drs", "visit2Drs", "visit3Drs", "visitMoreThan3Drs",
   "visit1CoveragePct", "visit2CoveragePct", "visit3CoveragePct", "visitMoreThan3CoveragePct",

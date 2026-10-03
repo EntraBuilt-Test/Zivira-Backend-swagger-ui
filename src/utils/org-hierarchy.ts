@@ -74,3 +74,29 @@ export async function getAllDescendants(tenantSlug: string, employeeCode: string
 export async function resolveTeam(tenantSlug: string, employeeCode: string, allBaseLevel: boolean): Promise<OrgEmployee[]> {
   return allBaseLevel ? getAllDescendants(tenantSlug, employeeCode) : getDirectReports(tenantSlug, employeeCode);
 }
+
+// Round 37 Item 5 -- a base-level rep's own full upward management chain
+// (ABM -> RBM -> ZBM -> BH), walking EmployeeModel.reportingManager
+// upward instead of down. Bounded to 8 levels, same recursion guard as
+// getAllDescendants.
+export async function getUpwardChain(tenantSlug: string, employeeCode: string): Promise<OrgEmployee[]> {
+  const chain: OrgEmployee[] = [];
+  const seen = new Set<string>([employeeCode]);
+  let current = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean() as unknown as OrgEmployee | null;
+  for (let depth = 0; depth < 8 && current?.reportingManager; depth++) {
+    const mgrCode: string = current.reportingManager;
+    if (seen.has(mgrCode)) break;
+    seen.add(mgrCode);
+    const mgr = await EmployeeModel.findOne({ tenantSlug, employeeCode: mgrCode }).lean() as unknown as OrgEmployee | null;
+    if (!mgr) break;
+    chain.push(mgr);
+    current = mgr;
+  }
+  return chain;
+}
+
+// Round 37 Items 3/5 -- all manager-role employees (for "Filed Force Name"
+// dropdowns scoped to managers, not base-level reps).
+export async function getAllManagers(tenantSlug: string): Promise<OrgEmployee[]> {
+  return EmployeeModel.find({ tenantSlug, role: { $in: Array.from(MANAGER_ROLES) }, status: "ACTIVE" }).sort({ name: 1 }).lean() as unknown as OrgEmployee[];
+}

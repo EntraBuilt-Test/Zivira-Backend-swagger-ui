@@ -101,6 +101,71 @@ export async function computeCustomReportMetrics(
   const chemCallAverage = fwDays > 0 ? +(chemistsMet / fwDays).toFixed(2) : 0;
   const chemMissedChemist = Math.max(totalChemistInList - chemistsMet, 0);
 
+  // ── Round 37 Item 2 -- Call Type (HQ/EX/OS Days/List/Met/Seen/
+  // Coverage(%), Morning/Evening Calls) ──────────────────────────────
+  // Days reuse the same real per-day HQ/EX/OS classification as Tour Plan
+  // Info above (classifyDay's status.area). Met/Seen are aliased (one DCR
+  // row = one real visit event, same rationale as Listed Dr Met/Seen
+  // above) and counted by looking up each DCR's own day's HQ/EX/OS bucket.
+  // List is the same totalDoctorsInList for every bucket -- this schema
+  // has no separate "doctors assigned per territory type" master, only
+  // one flat per-rep doctor list, so the same real total is honestly
+  // reused rather than fabricating a split.
+  const hqMetSet = new Set<string>(), exMetSet = new Set<string>(), osMetSet = new Set<string>();
+  let morningCalls = 0, eveningCalls = 0;
+  for (const d of dcrs as any[]) {
+    const docId = String(d.doctorId?._id || d.doctorId);
+    const dayStatus = classifyDay(ctx, employeeCode, d.visitDateOnly);
+    const area = dayStatus.kind === "tour" ? dayStatus.area : "";
+    const isEx = /ex/i.test(area || "");
+    const isOs = /os/i.test(area || "");
+    if (isEx) exMetSet.add(docId); else if (isOs) osMetSet.add(docId); else hqMetSet.add(docId);
+    if (d.callSession === "MORNING") morningCalls++;
+    else if (d.callSession === "EVENING") eveningCalls++;
+  }
+  const covPct = (n: number) => (totalDoctorsInList > 0 ? +((n / totalDoctorsInList) * 100).toFixed(1) : 0);
+
+  // ── Round 37 Item 2 -- Class wise (Nil/A/B/C List/Met/Seen/Coverage) ──
+  // DoctorModel.category is a real A/B/C enum (no separate "Nil"/
+  // unclassified state exists -- the field defaults to "C" for every
+  // doctor, so a genuinely-unclassified "Nil" tier cannot be
+  // distinguished from a real "C" doctor in this schema). Nil is
+  // honestly reported as 0 rather than guessed from C's numbers.
+  const myDoctors = await DoctorModel.find({ tenantSlug, mappedEmployeeCode: employeeCode, status: "ACTIVE" }).select("category").lean();
+  const classListByTier: Record<"A" | "B" | "C", number> = { A: 0, B: 0, C: 0 };
+  for (const doc of myDoctors as any[]) {
+    const cat: "A" | "B" | "C" = (doc.category === "A" || doc.category === "B") ? doc.category : "C";
+    classListByTier[cat]++;
+  }
+  const classMetByTier: Record<"A" | "B" | "C", Set<string>> = { A: new Set(), B: new Set(), C: new Set() };
+  const doctorCategoryById = new Map((myDoctors as any[]).map((doc) => [String(doc._id), (doc.category === "A" || doc.category === "B") ? doc.category : "C"]));
+  for (const d of dcrs as any[]) {
+    const docId = String(d.doctorId?._id || d.doctorId);
+    const cat = doctorCategoryById.get(docId);
+    if (cat) classMetByTier[cat as "A" | "B" | "C"].add(docId);
+  }
+  const classCoverage = (tier: "A" | "B" | "C") => (classListByTier[tier] > 0 ? +((classMetByTier[tier].size / classListByTier[tier]) * 100).toFixed(1) : 0);
+
+  // ── Round 37 Item 2 -- Speciality Analysis / Campaign Info List/Met/
+  // Seen/Missed. Speciality is real (DoctorModel.specialty, matched
+  // against this rep's own DCR visits). Campaign has no real per-visit
+  // campaign-attendance link anywhere in this schema (CampaignVisitModel
+  // tracks planned/completed visits, not which marketing campaign a visit
+  // belonged to) -- honestly reported as 0/unsupported rather than
+  // fabricated.
+  const myDoctorsWithSpecialty = await DoctorModel.find({ tenantSlug, mappedEmployeeCode: employeeCode, status: "ACTIVE" }).select("specialty").lean();
+  const specialityList = new Set((myDoctorsWithSpecialty as any[]).map((d) => d.specialty).filter(Boolean)).size;
+  const specialtyByDoctorId = new Map((myDoctorsWithSpecialty as any[]).map((d) => [String(d._id), d.specialty]));
+  const specialitiesMet = new Set<string>();
+  for (const d of dcrs as any[]) {
+    const docId = String(d.doctorId?._id || d.doctorId);
+    const spec = specialtyByDoctorId.get(docId);
+    if (spec) specialitiesMet.add(spec);
+  }
+  const specialityMet = specialitiesMet.size;
+  const specialitySeen = specialityMet;
+  const specialityMissed = Math.max(specialityList - specialityMet, 0);
+
   // ── Drs Visit frequency buckets (real per-doctor visit counts) ────────
   const visitCountByDoctor = new Map<string, number>();
   for (const d of dcrs as any[]) {
@@ -210,6 +275,20 @@ export async function computeCustomReportMetrics(
     listedDrsMet, listedDrsSeen, lstDrCoveragePct, lstDrCallAverage, lstDrMissedCall,
     // Chemists Info
     chemistsMet, chemistsSeen, chemCoveragePct, chemCallAverage, chemMissedChemist,
+    // Round 37 Item 2 -- Call Type
+    hqDays: hqWorked, hqList: totalDoctorsInList, hqMet: hqMetSet.size, hqSeen: hqMetSet.size, hqCoveragePct: covPct(hqMetSet.size),
+    exDays: exWorked, exList: totalDoctorsInList, exMet: exMetSet.size, exSeen: exMetSet.size, exCoveragePct: covPct(exMetSet.size),
+    osDays: osWorked, osList: totalDoctorsInList, osMet: osMetSet.size, osSeen: osMetSet.size, osCoveragePct: covPct(osMetSet.size),
+    morningCalls, eveningCalls,
+    // Round 37 Item 2 -- Class wise (Nil tier always 0 -- see comment above)
+    classNilList: 0, classNilMet: 0, classNilSeen: 0, classNilCoverage: 0,
+    classAList: classListByTier.A, classAMet: classMetByTier.A.size, classASeen: classMetByTier.A.size, classACoverage: classCoverage("A"),
+    classBList: classListByTier.B, classBMet: classMetByTier.B.size, classBSeen: classMetByTier.B.size, classBCoverage: classCoverage("B"),
+    classCList: classListByTier.C, classCMet: classMetByTier.C.size, classCSeen: classMetByTier.C.size, classCCoverage: classCoverage("C"),
+    // Round 37 Item 2 -- Speciality Analysis (real); Campaign Info has no
+    // real per-visit campaign-attendance link anywhere in this schema.
+    specialityList, specialityMet, specialitySeen, specialityMissed,
+    campaignList: 0, campaignMet: 0, campaignSeen: 0, campaignMissed: 0,
     // Drs Visit
     visit1Drs, visit2Drs, visit3Drs, visitMoreThan3Drs,
     visit1CoveragePct: pct(visit1Drs), visit2CoveragePct: pct(visit2Drs), visit3CoveragePct: pct(visit3Drs), visitMoreThan3CoveragePct: pct(visitMoreThan3Drs),

@@ -41,7 +41,8 @@ import { HospitalModel } from "../models/hospital.model.js";
 import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
-import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole } from "../utils/org-hierarchy.js";
+import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
+import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager } from "../utils/manager-analysis-compute.js";
 import { CustomReportModel } from "../models/custom-report.model.js";
 import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
 import { CUSTOM_REPORT_CATEGORIES, ALL_METRIC_KEYS, COMPUTED_METRIC_KEYS } from "../utils/custom-report-metrics.js";
@@ -1349,10 +1350,54 @@ companyRouter.post(
   })
 );
 
+// Round 37 Item 2 -- real bug fix: this GET /custom-reports/metadata route
+// used to be registered AFTER GET /custom-reports/:id below. Express
+// matches routes in registration order, so a request to
+// /custom-reports/metadata was matching :id="metadata" first and crashing
+// with "Cast to ObjectId failed for value \"metadata\"" every time Screen
+// B (Generation) tried to load its dropdown/category catalog. Moved here,
+// ahead of the :id route, and the :id route below now also validates the
+// id is a real ObjectId shape before ever reaching Mongoose, so no future
+// literal path segment can produce this same raw-CastError class of bug
+// again even if another fixed segment is added under /custom-reports/
+// without remembering this ordering rule.
+companyRouter.get(
+  "/custom-reports/metadata",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const specialties = await DoctorModel.distinct("specialty", { tenantSlug });
+    let campaigns: string[] = [];
+    try {
+      const CampaignMasterModel = getMasterModel("campaignMaster");
+      campaigns = await CampaignMasterModel.distinct("campaignName", { tenantSlug });
+    } catch {
+      campaigns = [];
+    }
+    // Round 37 Item 2 -- real product/brand names for Product Exposure /
+    // Brand Exposure's multi-selects (previously just "None selected"
+    // placeholders with no real dropdown behind them).
+    const products = await ProductModel.distinct("productName", { tenantSlug });
+    const brands = await ProductBrandModel.distinct("brandName", { tenantSlug });
+    res.json({
+      data: {
+        categories: CUSTOM_REPORT_CATEGORIES,
+        specialties: specialties.filter(Boolean).sort(),
+        campaigns: campaigns.filter(Boolean).sort(),
+        campaignsUnsupported: campaigns.length === 0,
+        products: products.filter(Boolean).sort(),
+        brands: brands.filter(Boolean).sort()
+      }
+    });
+  })
+);
+
 companyRouter.get(
   "/custom-reports/:id",
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      throw new HttpError(400, "Invalid report reference -- please go back to Name Creation and open it again.");
+    }
     const report = await CustomReportModel.findOne({ _id: req.params.id, tenantSlug }).lean();
     if (!report) throw new HttpError(404, "Report not found");
     res.json({ data: { id: String((report as any)._id), name: (report as any).name, defaultParams: (report as any).defaultParams, metrics: (report as any).metrics } });
@@ -1385,29 +1430,6 @@ companyRouter.delete(
   })
 );
 
-// Real metadata for Screen B's dynamic multi-select dropdowns.
-companyRouter.get(
-  "/custom-reports/metadata",
-  asyncHandler(async (req, res) => {
-    const tenantSlug = req.auth!.tenantSlug!;
-    const specialties = await DoctorModel.distinct("specialty", { tenantSlug });
-    let campaigns: string[] = [];
-    try {
-      const CampaignMasterModel = getMasterModel("campaignMaster");
-      campaigns = await CampaignMasterModel.distinct("campaignName", { tenantSlug });
-    } catch {
-      campaigns = [];
-    }
-    res.json({
-      data: {
-        categories: CUSTOM_REPORT_CATEGORIES,
-        specialties: specialties.filter(Boolean).sort(),
-        campaigns: campaigns.filter(Boolean).sort(),
-        campaignsUnsupported: campaigns.length === 0
-      }
-    });
-  })
-);
 
 // Real (partial, honestly-disclosed) computed output for one saved report
 // against one rep + month. Only COMPUTED_METRIC_KEYS are given real
@@ -4617,3 +4639,143 @@ companyRouter.get(
   })
 );
 
+// ═══════════════════════════════════════════════════════════════════════
+// Round 37 Items 3/4/5 -- Manager Analysis: HQ-Coveragewise, Coverage
+// Analysis 1, Joint Workwise. All real data, scoped via org-hierarchy.ts,
+// computed via manager-analysis-compute.ts (itself built on top of
+// Round 34-36's day-status.ts / custom-report-compute.ts rather than
+// reimplementing any of it).
+// ═══════════════════════════════════════════════════════════════════════
+
+// Managers only (RBM/ZBM/ABM/BH/NBH) -- Item 3's and Item 5's "Filed Force
+// Name" dropdown is manager-scoped, not the full employee list.
+companyRouter.get(
+  "/manager-analysis/managers",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const managers = await getAllManagers(tenantSlug);
+    res.json({ data: managers.map((m: any) => ({ employeeCode: m.employeeCode, name: m.name, designation: m.designation, territory: m.territory, joinDate: m.joinDate || null })) });
+  })
+);
+
+// Item 3 -- Manager - HQ Wise Visit Coverage Analysis
+companyRouter.get(
+  "/manager-analysis/hq-coverage",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    const mode = String(req.query.mode || "Days/Calls Only");
+    if (!employeeCode || !fromMonth) throw new HttpError(400, "employeeCode and fromMonth are required");
+
+    const manager = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!manager) throw new HttpError(404, "Field force not found");
+    const months = monthRange(fromMonth, toMonth);
+
+    const { perMonth: summaryPerMonth, total: summaryTotal } = await computeDayCallsSummaryRange(tenantSlug, employeeCode, months);
+
+    const base = {
+      fieldForceName: (manager as any).name, designation: (manager as any).designation, hq: (manager as any).territory,
+      doj: (manager as any).joinDate || null, months, summaryPerMonth, summaryTotal
+    };
+
+    if (mode === "Days/Calls Only") {
+      res.json({ data: { ...base, mode, noRecordsFound: true } });
+      return;
+    }
+
+    if (mode === "HQ/EX/OS wise") {
+      const team = await getDirectReports(tenantSlug, employeeCode);
+      const rows = [];
+      for (const member of team) rows.push(await computeHqExOsRow(tenantSlug, member, months));
+      res.json({ data: { ...base, mode, hqRows: rows } });
+      return;
+    }
+
+    if (mode === "Detail") {
+      const team = await getAllDescendants(tenantSlug, employeeCode);
+      const rows = [];
+      for (const member of team) rows.push(await computeDetailRow(tenantSlug, member, months));
+      res.json({
+        data: {
+          fieldForceName: (manager as any).name, months,
+          mode, detailRows: rows
+        }
+      });
+      return;
+    }
+
+    throw new HttpError(400, "Unknown mode");
+  })
+);
+
+// Item 4 -- Coverage Analysis 1 (standalone + drill-down from Item 3 Detail)
+companyRouter.get(
+  "/manager-analysis/coverage-analysis-1",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    if (!employeeCode || !month) throw new HttpError(400, "employeeCode and month are required");
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!employee) throw new HttpError(404, "Field force not found");
+    const pivot = await computeCoverageAnalysis1(tenantSlug, employeeCode, month);
+    res.json({
+      data: {
+        fieldForceName: (employee as any).name, designation: (employee as any).designation, hq: (employee as any).territory,
+        month, ...pivot
+      }
+    });
+  })
+);
+
+// Item 5 -- Joint Work Analysis
+companyRouter.get(
+  "/manager-analysis/joint-work",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    const mode = String(req.query.mode || "Based on MGR - DCR");
+    if (!employeeCode || !fromMonth) throw new HttpError(400, "employeeCode and fromMonth are required");
+
+    const manager = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!manager) throw new HttpError(404, "Field force not found");
+    const months = monthRange(fromMonth, toMonth);
+
+    if (mode === "Based on MGR - DCR") {
+      const perMonth: Record<string, { days: number; dates: string[]; calls: number } | null> = {};
+      for (const month of months) perMonth[month] = await computeJointWorkForEmployee(tenantSlug, employeeCode, month);
+      res.json({
+        data: {
+          mode, months,
+          managerRow: { employeeCode, name: (manager as any).name, hq: (manager as any).territory, designation: (manager as any).designation, joinDate: (manager as any).joinDate || null, perMonth }
+        }
+      });
+      return;
+    }
+
+    if (mode === "Based on MR - DCR") {
+      const baseLevel = await getAllDescendants(tenantSlug, employeeCode);
+      const repRows = [];
+      for (const rep of baseLevel) {
+        const perMonth: Record<string, { days: number; dates: string[]; calls: number } | null> = {};
+        for (const month of months) perMonth[month] = await computeJointWorkForEmployee(tenantSlug, rep.employeeCode, month);
+        const chain = await getUpwardChain(tenantSlug, rep.employeeCode);
+        const chainRows = [];
+        for (const mgr of chain) {
+          const mgrPerMonth: Record<string, { days: number; dates: string[]; calls: number } | null> = {};
+          for (const month of months) mgrPerMonth[month] = await computeJointWorkWithManager(tenantSlug, rep.employeeCode, mgr.name, month);
+          chainRows.push({ employeeCode: mgr.employeeCode, name: mgr.name, hq: mgr.territory, designation: mgr.designation, joinDate: mgr.joinDate || null, perMonth: mgrPerMonth });
+        }
+        repRows.push({ employeeCode: rep.employeeCode, name: rep.name, hq: rep.territory, designation: rep.designation, joinDate: rep.joinDate || null, perMonth, chain: chainRows });
+      }
+      res.json({ data: { mode, months, repRows } });
+      return;
+    }
+
+    throw new HttpError(400, "Unknown mode");
+  })
+);
