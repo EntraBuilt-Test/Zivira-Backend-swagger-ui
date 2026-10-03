@@ -251,6 +251,117 @@ companyRouter.get(
   })
 );
 
+// Coordinator round (Activity Reports rebuild) -- Territory View, matching
+// sanpharma.info's Activity Reports >> Territory >> View screen exactly:
+// "Listed Doctor wise - Territory View" grouped by territory, for one
+// field rep. Category/Class: the schema only has a single A/B/C
+// `category` field on Doctor; legacy's "Category" (CORE/N CORE/Nil) is the
+// same derived mapping already established in
+// transferMasterDetails/action/candidates (A -> CORE, B/C -> N CORE,
+// unset -> Nil), and "Class" is that same raw category letter (or "Nil"
+// when unset). There is no second, independent field in this codebase to
+// make Category and Class vary independently the way the legacy
+// screenshots sometimes show -- this is an honest, disclosed
+// approximation from the one real field that exists, not a fabricated
+// second field.
+companyRouter.get(
+  "/reports/territory-view",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const employeeCode = String(req.query.employeeCode || "");
+    if (!employeeCode) { res.json({ data: null }); return; }
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!employee) { res.json({ data: null }); return; }
+
+    const doctors = await DoctorModel.find({ tenantSlug, mappedEmployeeCode: employeeCode, status: "ACTIVE" })
+      .sort({ territory: 1, name: 1 })
+      .lean();
+
+    const byTerritory = new Map<string, any[]>();
+    for (const d of doctors as any[]) {
+      const key = d.territory || "Unassigned";
+      if (!byTerritory.has(key)) byTerritory.set(key, []);
+      byTerritory.get(key)!.push({
+        name: d.name,
+        specialty: d.specialty || "Nil",
+        category: d.category === "A" ? "CORE" : d.category === "B" || d.category === "C" ? "N CORE" : "Nil",
+        qual: d.qualification || "Nil",
+        class: d.category || "Nil"
+      });
+    }
+
+    res.json({
+      data: {
+        fieldForceName: employee.name,
+        designation: employee.designation,
+        hq: employee.territory,
+        territories: Array.from(byTerritory.entries()).map(([territoryName, rows]) => ({ territoryName, rows }))
+      }
+    });
+  })
+);
+
+// Coordinator round (Activity Reports rebuild) -- Territory Status,
+// matching sanpharma.info's Activity Reports >> Territory >> Status
+// screen: a company-wide rollup table, one row per field rep (the legacy
+// screenshot picked "admin - Admin -" in the single dropdown and still got
+// every rep's row, so this endpoint always returns the full roster --
+// `employeeCode` is accepted but currently unused for filtering, matching
+// that observed legacy behavior rather than guessing a narrower filter).
+// Total Drs = listed doctors mapped to that rep. No of Plans = count of
+// real planned locations across that rep's current-month Tour Plan(s)
+// (TourPlanModel.locations) -- the closest real analogue to "Route Plan"
+// entries in this schema. Allocated Drs = doctors with a non-empty
+// mappedEmployeeCode (i.e. actually assigned to someone); for a report
+// scoped to one rep, that is the same count as Total Drs by definition,
+// matching the legacy screenshot's rows where Allocated == Total and Not
+// Allocated == 0.
+companyRouter.get(
+  "/reports/territory-status",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const employees = await EmployeeModel.find({ tenantSlug, status: "ACTIVE" }).sort({ name: 1 }).lean();
+    const now = new Date();
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+
+    const [doctorCounts, allocatedCounts, tourPlans] = await Promise.all([
+      DoctorModel.aggregate([
+        { $match: { tenantSlug, status: "ACTIVE" } },
+        { $group: { _id: "$mappedEmployeeCode", total: { $sum: 1 } } }
+      ]),
+      DoctorModel.aggregate([
+        { $match: { tenantSlug, status: "ACTIVE", mappedEmployeeCode: { $nin: [null, ""] } } },
+        { $group: { _id: "$mappedEmployeeCode", allocated: { $sum: 1 } } }
+      ]),
+      TourPlanModel.find({ tenantSlug, month }).lean()
+    ]);
+
+    const totalByCode = new Map(doctorCounts.map((r: any) => [r._id, r.total]));
+    const allocatedByCode = new Map(allocatedCounts.map((r: any) => [r._id, r.allocated]));
+    const plansByCode = new Map<string, number>();
+    for (const tp of tourPlans as any[]) {
+      const prev = plansByCode.get(tp.employeeCode) || 0;
+      plansByCode.set(tp.employeeCode, prev + (Array.isArray(tp.locations) ? tp.locations.length : 0));
+    }
+
+    const data = employees.map((e: any) => {
+      const total = totalByCode.get(e.employeeCode) || 0;
+      const allocated = allocatedByCode.get(e.employeeCode) || 0;
+      return {
+        fieldForce: `${e.name} - ${e.designation} - ${e.territory}`,
+        hq: e.territory,
+        totalDrs: total,
+        noOfPlans: plansByCode.get(e.employeeCode) || 0,
+        allocatedDrs: allocated,
+        notAllocatedDrs: Math.max(0, total - allocated)
+      };
+    });
+
+    res.json({ data });
+  })
+);
+
 // Distinct, paginated clinic names sourced from the doctor collection (Excel Customer
 // sheet's "Clinic name" column) — backs the Hospital screen without fetching all ~20k
 // doctor documents just to dedupe one field.
