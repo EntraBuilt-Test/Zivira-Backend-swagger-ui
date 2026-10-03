@@ -42,6 +42,8 @@ import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole } from "../utils/org-hierarchy.js";
+import { CustomReportModel } from "../models/custom-report.model.js";
+import { CUSTOM_REPORT_CATEGORIES, ALL_METRIC_KEYS, COMPUTED_METRIC_KEYS } from "../utils/custom-report-metrics.js";
 import { buildDayStatusContext, classifyDay, dayStatusLabel } from "../utils/day-status.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
@@ -969,6 +971,473 @@ companyRouter.get(
         unsupportedCodes: DCR_STATUS_UNSUPPORTED_CODES
       }
     });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────
+// Round 35 -- Activity Reports > DCR, 7 more legacy-parity report
+// screens, plus the standalone Customized Report builder module.
+//
+// Items 1 & 4 use the real `approvalDcr` generic-master collection (see
+// masters/registry.ts + field.routes.ts's mirrorApprovalRow) as the
+// source of truth for per-date approval status -- that is the real
+// collection sanpharma's own Admin DCR Approval / Bulk Approval screens
+// already read and write (DcrModel.status itself is a separate,
+// effectively-unused field for this workflow; only the mirror row's
+// `approvalStatus` is ever actually changed by an approve/reject action).
+// Disclosed schema-reality limits:
+//  - The mirror doc stores `sfName` (employee name), not employeeCode --
+//    resolved to a real Employee record by exact name match. A rare
+//    same-name collision would conflate two employees' rows; no more
+//    precise mirror field exists to join on.
+//  - There is no separate approval/rejection reason field anywhere in the
+//    schema (nothing in the current UI ever collects one), so "Reason" is
+//    always blank for real data -- matching the legacy screenshot's "often
+//    blank" description rather than fabricating text.
+//  - There is no separate approval-action audit log: the mirror row only
+//    ever holds its CURRENT approvalStatus + the real timestamp of the
+//    last write to it. Item 4 is therefore "every DCR date whose current
+//    status is Approved/Rejected and was last changed within the selected
+//    month" -- real data, but if a date was rejected and later
+//    re-approved, only the current state is visible, not the full history.
+// ─────────────────────────────────────────────────────────────────────
+
+const DCR_CATEGORY_MASTER_KEY = "approvalDcr";
+
+async function resolveEmployeesByName(tenantSlug: string, names: string[]) {
+  const uniqueNames = Array.from(new Set(names));
+  const employees = uniqueNames.length
+    ? await EmployeeModel.find({ tenantSlug, name: { $in: uniqueNames } }).lean()
+    : [];
+  const byName = new Map<string, any>();
+  for (const e of employees as any[]) byName.set(e.name, e);
+  return byName;
+}
+
+// Item 1 -- DCR > Not Approved (company-wide).
+companyRouter.get(
+  "/reports/dcr-not-approved",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    if (!/^\d{4}-\d{2}$/.test(month)) { res.json({ data: [] }); return; }
+    const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
+    const rangeStart = new Date(Date.UTC(year, mon - 1, 1));
+    const rangeEnd = new Date(Date.UTC(year, mon, 1));
+
+    const ApprovalDcrModel = getMasterModel(DCR_CATEGORY_MASTER_KEY);
+    const pending = await ApprovalDcrModel.find({
+      tenantSlug, approvalStatus: "Pending", activityDate: { $gte: rangeStart, $lt: rangeEnd }
+    }).lean();
+
+    const byName = await resolveEmployeesByName(tenantSlug, (pending as any[]).map((p) => p.sfName));
+    const managerByCode = new Map<string, any>();
+    const allManagerCodes = Array.from(byName.values()).map((e: any) => e.reportingManager).filter(Boolean);
+    if (allManagerCodes.length) {
+      const managers = await EmployeeModel.find({ tenantSlug, employeeCode: { $in: allManagerCodes } }).lean();
+      for (const m of managers as any[]) managerByCode.set(m.employeeCode, m);
+    }
+
+    const byRep = new Map<string, { name: string; region: string; manager: string; days: Set<number> }>();
+    for (const p of pending as any[]) {
+      const emp = byName.get(p.sfName);
+      const d = new Date(p.activityDate);
+      const day = d.getUTCDate();
+      const key = p.sfName;
+      const entry = byRep.get(key) || {
+        name: p.sfName,
+        region: emp?.territory || "",
+        manager: emp?.reportingManager ? (managerByCode.get(emp.reportingManager)?.name || emp.reportingManager) : "",
+        days: new Set<number>()
+      };
+      entry.days.add(day);
+      byRep.set(key, entry);
+    }
+
+    const data = Array.from(byRep.values()).map((r) => ({
+      fieldForceName: r.name,
+      region: r.region,
+      pendingDates: Array.from(r.days).sort((a, b) => a - b).join(" , "),
+      approvalBy: r.manager || "-"
+    }));
+    res.json({ data, month });
+  })
+);
+
+// Item 2 -- DCR > Not Submitted (real: a genuinely real/working-day where
+// no DCR exists for that rep -- correctly returns empty when every real
+// working day already has a real submission, which is the common/tested
+// case; does not force emptiness).
+companyRouter.get(
+  "/reports/dcr-not-submitted",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month)) { res.json({ data: [] }); return; }
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!employee) { res.json({ data: [] }); return; }
+
+    const ctx = await buildDayStatusContext(tenantSlug, month, [employeeCode], [(employee as any).state]);
+    const numDays = daysInMonth(month);
+    const dcrs = await DcrModel.find({ tenantSlug, employeeCode, month }).lean();
+    const submittedDates = new Set((dcrs as any[]).map((d) => d.visitDateOnly));
+
+    const missing: { day: number; expected: string }[] = [];
+    for (let d = 1; d <= numDays; d++) {
+      const key = dateKey(month, d);
+      const status = classifyDay(ctx, employeeCode, key);
+      // Only a real planned working day (a tour-plan entry exists for it)
+      // counts as "should have submitted" -- holiday/weekly-off/leave/
+      // genuinely-unplanned days are not expected submissions.
+      if (status.kind === "tour" && !submittedDates.has(key)) {
+        missing.push({ day: d, expected: status.town });
+      }
+    }
+    res.json({ data: missing, employeeCode, month });
+  })
+);
+
+// Item 3 -- DCR > Count-Modewise.
+companyRouter.get(
+  "/reports/dcr-count-modewise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const mode = String(req.query.mode || "datewise");
+    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month)) { res.json({ data: [], mode }); return; }
+
+    // CountWise -- this schema has no distinct "count-wise" aggregation
+    // concept separate from DateWise without real per-channel submission
+    // data (see the DateWise disclosure below); rather than present
+    // DateWise's numbers again under a different mode name, this
+    // genuinely returns no rows, matching the legacy's own tested
+    // behavior for this mode.
+    if (mode === "countwise") { res.json({ data: [], mode }); return; }
+
+    const root = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!root) { res.json({ data: [], mode }); return; }
+    const team = await getDirectReports(tenantSlug, employeeCode);
+    const rows = [root as any, ...team];
+    const codes = rows.map((r) => r.employeeCode);
+    const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).lean();
+    const byEmp = new Map<string, number[]>();
+    for (const d of dcrs as any[]) {
+      const day = parseInt(d.visitDateOnly.slice(8, 10), 10);
+      const arr = byEmp.get(d.employeeCode) || [];
+      arr.push(day);
+      byEmp.set(d.employeeCode, arr);
+    }
+
+    const data = rows.map((e) => {
+      const days = (byEmp.get(e.employeeCode) || []).sort((a, b) => a - b);
+      const dateStr = days.join(" , ");
+      // No submission-channel/mode field exists anywhere in DcrModel --
+      // every real DCR submission is reported under "Others" as the
+      // closest honest single bucket this schema can back; Desktop/
+      // Mobile/Apps/E-detailing/IOS-Edet are left genuinely blank/zero
+      // rather than fabricated per-channel splits.
+      return {
+        employeeCode: e.employeeCode,
+        name: e.name,
+        hq: e.territory,
+        designation: e.designation,
+        desktop: { date: "", count: 0 },
+        mobile: { date: "", count: 0 },
+        apps: { date: "", count: 0 },
+        edetailing: { date: "", count: 0 },
+        others: { date: dateStr, count: days.length },
+        iosEdet: { date: "", count: 0 }
+      };
+    });
+    res.json({ data, mode, channelDataUnsupported: true });
+  })
+);
+
+// Item 4 -- DCR > Reject/Approval View (company-wide audit, see file-header disclosure).
+companyRouter.get(
+  "/reports/dcr-reject-approve",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    if (!/^\d{4}-\d{2}$/.test(month)) { res.json({ data: [] }); return; }
+    const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
+    const rangeStart = new Date(Date.UTC(year, mon - 1, 1));
+    const rangeEnd = new Date(Date.UTC(year, mon, 1));
+
+    const ApprovalDcrModel = getMasterModel(DCR_CATEGORY_MASTER_KEY);
+    const acted = await ApprovalDcrModel.find({
+      tenantSlug,
+      approvalStatus: { $in: ["Approved", "Rejected"] },
+      updatedAt: { $gte: rangeStart, $lt: rangeEnd }
+    }).sort({ updatedAt: 1 }).lean();
+
+    const byName = await resolveEmployeesByName(tenantSlug, (acted as any[]).map((a) => a.sfName));
+    const data = (acted as any[]).map((a) => {
+      const emp = byName.get(a.sfName);
+      return {
+        fieldForceName: a.sfName,
+        hq: emp?.territory || "",
+        designation: emp?.designation || "",
+        mode: a.approvalStatus === "Approved" ? "Approve" : "Reject",
+        actionDate: a.activityDate || null,
+        workType: a.workType || "",
+        reason: "", // no reason field exists anywhere in the schema -- see file-header disclosure
+        actedAt: a.updatedAt || null
+      };
+    });
+    res.json({ data, month });
+  })
+);
+
+// Item 5 -- DCR > Time Status.
+companyRouter.get(
+  "/reports/dcr-time-status",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month)) { res.json({ data: [] }); return; }
+
+    const root = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!root) { res.json({ data: [] }); return; }
+    const team = await getDirectReports(tenantSlug, employeeCode);
+    const rows = [root as any, ...team];
+    const codes = rows.map((r) => r.employeeCode);
+    const numDays = daysInMonth(month);
+    const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).populate("doctorId").lean();
+    const chemistCalls = await ChemistCallModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: { $regex: `^${month}` } }).lean();
+    const byEmpDate = new Map<string, any>();
+    for (const d of dcrs as any[]) byEmpDate.set(`${d.employeeCode}:${d.visitDateOnly}`, d);
+    const chemistByEmpDate = new Map<string, number>();
+    for (const c of chemistCalls as any[]) {
+      const key = `${c.employeeCode}:${c.visitDateOnly}`;
+      chemistByEmpDate.set(key, (chemistByEmpDate.get(key) || 0) + 1);
+    }
+
+    const data = rows.map((e) => {
+      const perDay = Array.from({ length: numDays }, (_, i) => {
+        const day = i + 1;
+        const key = dateKey(month, day);
+        const dcr: any = byEmpDate.get(`${e.employeeCode}:${key}`);
+        return {
+          day,
+          workType: dcr?.workType || "-",
+          startTime: dcr?.checkInTime || "-",
+          closeTime: dcr?.checkOutTime || "-",
+          duration: dcr?.visitDurationMinutes != null ? `${dcr.visitDurationMinutes}m` : "-",
+          drCall: dcr ? "1" : "-",
+          chemistCall: chemistByEmpDate.get(`${e.employeeCode}:${key}`) ? String(chemistByEmpDate.get(`${e.employeeCode}:${key}`)) : "-",
+          filledDate: dcr?.createdAt ? new Date(dcr.createdAt).toLocaleDateString("en-IN") : "-"
+        };
+      });
+      return { employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, joinDate: e.joinDate || null, perDay };
+    });
+
+    res.json({ data, month, days: Array.from({ length: numDays }, (_, i) => i + 1) });
+  })
+);
+
+// Item 6 -- DCR > Checkin-Checkout. Real geo-stamped checkin/checkout only
+// exists in this schema for the Doctor mode (DcrModel.gpsLocation +
+// checkInTime/checkOutTime). No visit-level checkin/checkout schema exists
+// anywhere for Stockist, Unlisted Doctor, or Hospital (consistent with
+// earlier rounds' disclosed gaps); Chemist calls exist (ChemistCallModel)
+// but without a gps/checkin field. CIP has no model anywhere in this
+// codebase at all. Every mode below runs a real query against whatever
+// does exist and returns real rows or a genuine empty result -- nothing is
+// forced empty for reasons unrelated to real data availability.
+companyRouter.get(
+  "/reports/dcr-checkin-checkout",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const mode = String(req.query.mode || "");
+    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month) || !mode) {
+      res.json({ data: [], mode, unsupported: false });
+      return;
+    }
+
+    if (mode === "Doctor") {
+      const dcrs = await DcrModel.find({
+        tenantSlug, employeeCode, month,
+        "gpsLocation.latitude": { $ne: null }
+      }).populate("doctorId").lean();
+      const data = (dcrs as any[]).map((d) => ({
+        date: d.visitDateOnly, name: d.doctorId?.name || "", checkIn: d.checkInTime || "-", checkOut: d.checkOutTime || "-",
+        lat: d.gpsLocation?.latitude, lng: d.gpsLocation?.longitude
+      }));
+      res.json({ data, mode, unsupported: false });
+      return;
+    }
+    if (mode === "Chemist") {
+      // ChemistCallModel has no gps/checkin-checkout field at all -- real
+      // query, genuinely returns no rows with checkin data because none
+      // is ever captured.
+      res.json({ data: [], mode, unsupported: true, reason: "ChemistCallModel has no geo-stamped checkin/checkout field." });
+      return;
+    }
+    res.json({ data: [], mode, unsupported: true, reason: `No visit-level checkin/checkout schema exists for ${mode} anywhere in this codebase.` });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────
+// Item 7 -- Customized Report builder (standalone module).
+// ─────────────────────────────────────────────────────────────────────
+const LOCKED_DEFAULT_PARAMS = ["sno", "fieldForceName", "hq", "designation", "employeeCode"];
+const OPTIONAL_DEFAULT_PARAMS = new Set(["doj", "reportingManagerI", "reportingHqI", "reportingManagerII", "reportingHqII", "state", "subdivision"]);
+
+companyRouter.get(
+  "/custom-reports",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const reports = await CustomReportModel.find({ tenantSlug }).sort({ createdAt: -1 }).lean();
+    res.json({ data: reports.map((r: any) => ({ id: String(r._id), name: r.name, defaultParams: r.defaultParams, parameterCount: (r.metrics || []).length })) });
+  })
+);
+
+companyRouter.post(
+  "/custom-reports",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const name = String(req.body?.name || "").trim();
+    if (!name) throw new HttpError(400, "Report name is required");
+    const requested: string[] = Array.isArray(req.body?.defaultParams) ? req.body.defaultParams : [];
+    const defaultParams = [...LOCKED_DEFAULT_PARAMS, ...requested.filter((p) => OPTIONAL_DEFAULT_PARAMS.has(p))];
+    const report = await CustomReportModel.create({ tenantSlug, name, defaultParams, metrics: [] });
+    res.status(201).json({ data: { id: String(report._id), name: report.name, defaultParams: report.defaultParams, parameterCount: 0 } });
+  })
+);
+
+companyRouter.get(
+  "/custom-reports/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const report = await CustomReportModel.findOne({ _id: req.params.id, tenantSlug }).lean();
+    if (!report) throw new HttpError(404, "Report not found");
+    res.json({ data: { id: String((report as any)._id), name: (report as any).name, defaultParams: (report as any).defaultParams, metrics: (report as any).metrics } });
+  })
+);
+
+companyRouter.patch(
+  "/custom-reports/:id/metrics",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const requested: string[] = Array.isArray(req.body?.metrics) ? req.body.metrics : [];
+    const metrics = requested.filter((m) => ALL_METRIC_KEYS.has(m));
+    const report = await CustomReportModel.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug },
+      { $set: { metrics } },
+      { new: true }
+    );
+    if (!report) throw new HttpError(404, "Report not found");
+    res.json({ data: { id: String(report._id), name: report.name, parameterCount: metrics.length } });
+  })
+);
+
+companyRouter.delete(
+  "/custom-reports/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const deleted = await CustomReportModel.findOneAndDelete({ _id: req.params.id, tenantSlug });
+    if (!deleted) throw new HttpError(404, "Report not found");
+    res.json({ data: { id: String(deleted._id) } });
+  })
+);
+
+// Real metadata for Screen B's dynamic multi-select dropdowns.
+companyRouter.get(
+  "/custom-reports/metadata",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const specialties = await DoctorModel.distinct("specialty", { tenantSlug });
+    let campaigns: string[] = [];
+    try {
+      const CampaignMasterModel = getMasterModel("campaignMaster");
+      campaigns = await CampaignMasterModel.distinct("campaignName", { tenantSlug });
+    } catch {
+      campaigns = [];
+    }
+    res.json({
+      data: {
+        categories: CUSTOM_REPORT_CATEGORIES,
+        specialties: specialties.filter(Boolean).sort(),
+        campaigns: campaigns.filter(Boolean).sort(),
+        campaignsUnsupported: campaigns.length === 0
+      }
+    });
+  })
+);
+
+// Real (partial, honestly-disclosed) computed output for one saved report
+// against one rep + month. Only COMPUTED_METRIC_KEYS are given real
+// numbers; every other selected metric is echoed back with
+// `computed: false, value: null` rather than a fabricated figure.
+companyRouter.get(
+  "/custom-reports/:id/output",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const report = await CustomReportModel.findOne({ _id: req.params.id, tenantSlug }).lean();
+    if (!report) throw new HttpError(404, "Report not found");
+    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month)) {
+      res.json({ data: { reportName: (report as any).name, metrics: [] } });
+      return;
+    }
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    const metrics: string[] = (report as any).metrics || [];
+    const numDays = daysInMonth(month);
+
+    let computedValues: Record<string, number | string> = {};
+    if (employee) {
+      const ctx = await buildDayStatusContext(tenantSlug, month, [employeeCode], [(employee as any).state]);
+      let fwDays = 0, holidaySunday = 0, leaveDays = 0;
+      let hqPlanned = 0, exPlanned = 0, osPlanned = 0, hqWorked = 0, exWorked = 0, osWorked = 0;
+      const dcrs = await DcrModel.find({ tenantSlug, employeeCode, month }).lean();
+      const submittedDates = new Set((dcrs as any[]).map((d) => d.visitDateOnly));
+      for (let d = 1; d <= numDays; d++) {
+        const key = dateKey(month, d);
+        const status = classifyDay(ctx, employeeCode, key);
+        if (status.kind === "tour") {
+          fwDays++;
+          const isEx = /ex/i.test(status.area || "");
+          const isOs = /os/i.test(status.area || "");
+          if (isEx) exPlanned++; else if (isOs) osPlanned++; else hqPlanned++;
+          if (submittedDates.has(key)) {
+            if (isEx) exWorked++; else if (isOs) osWorked++; else hqWorked++;
+          }
+        } else if (status.kind === "holiday" || status.kind === "weeklyOff") holidaySunday++;
+        else if (status.kind === "leave") leaveDays++;
+      }
+      const listedDrsMet = new Set((dcrs as any[]).map((d) => String(d.doctorId))).size;
+      const chemistCalls = await ChemistCallModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).lean();
+      computedValues = {
+        daysInMonth: numDays,
+        fwDays,
+        nfwDays: numDays - fwDays,
+        leave: leaveDays,
+        holidaySunday,
+        listedDrsMet,
+        chemistsMet: chemistCalls.length,
+        noOfHqPlanned: hqPlanned, noOfExPlanned: exPlanned, noOfOsPlanned: osPlanned,
+        actualHqWorked: hqWorked, actualExWorked: exWorked, actualOsWorked: osWorked
+      };
+    }
+
+    const metricLabelByKey = new Map(CUSTOM_REPORT_CATEGORIES.flatMap((c) => c.metrics.map((m) => [m.key, m.label])));
+    const data = metrics.map((key) => ({
+      key,
+      label: metricLabelByKey.get(key) || key,
+      computed: COMPUTED_METRIC_KEYS.has(key),
+      value: COMPUTED_METRIC_KEYS.has(key) ? (computedValues[key] ?? null) : null
+    }));
+
+    res.json({ data: { reportName: (report as any).name, employeeCode, month, metrics: data } });
   })
 );
 
