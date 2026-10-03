@@ -43,6 +43,8 @@ import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
+import { SurveyQuestionModel } from "../models/survey-question.model.js";
+import { SurveyModel } from "../models/survey.model.js";
 import { DispatchModel } from "../models/dispatch.model.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
@@ -359,6 +361,155 @@ companyRouter.get(
     });
 
     res.json({ data });
+  })
+);
+
+// Coordinator round -- Activity Reports > Survey, matching sanpharma.info's
+// real Survey module (Survey_Ques_Creation.aspx / Survey_Creation.aspx /
+// Survey_Ques_Process.aspx) exactly: a question bank (SurveyQuestionModel)
+// referenced by Survey records (SurveyModel), each carrying per-question
+// Process Type flags (Drs./Chm./Hos./Stk./Prd.).
+
+const surveyQuestionValidation = z.object({
+  questionText: z.string().min(1),
+  controlType: z.enum(["Enterable - Text", "Enterable - Numeric", "Selectable - Single", "Selectable- Multiple"]),
+  maxLength: z.number().int().positive().optional().nullable(),
+  options: z.array(z.string()).optional()
+});
+
+companyRouter.get(
+  "/survey-questions",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const rows = await SurveyQuestionModel.find({ tenantSlug }).sort({ createdAt: -1 }).lean();
+    res.json({ data: rows.map((r: any) => ({ id: String(r._id), ...r })) });
+  })
+);
+
+companyRouter.post(
+  "/survey-questions",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const body = surveyQuestionValidation.parse(req.body);
+    const doc = await SurveyQuestionModel.create({ ...body, tenantSlug });
+    await audit("SURVEY_QUESTION_CREATED", "SurveyQuestion", String(doc._id), { tenantSlug });
+    res.status(201).json({ data: { id: String(doc._id), ...doc.toObject() } });
+  })
+);
+
+companyRouter.patch(
+  "/survey-questions/:id/deactivate",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const doc = await SurveyQuestionModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doc) throw new HttpError(404, "Question not found");
+    doc.status = doc.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    await doc.save();
+    await audit("SURVEY_QUESTION_STATUS_CHANGED", "SurveyQuestion", String(doc._id), { tenantSlug, status: doc.status });
+    res.json({ data: { id: String(doc._id), ...doc.toObject() } });
+  })
+);
+
+const surveyQuestionRefValidation = z.object({
+  questionId: z.string().min(1),
+  drs: z.boolean().optional().default(false),
+  chm: z.boolean().optional().default(false),
+  hos: z.boolean().optional().default(false),
+  stk: z.boolean().optional().default(false),
+  prd: z.boolean().optional().default(false)
+});
+
+const surveyValidation = z.object({
+  title: z.string().min(1),
+  processFromDate: z.string().min(1),
+  processToDate: z.string().min(1),
+  questions: z.array(surveyQuestionRefValidation).default([])
+});
+
+companyRouter.get(
+  "/surveys",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const rows = await SurveyModel.find({ tenantSlug }).sort({ createdAt: -1 }).lean();
+    res.json({ data: rows.map((r: any) => ({ id: String(r._id), ...r, questionCount: Array.isArray(r.questions) ? r.questions.length : 0 })) });
+  })
+);
+
+companyRouter.get(
+  "/surveys/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const row = await SurveyModel.findOne({ _id: req.params.id, tenantSlug }).lean();
+    if (!row) throw new HttpError(404, "Survey not found");
+    const questionIds = (row as any).questions.map((q: any) => q.questionId);
+    const questionDocs = await SurveyQuestionModel.find({ tenantSlug, _id: { $in: questionIds } }).lean();
+    const byId = new Map(questionDocs.map((q: any) => [String(q._id), q]));
+    const questions = (row as any).questions.map((q: any) => ({ ...q, question: byId.get(q.questionId) ? { ...byId.get(q.questionId), id: String(byId.get(q.questionId)._id) } : null }));
+    res.json({ data: { id: String((row as any)._id), ...row, questions } });
+  })
+);
+
+companyRouter.post(
+  "/surveys",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const body = surveyValidation.parse(req.body);
+    const doc = await SurveyModel.create({ ...body, tenantSlug });
+    await audit("SURVEY_CREATED", "Survey", String(doc._id), { tenantSlug });
+    res.status(201).json({ data: { id: String(doc._id), ...doc.toObject() } });
+  })
+);
+
+companyRouter.patch(
+  "/surveys/:id",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const body = surveyValidation.partial().parse(req.body);
+    const doc = await SurveyModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, body, { new: true });
+    if (!doc) throw new HttpError(404, "Survey not found");
+    await audit("SURVEY_UPDATED", "Survey", String(doc._id), { tenantSlug });
+    res.json({ data: { id: String(doc._id), ...doc.toObject() } });
+  })
+);
+
+companyRouter.patch(
+  "/surveys/:id/deactivate",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const doc = await SurveyModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doc) throw new HttpError(404, "Survey not found");
+    doc.status = doc.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    await doc.save();
+    await audit("SURVEY_STATUS_CHANGED", "Survey", String(doc._id), { tenantSlug, status: doc.status });
+    res.json({ data: { id: String(doc._id), ...doc.toObject() } });
+  })
+);
+
+companyRouter.patch(
+  "/surveys/:id/process",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const doc = await SurveyModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doc) throw new HttpError(404, "Survey not found");
+    doc.processed = true;
+    doc.processedAt = new Date();
+    await doc.save();
+    await audit("SURVEY_PROCESSED", "Survey", String(doc._id), { tenantSlug });
+    res.json({ data: { id: String(doc._id), ...doc.toObject() } });
+  })
+);
+
+companyRouter.patch(
+  "/surveys/:id/close",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const doc = await SurveyModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doc) throw new HttpError(404, "Survey not found");
+    doc.closed = true;
+    doc.closedAt = new Date();
+    await doc.save();
+    await audit("SURVEY_CLOSED", "Survey", String(doc._id), { tenantSlug });
+    res.json({ data: { id: String(doc._id), ...doc.toObject() } });
   })
 );
 
