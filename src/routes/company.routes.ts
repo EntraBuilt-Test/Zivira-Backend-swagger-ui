@@ -499,6 +499,44 @@ companyRouter.patch(
   })
 );
 
+// Coordinator round (Survey Item 2) -- Survey > View, matching
+// sanpharma.info's Survey_Process_View.aspx exactly: pick a field force +
+// a survey, and see that field force PLUS their direct reports (the real
+// reporting-chain team, confirmed from the legacy reference screenshot --
+// selecting a manager returned their team's rows, not just themselves) in
+// one table, with the survey's title as a grouped header over the 5 real
+// Process Type categories (Drs/Chm/Stk/Hos/Prd). No real survey-ANSWER
+// data pipeline exists anywhere in this codebase yet (field reps have no
+// way to actually answer a survey), so every category cell is honestly
+// null/"-" here, exactly like the legacy screenshot shows for an
+// unanswered survey -- never a fabricated count.
+companyRouter.get(
+  "/surveys/:id/view",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug;
+    const employeeCode = String(req.query.employeeCode || "");
+    const survey = await SurveyModel.findOne({ _id: req.params.id, tenantSlug }).lean();
+    if (!survey) throw new HttpError(404, "Survey not found");
+    if (!employeeCode) { res.json({ data: { surveyTitle: (survey as any).title, rows: [] } }); return; }
+
+    const team = await EmployeeModel.find({
+      tenantSlug,
+      $or: [{ employeeCode }, { reportingManager: employeeCode }]
+    }).sort({ employeeCode: 1 }).lean();
+
+    const rows = team.map((e: any) => ({
+      id: String(e._id),
+      employeeCode: e.employeeCode,
+      name: e.name,
+      designation: e.designation,
+      hq: e.territory,
+      doj: e.joinDate || null
+    }));
+
+    res.json({ data: { surveyTitle: (survey as any).title, rows } });
+  })
+);
+
 companyRouter.patch(
   "/surveys/:id/close",
   asyncHandler(async (req, res) => {
