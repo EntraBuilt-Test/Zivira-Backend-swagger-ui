@@ -1107,7 +1107,7 @@ companyRouter.get(
     const employeeCode = String(req.query.employeeCode || "");
     const month = String(req.query.month || "");
     const mode = String(req.query.mode || "datewise");
-    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month)) { res.json({ data: [], mode }); return; }
+    if (!employeeCode || !/^\d{4}-\d{2}$/.test(month)) { res.json({ data: { mode, rows: [] } }); return; }
 
     // CountWise -- this schema has no distinct "count-wise" aggregation
     // concept separate from DateWise without real per-channel submission
@@ -1115,10 +1115,10 @@ companyRouter.get(
     // DateWise's numbers again under a different mode name, this
     // genuinely returns no rows, matching the legacy's own tested
     // behavior for this mode.
-    if (mode === "countwise") { res.json({ data: [], mode }); return; }
+    if (mode === "countwise") { res.json({ data: { mode, rows: [] } }); return; }
 
     const root = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
-    if (!root) { res.json({ data: [], mode }); return; }
+    if (!root) { res.json({ data: { mode, rows: [] } }); return; }
     const team = await getDirectReports(tenantSlug, employeeCode);
     const rows = [root as any, ...team];
     const codes = rows.map((r) => r.employeeCode);
@@ -1152,7 +1152,7 @@ companyRouter.get(
         iosEdet: { date: "", count: 0 }
       };
     });
-    res.json({ data, mode, channelDataUnsupported: true });
+    res.json({ data: { mode, rows: data, channelDataUnsupported: true } });
   })
 );
 
@@ -1257,7 +1257,7 @@ companyRouter.get(
     const month = String(req.query.month || "");
     const mode = String(req.query.mode || "");
     if (!employeeCode || !/^\d{4}-\d{2}$/.test(month) || !mode) {
-      res.json({ data: [], mode, unsupported: false });
+      res.json({ data: { mode, rows: [], unsupported: false } });
       return;
     }
 
@@ -1266,21 +1266,21 @@ companyRouter.get(
         tenantSlug, employeeCode, month,
         "gpsLocation.latitude": { $ne: null }
       }).populate("doctorId").lean();
-      const data = (dcrs as any[]).map((d) => ({
+      const rows = (dcrs as any[]).map((d) => ({
         date: d.visitDateOnly, name: d.doctorId?.name || "", checkIn: d.checkInTime || "-", checkOut: d.checkOutTime || "-",
         lat: d.gpsLocation?.latitude, lng: d.gpsLocation?.longitude
       }));
-      res.json({ data, mode, unsupported: false });
+      res.json({ data: { mode, rows, unsupported: false } });
       return;
     }
     if (mode === "Chemist") {
       // ChemistCallModel has no gps/checkin-checkout field at all -- real
       // query, genuinely returns no rows with checkin data because none
       // is ever captured.
-      res.json({ data: [], mode, unsupported: true, reason: "ChemistCallModel has no geo-stamped checkin/checkout field." });
+      res.json({ data: { mode, rows: [], unsupported: true, reason: "ChemistCallModel has no geo-stamped checkin/checkout field." } });
       return;
     }
-    res.json({ data: [], mode, unsupported: true, reason: `No visit-level checkin/checkout schema exists for ${mode} anywhere in this codebase.` });
+    res.json({ data: { mode, rows: [], unsupported: true, reason: `No visit-level checkin/checkout schema exists for ${mode} anywhere in this codebase.` } });
   })
 );
 
