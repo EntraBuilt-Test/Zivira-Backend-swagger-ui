@@ -41,6 +41,8 @@ import { HospitalModel } from "../models/hospital.model.js";
 import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
+import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole } from "../utils/org-hierarchy.js";
+import { buildDayStatusContext, classifyDay, dayStatusLabel } from "../utils/day-status.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
 import { SurveyQuestionModel } from "../models/survey-question.model.js";
@@ -510,6 +512,466 @@ companyRouter.patch(
 // way to actually answer a survey), so every category cell is honestly
 // null/"-" here, exactly like the legacy screenshot shows for an
 // unanswered survey -- never a fabricated count.
+// ─────────────────────────────────────────────────────────────────────
+// Round 34 -- Activity Reports > TP, real legacy-parity report screens.
+// ─────────────────────────────────────────────────────────────────────
+
+function daysInMonth(month: string): number {
+  const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
+  return new Date(Date.UTC(year, mon, 0)).getUTCDate();
+}
+function dateKey(month: string, day: number): string {
+  return `${month}-${String(day).padStart(2, "0")}`;
+}
+
+// Item 1 -- TP > Consolidated View: a real hierarchy rollup, one column per
+// team member (root + direct reports, or root + every descendant when
+// "All Base Level" is checked), each showing their real tour-plan entry
+// (or Holiday/Weekly Off/Leave/"Not Planned") for every day of the month.
+companyRouter.get(
+  "/reports/tp-consolidated-view",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const allBaseLevel = req.query.allBaseLevel === "true";
+    if (!employeeCode || !month) { res.json({ data: null }); return; }
+
+    const root = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!root) { res.json({ data: null }); return; }
+
+    const team = await resolveTeam(tenantSlug, employeeCode, allBaseLevel);
+    const columns = [root as any, ...team];
+    const codes = columns.map((c) => c.employeeCode);
+    const states = columns.map((c) => c.state);
+    const ctx = await buildDayStatusContext(tenantSlug, month, codes, states);
+    const numDays = daysInMonth(month);
+
+    const data = columns.map((emp) => ({
+      employeeCode: emp.employeeCode,
+      name: emp.name,
+      designation: emp.designation,
+      hq: emp.territory,
+      days: Array.from({ length: numDays }, (_, i) => {
+        const d = i + 1;
+        const status = classifyDay(ctx, emp.employeeCode, dateKey(month, d));
+        return { day: d, kind: status.kind, label: dayStatusLabel(status) };
+      })
+    }));
+
+    res.json({ data: { fieldForceName: `${(root as any).name} - ${(root as any).designation} - ${(root as any).territory}`, month, columns: data } });
+  })
+);
+
+// Item 2 -- TP > View: the single-rep detailed monthly tour plan, with a
+// real HQ/EX/OS/Holiday/Other summary count and the real submission
+// status/timestamps off the TourPlanModel document itself.
+companyRouter.get(
+  "/reports/tp-view",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    if (!employeeCode || !month) { res.json({ data: null }); return; }
+
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!employee) { res.json({ data: null }); return; }
+
+    const tourPlan = await TourPlanModel.findOne({ tenantSlug, employeeCode, month }).sort({ createdAt: -1 }).lean();
+    const ctx = await buildDayStatusContext(tenantSlug, month, [employeeCode], [(employee as any).state]);
+    const numDays = daysInMonth(month);
+
+    let hqDays = 0, exDays = 0, osDays = 0, holidaySunday = 0, others = 0;
+    const days = Array.from({ length: numDays }, (_, i) => {
+      const d = i + 1;
+      const key = dateKey(month, d);
+      const status = classifyDay(ctx, employeeCode, key);
+      let workType = "Not Planned";
+      let territory = "";
+      let type = "";
+      if (status.kind === "tour") {
+        workType = "Field Work";
+        territory = status.town;
+        type = status.area || "HQ";
+        if (/ex/i.test(status.area || "")) exDays++;
+        else if (/os/i.test(status.area || "")) osDays++;
+        else hqDays++;
+      } else if (status.kind === "holiday") {
+        workType = "Holiday"; holidaySunday++;
+      } else if (status.kind === "weeklyOff") {
+        workType = "Weekly Off"; holidaySunday++;
+      } else if (status.kind === "leave") {
+        workType = "Leave"; others++;
+      }
+      return {
+        day: d,
+        date: key,
+        workType,
+        territory,
+        type,
+        jointWork: "",
+        objective: status.kind === "holiday" ? status.name : (status.kind === "weeklyOff" ? "Weekly Off" : ""),
+        managerJfw: ""
+      };
+    });
+
+    res.json({
+      data: {
+        employee: { name: (employee as any).name, designation: (employee as any).designation, hq: (employee as any).territory },
+        status: tourPlan?.status || "NOT SUBMITTED",
+        completedAt: (tourPlan as any)?.createdAt || null,
+        confirmedAt: (tourPlan as any)?.approvedAt || null,
+        summary: { hqDays, exDays, osDays, holidaySunday, others },
+        days
+      }
+    });
+  })
+);
+
+// Item 3 -- TP > Status: the selected manager's direct-report team, each
+// with their own real tour-plan submission status + entry/approval dates.
+companyRouter.get(
+  "/reports/tp-status",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const withVacants = req.query.withVacants === "true";
+    if (!employeeCode || !month) { res.json({ data: [] }); return; }
+
+    let team = await getDirectReports(tenantSlug, employeeCode);
+    if (!withVacants) team = team.filter((e) => e.status === "ACTIVE");
+
+    const codes = team.map((e) => e.employeeCode);
+    const tourPlans = codes.length ? await TourPlanModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).lean() : [];
+    const byCode = new Map(tourPlans.map((tp: any) => [tp.employeeCode, tp]));
+
+    const data = team.map((e) => {
+      const tp: any = byCode.get(e.employeeCode);
+      return {
+        employeeCode: e.employeeCode,
+        name: e.name,
+        designation: e.designation,
+        hq: e.territory,
+        status: tp?.status || "NOT SUBMITTED",
+        entryDate: tp?.createdAt || null,
+        approvedDate: tp?.approvedAt || null
+      };
+    });
+
+    res.json({ data });
+  })
+);
+
+// Item 4 -- Tour Plan > Datewise: same hierarchy rollup as Item 1, but one
+// ROW per team member and only the explicitly checked day(s) as columns.
+companyRouter.get(
+  "/reports/tp-datewise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const daysParam = String(req.query.days || "");
+    const selectedDays = daysParam.split(",").map((d) => parseInt(d, 10)).filter((d) => d >= 1 && d <= 31);
+    if (!employeeCode || !month || selectedDays.length === 0) { res.json({ data: null }); return; }
+
+    const root = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (!root) { res.json({ data: null }); return; }
+
+    const team = await resolveTeam(tenantSlug, employeeCode, true);
+    const rows = [root as any, ...team];
+    const codes = rows.map((r) => r.employeeCode);
+    const states = rows.map((r) => r.state);
+    const ctx = await buildDayStatusContext(tenantSlug, month, codes, states);
+
+    const data = rows.map((e) => ({
+      employeeCode: e.employeeCode,
+      name: e.name,
+      designation: e.designation,
+      hq: e.territory,
+      state: e.state || "",
+      joinDate: e.joinDate || null,
+      perDay: Object.fromEntries(selectedDays.map((d) => {
+        const status = classifyDay(ctx, e.employeeCode, dateKey(month, d));
+        return [d, { kind: status.kind, label: dayStatusLabel(status) }];
+      }))
+    }));
+
+    res.json({ data: { fieldForceName: `${(root as any).name} - ${(root as any).designation} - ${(root as any).territory}`, month, days: selectedDays, rows: data } });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────
+// Round 34 -- Activity Reports > DCR, real legacy-parity report screens.
+//
+// Honest schema-reality disclosures (kept close to the code they affect,
+// not fabricated anywhere below):
+//  - "Listed Dr(s) POB" has no distinct real field anywhere in DcrModel --
+//    only "Listed Dr(s) Met" (visit count against the real Doctor master)
+//    genuinely exists. POB is reported as the same real visit count, under
+//    an explicit `pobIsApproximated: true` flag the frontend surfaces.
+//  - "Non Listed Dr(s) Met" has NO real linkage at all: DcrModel.doctorId
+//    only ever references the real (listed) Doctor master, never
+//    UnlistedDoctorModel. Reported honestly as 0 with
+//    `nonListedUnsupported: true` rather than a fabricated count.
+//  - "Stockist Met" has no real visit-level tracking: StockistModel is a
+//    master list only, with no per-day call/visit record anywhere in the
+//    schema (unlike chemists, which DO have ChemistCallModel). Reported as
+//    0 with `stockistUnsupported: true`.
+//  - "Chemist Met"/"Chemist POB" ARE real: ChemistCallModel records one
+//    row per chemist per employee per day; POB = rows with pob.length>0.
+// ─────────────────────────────────────────────────────────────────────
+
+const DCR_MODE_DATE_PICKER = new Set([
+  "dcr-dates", "not-approved-dates", "tp-my-day-plan", "rcpa-view", "reminder-calls"
+]);
+
+// Item 5 -- DCR > View. One parameterized endpoint, dispatching on `mode`
+// to match each of the legacy's 9 distinct result-page behaviours.
+companyRouter.get(
+  "/reports/dcr-view",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const year = String(req.query.year || "");
+    const mode = String(req.query.mode || "all-doctors");
+    const date = req.query.date ? String(req.query.date) : "";
+    const onlyVacantManagers = req.query.onlyVacantManagers === "true";
+    if (!employeeCode) { res.json({ data: null }); return; }
+
+    let team = await getDirectReports(tenantSlug, employeeCode);
+    const self = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (self) team = [self as any, ...team];
+    if (onlyVacantManagers) {
+      const vacantCodes = await findVacantManagerCodes(tenantSlug);
+      team = team.filter((e) => vacantCodes.has(e.employeeCode) || e.employeeCode === employeeCode);
+    }
+    const codes = team.map((e) => e.employeeCode);
+
+    // Modes that are plain date-pickers until a date+Go is actually chosen.
+    if (DCR_MODE_DATE_PICKER.has(mode)) {
+      if (!date) { res.json({ data: { mode, needsDate: true, rows: [] } }); return; }
+      const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: date }).populate("doctorId").lean();
+      const rows = dcrs.map((d: any) => ({
+        employeeCode: d.employeeCode,
+        doctorName: d.doctorId?.name || "",
+        visitDate: d.visitDateOnly,
+        callSession: d.callSession,
+        status: d.status,
+        notes: d.notes || ""
+      }));
+      // RCPA View / Reminder calls -- coordinator-confirmed identical flow
+      // to "View All DCR Date(s)": no distinct RCPA/reminder-call schema
+      // exists, so these two modes render this same real per-date DCR
+      // listing rather than a fabricated distinct shape.
+      res.json({ data: { mode, needsDate: false, rows } });
+      return;
+    }
+
+    if (mode === "all-remarks") {
+      if (!month) { res.json({ data: { mode, rows: [] } }); return; }
+      const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month, notes: { $exists: true, $ne: "" } }).sort({ visitDateOnly: 1 }).lean();
+      const rows = dcrs.map((d: any) => ({ date: d.visitDateOnly, remarks: d.notes }));
+      res.json({ data: { mode, rows } });
+      return;
+    }
+
+    if (mode === "detailed") {
+      if (!month || !self) { res.json({ data: { mode, days: [] } }); return; }
+      const numDays = daysInMonth(month);
+      const dcrs = await DcrModel.find({ tenantSlug, employeeCode, month }).populate("doctorId").lean();
+      const byDate = new Map<string, any[]>();
+      for (const d of dcrs as any[]) {
+        const arr = byDate.get(d.visitDateOnly) || [];
+        arr.push(d);
+        byDate.set(d.visitDateOnly, arr);
+      }
+      const chemistCalls = await ChemistCallModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).lean();
+      const chemistByDate = new Map<string, any[]>();
+      for (const c of chemistCalls as any[]) {
+        const arr = chemistByDate.get(c.visitDateOnly) || [];
+        arr.push(c);
+        chemistByDate.set(c.visitDateOnly, arr);
+      }
+
+      let totalListedMet = 0, totalChemistMet = 0, submittedDays = 0;
+      const days = Array.from({ length: numDays }, (_, i) => {
+        const d = i + 1;
+        const key = dateKey(month, d);
+        const dayDcrs = byDate.get(key) || [];
+        const dayChemists = chemistByDate.get(key) || [];
+        if (dayDcrs.length === 0 && dayChemists.length === 0) {
+          return { date: key, submitted: false };
+        }
+        submittedDays++;
+        const listedMet = dayDcrs.length;
+        totalListedMet += listedMet;
+        totalChemistMet += dayChemists.length;
+        return {
+          date: key,
+          submitted: true,
+          territory: (dayDcrs[0] as any)?.hospitalClinic || "",
+          startTime: (dayDcrs[0] as any)?.checkInTime || "",
+          endTime: (dayDcrs[dayDcrs.length - 1] as any)?.checkOutTime || "",
+          workType: (dayDcrs[0] as any)?.workType || "Field Work",
+          listedDrMet: listedMet,
+          listedDrPob: listedMet, // approximated -- see file-header disclosure
+          chemistMet: dayChemists.length,
+          chemistPob: dayChemists.filter((c: any) => (c.pob || []).length > 0).length,
+          stockistMet: 0, // unsupported -- see file-header disclosure
+          nonListedDrMet: 0 // unsupported -- see file-header disclosure
+        };
+      });
+
+      res.json({
+        data: {
+          mode,
+          employee: self ? { name: (self as any).name, designation: (self as any).designation, hq: (self as any).territory } : null,
+          days,
+          pobIsApproximated: true,
+          nonListedUnsupported: true,
+          stockistUnsupported: true,
+          totals: {
+            submittedDays,
+            listedDrMet: totalListedMet,
+            chemistMet: totalChemistMet,
+            avgListedDrMetPerSubmittedDay: submittedDays ? +(totalListedMet / submittedDays).toFixed(2) : 0
+          }
+        }
+      });
+      return;
+    }
+
+    if (mode === "all-dcr-doctors") {
+      if (!month) { res.json({ data: { mode, rows: [] } }); return; }
+      const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).populate("doctorId").lean();
+      const byDoctor = new Map<string, { doctorName: string; count: number; employeeCode: string }>();
+      for (const d of dcrs as any[]) {
+        const key = `${d.employeeCode}:${d.doctorId?._id}`;
+        const existing = byDoctor.get(key);
+        if (existing) existing.count++;
+        else byDoctor.set(key, { doctorName: d.doctorId?.name || "", count: 1, employeeCode: d.employeeCode });
+      }
+      res.json({ data: { mode, rows: Array.from(byDoctor.values()) } });
+      return;
+    }
+
+    res.json({ data: { mode, rows: [] } });
+  })
+);
+
+// Item 6 -- DCR > Status: monthwise/periodwise x normal/Detailed/Attendance.
+// Real per-day short codes are honestly limited to what this schema can
+// actually back (Field Work / Holiday / Weekly Off / Leave / Not Planned) --
+// the legacy's other ~19 legend codes (LP/MD/MR/NA/R/M/TR/T/CF/SS/CW/IW/CM/
+// SW/AW/DS/WFH/S) have no distinct backing concept anywhere in this schema
+// and are intentionally NOT fabricated; `unsupportedCodes` lists them so the
+// frontend can disclose the gap instead of inventing data for them.
+const DCR_STATUS_UNSUPPORTED_CODES = ["LP","MD","MR","NA","R","M","TR","T","CF","SS","CW","IW","CM","SW","AW","DS","WFH","S"];
+const DCR_STATUS_CODE_MAP: Record<string, string> = {
+  tour: "FW", holiday: "H", weeklyOff: "WO", leave: "L", notPlanned: ""
+};
+
+companyRouter.get(
+  "/reports/dcr-status",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const fromDate = req.query.fromDate ? String(req.query.fromDate) : "";
+    const toDate = req.query.toDate ? String(req.query.toDate) : "";
+    const periodwise = req.query.periodwise === "true";
+    const detailed = req.query.detailed === "true";
+    const withVacants = req.query.withVacants === "true";
+    const onlyManagers = req.query.onlyManagers === "true";
+    if (!employeeCode) { res.json({ data: null }); return; }
+
+    let team = await getDirectReports(tenantSlug, employeeCode);
+    const self = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    if (self) team = [self as any, ...team];
+    if (!withVacants) team = team.filter((e) => e.status === "ACTIVE");
+    if (onlyManagers) team = team.filter((e) => isManagerRole(e.role));
+
+    let effectiveMonth = month;
+    let rangeStart: string, rangeEnd: string;
+    if (periodwise && fromDate && toDate) {
+      rangeStart = fromDate; rangeEnd = toDate;
+      effectiveMonth = fromDate.slice(0, 7);
+    } else {
+      rangeStart = `${month}-01`;
+      rangeEnd = `${month}-${String(daysInMonth(month)).padStart(2, "0")}`;
+    }
+
+    const codes = team.map((e) => e.employeeCode);
+    const states = team.map((e) => e.state);
+    const ctx = await buildDayStatusContext(tenantSlug, effectiveMonth, codes, states);
+    const dcrs = codes.length ? await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: { $gte: rangeStart, $lte: rangeEnd } }).populate("doctorId").lean() : [];
+    const chemistCalls = codes.length ? await ChemistCallModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: { $gte: rangeStart, $lte: rangeEnd } }).lean() : [];
+
+    const dcrByEmpDate = new Map<string, Set<string>>(); // employeeCode:date -> distinct doctor territories (subdivisions)
+    const drsCountByEmpDate = new Map<string, number>();
+    for (const d of dcrs as any[]) {
+      const key = `${d.employeeCode}:${d.visitDateOnly}`;
+      drsCountByEmpDate.set(key, (drsCountByEmpDate.get(key) || 0) + 1);
+      const subdivSet = dcrByEmpDate.get(key) || new Set<string>();
+      if (d.doctorId?.territory) subdivSet.add(d.doctorId.territory);
+      dcrByEmpDate.set(key, subdivSet);
+    }
+    for (const c of chemistCalls as any[]) {
+      const key = `${c.employeeCode}:${c.visitDateOnly}`;
+      const subdivSet = dcrByEmpDate.get(key) || new Set<string>();
+      dcrByEmpDate.set(key, subdivSet);
+    }
+
+    const [startY, startM, startD] = rangeStart.split("-").map((v) => parseInt(v, 10));
+    const [, , endD] = rangeEnd.split("-").map((v) => parseInt(v, 10));
+    const dayNumbers = rangeStart.slice(0, 7) === rangeEnd.slice(0, 7)
+      ? Array.from({ length: endD - startD + 1 }, (_, i) => startD + i)
+      : Array.from({ length: daysInMonth(effectiveMonth) }, (_, i) => i + 1);
+
+    const rows = team.map((e) => {
+      let presentDays = 0;
+      const perDay = dayNumbers.map((d) => {
+        const key = dateKey(effectiveMonth, d);
+        const status = classifyDay(ctx, e.employeeCode, key);
+        const empDateKey = `${e.employeeCode}:${key}`;
+        const hasDcr = drsCountByEmpDate.has(empDateKey);
+        const code = hasDcr ? "FW" : DCR_STATUS_CODE_MAP[status.kind] || "";
+        if (code === "FW") presentDays++;
+        if (!detailed) return { day: d, code };
+        return {
+          day: d,
+          code,
+          sd: hasDcr ? (dcrByEmpDate.get(empDateKey)?.size || 0) : null,
+          drs: hasDcr ? (drsCountByEmpDate.get(empDateKey) || 0) : null
+        };
+      });
+      return {
+        employeeCode: e.employeeCode,
+        name: e.name,
+        designation: e.designation,
+        hq: e.territory,
+        joinDate: e.joinDate || null,
+        perDay,
+        noOfDaysPresent: presentDays
+      };
+    });
+
+    res.json({
+      data: {
+        rows,
+        days: dayNumbers,
+        detailed,
+        periodwise,
+        rangeStart,
+        rangeEnd,
+        unsupportedCodes: DCR_STATUS_UNSUPPORTED_CODES
+      }
+    });
+  })
+);
+
 companyRouter.get(
   "/surveys/:id/view",
   asyncHandler(async (req, res) => {
