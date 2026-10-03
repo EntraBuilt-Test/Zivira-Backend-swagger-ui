@@ -9,6 +9,7 @@ import { serializeDocument } from "../utils/serialize.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { ensureEmployeeLoginAccount } from "../utils/credentials.js";
+import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
 
 export const mastersRouter = Router();
 
@@ -473,6 +474,23 @@ mastersRouter.put(
       await syncDoctorMappingToDoctor(tenantSlug!, updated.toObject());
     }
 
+    // Round 36 Item B -- real append-only audit row for every approve/
+    // reject action taken through this generic single-row edit path
+    // (the real flow approval-queue-table.tsx already uses), capturing
+    // whatever real reason text the approving manager/admin typed. No
+    // reason is fabricated when none was given -- it's stored as "".
+    if (config.uiKind === "approvalQueue" && (update.approvalStatus === "Approved" || update.approvalStatus === "Rejected")) {
+      const row = updated.toObject() as any;
+      await ApprovalAuditLogModel.create({
+        tenantSlug, masterKey: config.key, recordId: String(updated._id),
+        sfName: row.sfName || row.fieldForceName || "",
+        activityDate: row.activityDate || null,
+        action: update.approvalStatus,
+        reason: typeof req.body?.reason === "string" ? req.body.reason.trim() : "",
+        actedBy: "Admin"
+      });
+    }
+
     await audit(`MASTER_${config.key.toUpperCase()}_UPDATED`, config.key, String(updated._id), { tenantSlug });
     await broadcastNotice({
       tenantSlug: tenantSlug!,
@@ -656,7 +674,8 @@ async function setApprovalStatus(
   config: ReturnType<typeof requireConfig>,
   tenantSlug: string,
   id: string,
-  status: "Approved" | "Rejected"
+  status: "Approved" | "Rejected",
+  reason?: string
 ) {
   const Model = getMasterModel(config.key);
   const updated = await Model.findOneAndUpdate(
@@ -665,6 +684,16 @@ async function setApprovalStatus(
     { new: true }
   );
   if (!updated) throw new HttpError(404, `${config.title} record not found`);
+  // Round 36 Item B -- same real audit row as the single-row PUT path.
+  const row = updated.toObject() as any;
+  await ApprovalAuditLogModel.create({
+    tenantSlug, masterKey: config.key, recordId: String(updated._id),
+    sfName: row.sfName || row.fieldForceName || "",
+    activityDate: row.activityDate || null,
+    action: status,
+    reason: (reason || "").trim(),
+    actedBy: "Admin"
+  });
   await audit(`MASTER_${config.key.toUpperCase()}_UPDATED`, config.key, String(updated._id), { tenantSlug, approvalStatus: status });
   await broadcastNotice({
     tenantSlug,
@@ -735,10 +764,11 @@ mastersRouter.post(
       throw new HttpError(400, "ids must be a non-empty array of record ids");
     }
 
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
     const results: { id: string; ok: boolean; error?: string }[] = [];
     for (const id of ids) {
       try {
-        await setApprovalStatus(config, tenantSlug, id, status);
+        await setApprovalStatus(config, tenantSlug, id, status, reason);
         results.push({ id, ok: true });
       } catch (err) {
         results.push({ id, ok: false, error: err instanceof Error ? err.message : "Failed to update" });

@@ -72,6 +72,15 @@ const chemistCallSchema = new Schema(
     chemistName: { type: String, trim: true, default: "" },
     visitDate: { type: Date, required: true, index: true },
     visitDateOnly: { type: String, required: true, index: true }, // YYYY-MM-DD, same convention as Dcr.visitDateOnly
+    // Round 36 Item C -- real check-in/out tracking for Chemist visits,
+    // matching the DCR (doctor visit) precedent. This field existed on
+    // DcrModel from an earlier round but was missed on ChemistCallModel;
+    // added here now so DCR > Checkin-Checkout > Chemist has a real field
+    // to read going forward (historical chemist-call rows saved before
+    // this field existed will read back null, same as any other
+    // newly-added optional field).
+    checkInTime: { type: String, default: null }, // "HH:MM"
+    checkOutTime: { type: String, default: null },
     rcpa: { type: [rcpaRowSchema], default: [] },
     pob: { type: [pobRowSchema], default: [] },
     shortExpiry: { type: [shortExpiryRowSchema], default: [] },

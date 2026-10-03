@@ -81,6 +81,17 @@ const dcrSchema = new Schema(
     // day's work type. Defaults to Field Work since that is what every real
     // DCR submission already represents.
     workType:            { type: String, enum: ["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"], default: "Field Work" },
+    // Round 36 Item A -- real submission-channel tracking, captured at
+    // submission time going forward. The field rep web app detects its
+    // own real device type client-side (viewport width / user-agent) and
+    // sends it explicitly; there is no separate native iOS/Android app or
+    // distinct "Apps"/"E-detailing" submission flow anywhere in this
+    // codebase to distinguish those further, so they stay structurally
+    // unreachable until such a flow exists. Records created before this
+    // field existed default to "Others" -- there is no way to retroactively
+    // know their real channel, so they are honestly bucketed as
+    // unclassified rather than guessed.
+    submissionChannel:   { type: String, enum: ["Desktop", "Mobile", "Apps", "E-detailing", "Others"], default: "Others" },
     // ── PRD 12.2 — MR-to-Doctor Visit Tracking (3 visits/month soft cap) ──
     // Soft warning only — the DCR still saves even when overVisitFlag=true.
     overVisitFlag:   { type: Boolean, default: false },

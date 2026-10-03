@@ -43,12 +43,15 @@ import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole } from "../utils/org-hierarchy.js";
 import { CustomReportModel } from "../models/custom-report.model.js";
+import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
 import { CUSTOM_REPORT_CATEGORIES, ALL_METRIC_KEYS, COMPUTED_METRIC_KEYS } from "../utils/custom-report-metrics.js";
+import { computeCustomReportMetrics } from "../utils/custom-report-compute.js";
 import { buildDayStatusContext, classifyDay, dayStatusLabel } from "../utils/day-status.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
 import { SurveyQuestionModel } from "../models/survey-question.model.js";
 import { SurveyModel } from "../models/survey.model.js";
+import { SurveyAnswerModel } from "../models/survey-answer.model.js";
 import { DispatchModel } from "../models/dispatch.model.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
@@ -1123,36 +1126,45 @@ companyRouter.get(
     const rows = [root as any, ...team];
     const codes = rows.map((r) => r.employeeCode);
     const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).lean();
-    const byEmp = new Map<string, number[]>();
+    // Round 36 Item A -- submissionChannel is now a real field, captured
+    // going forward by the field app's own real device detection (see
+    // detectSubmissionChannel() in the field repo's lib/api-client.ts).
+    // Records submitted before this round have no real channel on file
+    // and default to "Others" at the schema level -- there is no way to
+    // retroactively know their true channel, so they stay honestly
+    // bucketed there rather than guessed. "Apps"/"E-detailing"/"IOS-Edet"
+    // remain structurally empty: no separate native app or e-detailing
+    // submission surface exists anywhere in this codebase to populate them.
+    type ChannelKey = "desktop" | "mobile" | "apps" | "edetailing" | "others" | "iosEdet";
+    const CHANNEL_MAP: Record<string, ChannelKey> = {
+      Desktop: "desktop", Mobile: "mobile", Apps: "apps", "E-detailing": "edetailing", Others: "others"
+    };
+    const byEmp = new Map<string, Record<ChannelKey, number[]>>();
     for (const d of dcrs as any[]) {
       const day = parseInt(d.visitDateOnly.slice(8, 10), 10);
-      const arr = byEmp.get(d.employeeCode) || [];
-      arr.push(day);
-      byEmp.set(d.employeeCode, arr);
+      const channelKey = CHANNEL_MAP[d.submissionChannel as string] || "others";
+      const entry = byEmp.get(d.employeeCode) || { desktop: [], mobile: [], apps: [], edetailing: [], others: [], iosEdet: [] };
+      entry[channelKey].push(day);
+      byEmp.set(d.employeeCode, entry);
     }
 
     const data = rows.map((e) => {
-      const days = (byEmp.get(e.employeeCode) || []).sort((a, b) => a - b);
-      const dateStr = days.join(" , ");
-      // No submission-channel/mode field exists anywhere in DcrModel --
-      // every real DCR submission is reported under "Others" as the
-      // closest honest single bucket this schema can back; Desktop/
-      // Mobile/Apps/E-detailing/IOS-Edet are left genuinely blank/zero
-      // rather than fabricated per-channel splits.
+      const entry = byEmp.get(e.employeeCode) || { desktop: [], mobile: [], apps: [], edetailing: [], others: [], iosEdet: [] };
+      const toCell = (days: number[]) => ({ date: [...days].sort((a, b) => a - b).join(" , "), count: days.length });
       return {
         employeeCode: e.employeeCode,
         name: e.name,
         hq: e.territory,
         designation: e.designation,
-        desktop: { date: "", count: 0 },
-        mobile: { date: "", count: 0 },
-        apps: { date: "", count: 0 },
-        edetailing: { date: "", count: 0 },
-        others: { date: dateStr, count: days.length },
-        iosEdet: { date: "", count: 0 }
+        desktop: toCell(entry.desktop),
+        mobile: toCell(entry.mobile),
+        apps: toCell(entry.apps),
+        edetailing: toCell(entry.edetailing),
+        others: toCell(entry.others),
+        iosEdet: toCell(entry.iosEdet)
       };
     });
-    res.json({ data: { mode, rows: data, channelDataUnsupported: true } });
+    res.json({ data: { mode, rows: data, channelDataUnsupported: false, note: "Desktop/Mobile are real per-submission channel data for records submitted after this round went live; Apps/E-detailing/IOS-Edet remain structurally empty (no such submission surface exists in this product), and pre-round records are bucketed under Others since their real channel can't be known retroactively." } });
   })
 );
 
@@ -1167,28 +1179,53 @@ companyRouter.get(
     const rangeStart = new Date(Date.UTC(year, mon - 1, 1));
     const rangeEnd = new Date(Date.UTC(year, mon, 1));
 
+    // Round 36 Item B -- real append-only audit log (ApprovalAuditLogModel)
+    // instead of the approvalDcr mirror's single mutable current-status
+    // snapshot: one row per real action taken this month, with a real
+    // reason when the acting manager/admin typed one. A rep whose date was
+    // rejected then later re-approved now shows BOTH real events, not just
+    // the latest. Actions taken before this round went live genuinely have
+    // no reason on file (the field didn't exist yet) -- shown as blank,
+    // not fabricated.
+    const actedLog = await ApprovalAuditLogModel.find({
+      tenantSlug, masterKey: DCR_CATEGORY_MASTER_KEY,
+      actedAt: { $gte: rangeStart, $lt: rangeEnd }
+    }).sort({ actedAt: 1 }).lean();
+
+    // Legacy pre-this-round actions have no audit-log row at all (the
+    // collection didn't exist yet) -- those are still surfaced from the
+    // mirror's current status/updatedAt as a one-event fallback so the
+    // report doesn't go blank for a month that only has old actions, with
+    // reason left honestly empty exactly as before.
+    const loggedRecordIds = new Set((actedLog as any[]).map((a) => a.recordId));
     const ApprovalDcrModel = getMasterModel(DCR_CATEGORY_MASTER_KEY);
-    const acted = await ApprovalDcrModel.find({
+    const legacyFallback = await ApprovalDcrModel.find({
       tenantSlug,
       approvalStatus: { $in: ["Approved", "Rejected"] },
-      updatedAt: { $gte: rangeStart, $lt: rangeEnd }
-    }).sort({ updatedAt: 1 }).lean();
+      updatedAt: { $gte: rangeStart, $lt: rangeEnd },
+      _id: { $nin: Array.from(loggedRecordIds) }
+    }).lean();
 
-    const byName = await resolveEmployeesByName(tenantSlug, (acted as any[]).map((a) => a.sfName));
-    const data = (acted as any[]).map((a) => {
+    const combined = [
+      ...(actedLog as any[]).map((a) => ({ sfName: a.sfName, activityDate: a.activityDate, status: a.action, workType: "", reason: a.reason || "", actedAt: a.actedAt })),
+      ...(legacyFallback as any[]).map((a) => ({ sfName: a.sfName, activityDate: a.activityDate, status: a.approvalStatus, workType: a.workType || "", reason: "", actedAt: a.updatedAt }))
+    ].sort((a, b) => new Date(a.actedAt).getTime() - new Date(b.actedAt).getTime());
+
+    const byName = await resolveEmployeesByName(tenantSlug, combined.map((a) => a.sfName));
+    const data = combined.map((a) => {
       const emp = byName.get(a.sfName);
       return {
         fieldForceName: a.sfName,
         hq: emp?.territory || "",
         designation: emp?.designation || "",
-        mode: a.approvalStatus === "Approved" ? "Approve" : "Reject",
+        mode: a.status === "Approved" ? "Approve" : "Reject",
         actionDate: a.activityDate || null,
         workType: a.workType || "",
-        reason: "", // no reason field exists anywhere in the schema -- see file-header disclosure
-        actedAt: a.updatedAt || null
+        reason: a.reason || "",
+        actedAt: a.actedAt || null
       };
     });
-    res.json({ data, month });
+    res.json({ data, month, usingRealAuditLog: actedLog.length > 0 });
   })
 );
 
@@ -1389,45 +1426,13 @@ companyRouter.get(
       return;
     }
 
-    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
     const metrics: string[] = (report as any).metrics || [];
-    const numDays = daysInMonth(month);
-
-    let computedValues: Record<string, number | string> = {};
-    if (employee) {
-      const ctx = await buildDayStatusContext(tenantSlug, month, [employeeCode], [(employee as any).state]);
-      let fwDays = 0, holidaySunday = 0, leaveDays = 0;
-      let hqPlanned = 0, exPlanned = 0, osPlanned = 0, hqWorked = 0, exWorked = 0, osWorked = 0;
-      const dcrs = await DcrModel.find({ tenantSlug, employeeCode, month }).lean();
-      const submittedDates = new Set((dcrs as any[]).map((d) => d.visitDateOnly));
-      for (let d = 1; d <= numDays; d++) {
-        const key = dateKey(month, d);
-        const status = classifyDay(ctx, employeeCode, key);
-        if (status.kind === "tour") {
-          fwDays++;
-          const isEx = /ex/i.test(status.area || "");
-          const isOs = /os/i.test(status.area || "");
-          if (isEx) exPlanned++; else if (isOs) osPlanned++; else hqPlanned++;
-          if (submittedDates.has(key)) {
-            if (isEx) exWorked++; else if (isOs) osWorked++; else hqWorked++;
-          }
-        } else if (status.kind === "holiday" || status.kind === "weeklyOff") holidaySunday++;
-        else if (status.kind === "leave") leaveDays++;
-      }
-      const listedDrsMet = new Set((dcrs as any[]).map((d) => String(d.doctorId))).size;
-      const chemistCalls = await ChemistCallModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).lean();
-      computedValues = {
-        daysInMonth: numDays,
-        fwDays,
-        nfwDays: numDays - fwDays,
-        leave: leaveDays,
-        holidaySunday,
-        listedDrsMet,
-        chemistsMet: chemistCalls.length,
-        noOfHqPlanned: hqPlanned, noOfExPlanned: exPlanned, noOfOsPlanned: osPlanned,
-        actualHqWorked: hqWorked, actualExWorked: exWorked, actualOsWorked: osWorked
-      };
-    }
+    // Round 36 Item 1 -- the Round 35 inline version only computed a
+    // handful of metrics; the real expanded computation now lives in
+    // custom-report-compute.ts (see its header for exactly which ~150
+    // catalog metrics are real vs. genuinely not backed by any data in
+    // this schema).
+    const computedValues = await computeCustomReportMetrics(tenantSlug, employeeCode, month);
 
     const metricLabelByKey = new Map(CUSTOM_REPORT_CATEGORIES.flatMap((c) => c.metrics.map((m) => [m.key, m.label])));
     const data = metrics.map((key) => ({
@@ -1446,6 +1451,7 @@ companyRouter.get(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug;
     const employeeCode = String(req.query.employeeCode || "");
+    const mode = req.query.mode === "Answer Wise" ? "Answer Wise" : "Question Wise";
     const survey = await SurveyModel.findOne({ _id: req.params.id, tenantSlug }).lean();
     if (!survey) throw new HttpError(404, "Survey not found");
     if (!employeeCode) { res.json({ data: { surveyTitle: (survey as any).title, rows: [] } }); return; }
@@ -1455,16 +1461,53 @@ companyRouter.get(
       $or: [{ employeeCode }, { reportingManager: employeeCode }]
     }).sort({ employeeCode: 1 }).lean();
 
-    const rows = team.map((e: any) => ({
-      id: String(e._id),
-      employeeCode: e.employeeCode,
-      name: e.name,
-      designation: e.designation,
-      hq: e.territory,
-      doj: e.joinDate || null
-    }));
+    // Round 36 Item 2 -- real Question Wise / Answer Wise distinction.
+    // Question Wise: how many of this survey's real questions apply to
+    // each process-type category (Drs/Chm/Stk/Hos/Prd) -- a structural
+    // property of the survey itself, the same for every row. Answer Wise:
+    // of those, how many has THIS field rep actually answered via the
+    // real SurveyAnswerModel pipeline (Round 36 Item 2) -- genuinely
+    // per-employee data, not a fabricated difference from Question Wise.
+    const questionRefs: any[] = (survey as any).questions || [];
+    const categoryKeys = ["drs", "chm", "stk", "hos", "prd"] as const;
+    const questionCountByCategory: Record<string, number> = { drs: 0, chm: 0, stk: 0, hos: 0, prd: 0 };
+    for (const ref of questionRefs) {
+      for (const key of categoryKeys) if (ref[key]) questionCountByCategory[key]++;
+    }
 
-    res.json({ data: { surveyTitle: (survey as any).title, rows } });
+    let answeredQuestionIdsByEmployee = new Map<string, Set<string>>();
+    if (mode === "Answer Wise") {
+      const answers = await SurveyAnswerModel.find({ tenantSlug, surveyId: String(survey._id), employeeCode: { $in: team.map((e: any) => e.employeeCode) } }).lean();
+      for (const a of answers as any[]) {
+        const set = answeredQuestionIdsByEmployee.get(a.employeeCode) || new Set<string>();
+        set.add(a.questionId);
+        answeredQuestionIdsByEmployee.set(a.employeeCode, set);
+      }
+    }
+
+    const rows = team.map((e: any) => {
+      const counts: Record<string, number> = { drs: 0, chm: 0, stk: 0, hos: 0, prd: 0 };
+      if (mode === "Question Wise") {
+        for (const key of categoryKeys) counts[key] = questionCountByCategory[key];
+      } else {
+        const answeredIds = answeredQuestionIdsByEmployee.get(e.employeeCode) || new Set<string>();
+        for (const ref of questionRefs) {
+          if (!answeredIds.has(ref.questionId)) continue;
+          for (const key of categoryKeys) if (ref[key]) counts[key]++;
+        }
+      }
+      return {
+        id: String(e._id),
+        employeeCode: e.employeeCode,
+        name: e.name,
+        designation: e.designation,
+        hq: e.territory,
+        doj: e.joinDate || null,
+        counts
+      };
+    });
+
+    res.json({ data: { surveyTitle: (survey as any).title, mode, rows } });
   })
 );
 

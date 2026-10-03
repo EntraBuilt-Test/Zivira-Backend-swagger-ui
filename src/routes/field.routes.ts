@@ -37,6 +37,10 @@ import { SlideDownloadModel } from "../models/slide-download.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
 import { DispatchModel } from "../models/dispatch.model.js";
 import { InventoryStockModel } from "../models/inventory-stock.model.js";
+import { FieldVisitLogModel } from "../models/field-visit-log.model.js";
+import { SurveyModel } from "../models/survey.model.js";
+import { SurveyQuestionModel } from "../models/survey-question.model.js";
+import { SurveyAnswerModel } from "../models/survey-answer.model.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -157,6 +161,10 @@ const dcrSchema = z.object({
     managerObservations:  z.string().optional()
   }).optional(),
   overrideOverVisitWarning: z.boolean().optional(), // MR clicked "Confirm" on the 4th-visit modal
+  // Round 36 Item A -- real client-detected submission channel (the field
+  // app sends the actual device type it detected itself); falls back to
+  // "Others" server-side if omitted by an older client build.
+  submissionChannel: z.enum(["Desktop", "Mobile", "Apps", "E-detailing", "Others"]).optional(),
 
   // ── Zivira_Project_Basic.docx Topic 1 — Visit Information / Product
   // Promotion / Doctor Feedback (all optional — DCR still saves without
@@ -458,6 +466,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     jointWork: body.jointWork,
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
+    submissionChannel: body.submissionChannel || "Others",
     gpsLocation: body.gpsLocation,
     hospitalClinic: body.hospitalClinic,
     visitDurationMinutes: body.visitDurationMinutes,
@@ -2108,6 +2117,8 @@ const chemistCallRowSchemas = {
 const chemistCallSchema = z.object({
   chemistId: z.string().min(1),
   visitDate: z.string().optional(), // YYYY-MM-DD; defaults to today
+  checkInTime: z.string().optional(), // Round 36 Item C -- "HH:MM"
+  checkOutTime: z.string().optional(),
   ...chemistCallRowSchemas
 });
 
@@ -2136,6 +2147,7 @@ fieldRouter.post("/chemist-calls", asyncHandler(async (req, res) => {
       tenantSlug, employeeCode: employee.employeeCode, employeeName: employee.name,
       chemistId: body.chemistId, chemistName: chemist.dealerName,
       visitDate: new Date(dateOnly), visitDateOnly: dateOnly,
+      checkInTime: body.checkInTime || null, checkOutTime: body.checkOutTime || null,
       rcpa: body.rcpa, pob: pobRows, shortExpiry: shortExpiryRows, jcc: body.jcc,
       status: "SUBMITTED"
     },
@@ -2290,4 +2302,152 @@ fieldRouter.post("/dispatches/:id/receive", asyncHandler(async (req, res) => {
 
   await audit("FIELD_DISPATCH_RECEIVED", "Dispatch", String(dispatch._id), { tenantSlug, employeeCode: employee.employeeCode });
   res.json({ data: serializeDocument(dispatch) });
+}));
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Round 36 Item C — minimal real visit-log capture for Stockist,
+// Unlisted Doctor and CIP. Investigated first: StockistModel and
+// UnlistedDoctorModel are master lists only (no visit/timestamp fields),
+// CIP has no master or model anywhere (registry.ts label only), and no
+// field-app screen anywhere lets a rep log a visit to any of these three
+// — genuinely zero capture mechanism, not just zero reporting. This adds
+// one minimal shared real flow (list today's own logs + save a new one)
+// so these three categories go from fully uncapturable to really tracked
+// with real check-in/out timestamps, starting now.
+// ═══════════════════════════════════════════════════════════════════════
+
+fieldRouter.get("/visit-logs", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const date = typeof req.query.date === "string" && req.query.date ? req.query.date : dateOnlyUTC(new Date());
+  const logs = await FieldVisitLogModel.find({ tenantSlug, employeeCode: employee.employeeCode, visitDateOnly: date }).sort({ createdAt: -1 }).lean();
+  res.json({ data: logs.map((l: any) => ({ id: String(l._id), visitType: l.visitType, entityName: l.entityName, checkInTime: l.checkInTime, checkOutTime: l.checkOutTime, notes: l.notes, visitDateOnly: l.visitDateOnly })) });
+}));
+
+const visitLogSchema = z.object({
+  visitType: z.enum(["Stockist", "UnlistedDoctor", "CIP"]),
+  entityName: z.string().min(1),
+  visitDate: z.string().optional(), // YYYY-MM-DD; defaults to today
+  checkInTime: z.string().optional(),
+  checkOutTime: z.string().optional(),
+  notes: z.string().optional()
+});
+
+fieldRouter.post("/visit-logs", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = visitLogSchema.parse(req.body);
+  const dateOnly = body.visitDate && body.visitDate.trim() ? body.visitDate.trim() : dateOnlyUTC(new Date());
+
+  const log = await FieldVisitLogModel.create({
+    tenantSlug,
+    employeeCode: employee.employeeCode,
+    visitType: body.visitType,
+    entityName: body.entityName.trim(),
+    visitDate: new Date(dateOnly),
+    checkInTime: body.checkInTime || null,
+    checkOutTime: body.checkOutTime || null,
+    notes: body.notes?.trim() || null
+  });
+
+  await audit("FIELD_VISIT_LOG_SAVED", "FieldVisitLog", String(log._id), { tenantSlug, employeeCode: employee.employeeCode, visitType: body.visitType });
+  res.status(201).json({ data: serializeDocument(log) });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════
+// Round 36 Item 2 — real survey-answer submission pipeline. Lists surveys
+// that are ACTIVE, not yet closed, and within their real process date
+// window, with their real questions resolved (controlType/options/
+// maxLength from SurveyQuestionModel — never trusts a client-sent option
+// list), and lets the rep submit real per-question answers persisted as
+// SurveyAnswerModel documents. Answering twice upserts (the unique index
+// on survey/question/employee), matching the quiz-attempt precedent of
+// never trusting client-sent identity.
+// ═══════════════════════════════════════════════════════════════════════
+
+fieldRouter.get("/surveys", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const today = dateOnlyUTC(new Date());
+  const surveys = await SurveyModel.find({
+    tenantSlug, status: "ACTIVE", closed: { $ne: true },
+    processFromDate: { $lte: today }, processToDate: { $gte: today }
+  }).sort({ createdAt: -1 }).lean();
+
+  const allQuestionIds = [...new Set(surveys.flatMap((s: any) => (s.questions || []).map((q: any) => q.questionId)))];
+  const questionDocs = await SurveyQuestionModel.find({ tenantSlug, _id: { $in: allQuestionIds } }).lean();
+  const questionById = new Map(questionDocs.map((q: any) => [String(q._id), q]));
+
+  const myAnswers = await SurveyAnswerModel.find({ tenantSlug, employeeCode: employee.employeeCode, surveyId: { $in: surveys.map((s: any) => String(s._id)) } }).lean();
+  const answeredKey = new Set(myAnswers.map((a: any) => `${a.surveyId}:${a.questionId}`));
+
+  const data = surveys.map((s: any) => {
+    const questions = (s.questions || [])
+      .map((ref: any) => {
+        const q = questionById.get(ref.questionId);
+        if (!q || q.status !== "ACTIVE") return null;
+        return {
+          questionId: ref.questionId,
+          questionText: q.questionText,
+          controlType: q.controlType,
+          maxLength: q.maxLength ?? null,
+          options: q.options ?? null,
+          answered: answeredKey.has(`${String(s._id)}:${ref.questionId}`)
+        };
+      })
+      .filter((q: any) => q !== null);
+    return {
+      id: String(s._id),
+      title: s.title,
+      processFromDate: s.processFromDate,
+      processToDate: s.processToDate,
+      questionCount: questions.length,
+      answeredCount: questions.filter((q: any) => q.answered).length,
+      questions
+    };
+  }).filter((s: any) => s.questionCount > 0);
+
+  res.json({ data });
+}));
+
+const surveyAnswerInputSchema = z.object({
+  answers: z.array(z.object({
+    questionId: z.string().min(1),
+    answerText: z.string().optional(),
+    answerNumeric: z.number().optional(),
+    selectedOptions: z.array(z.string()).optional()
+  })).min(1)
+});
+
+fieldRouter.post("/surveys/:id/answers", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    throw new HttpError(400, "Invalid survey reference — please go back to Surveys and open it again.");
+  }
+  const survey = await SurveyModel.findOne({ _id: req.params.id, tenantSlug, status: "ACTIVE" }).lean();
+  if (!survey) throw new HttpError(404, "Survey not found");
+  const body = surveyAnswerInputSchema.parse(req.body);
+
+  const validQuestionIds = new Set((survey.questions || []).map((q: any) => q.questionId));
+  const saved = [];
+  for (const a of body.answers) {
+    if (!validQuestionIds.has(a.questionId)) continue;
+    const doc = await SurveyAnswerModel.findOneAndUpdate(
+      { tenantSlug, surveyId: String(survey._id), questionId: a.questionId, employeeCode: employee.employeeCode },
+      {
+        tenantSlug, surveyId: String(survey._id), questionId: a.questionId, employeeCode: employee.employeeCode,
+        answerText: a.answerText ?? null,
+        answerNumeric: typeof a.answerNumeric === "number" ? a.answerNumeric : null,
+        selectedOptions: a.selectedOptions && a.selectedOptions.length > 0 ? a.selectedOptions : undefined,
+        submittedAt: new Date()
+      },
+      { upsert: true, new: true }
+    );
+    saved.push(doc);
+  }
+
+  await audit("FIELD_SURVEY_ANSWERS_SAVED", "Survey", String(survey._id), { tenantSlug, employeeCode: employee.employeeCode, count: saved.length });
+  res.status(201).json({ data: { savedCount: saved.length } });
 }));

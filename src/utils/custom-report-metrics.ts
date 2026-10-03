@@ -194,9 +194,41 @@ export const ALL_METRIC_KEYS = new Set(
 // ChemistCallModel). Every other selected metric key is echoed back in the
 // output with `computed: false` and `value: null` rather than a fabricated
 // number.
+// Round 36 Item 1 -- expanded from Round 35's starter set now that
+// custom-report-compute.ts backs every one of these with real data (see
+// that file's own header comment for exactly which categories still have
+// no real backing anywhere in this schema and were deliberately left out).
 export const COMPUTED_METRIC_KEYS = new Set([
+  // Working Info
   "daysInMonth", "fwDays", "nfwDays", "leave", "holidaySunday",
-  "listedDrsMet", "chemistsMet",
+  // Master Info
+  "totalDoctorsInList", "totalChemistInList", "totalUnlistedDrsInList", "totalStockistInList", "totalHospitalInList",
+  // Listed Dr Info
+  "listedDrsMet", "listedDrsSeen", "lstDrCoveragePct", "lstDrCallAverage", "lstDrMissedCall",
+  // Chemists Info
+  "chemistsMet", "chemistsSeen", "chemCoveragePct", "chemCallAverage", "chemMissedChemist",
+  // Drs Visit
+  "visit1Drs", "visit2Drs", "visit3Drs", "visitMoreThan3Drs",
+  "visit1CoveragePct", "visit2CoveragePct", "visit3CoveragePct", "visitMoreThan3CoveragePct",
+  // Join Work Info
+  "jointWorkDays", "jointCallsMet", "jointCallsSeen", "jointCallAvg",
+  // Sample/Input Info
+  "sampleGivenDrs", "sampleGivenProducts", "sampleGivenQty", "inputGivenDrs", "inputGivenProducts", "inputGivenQty",
+  // Tour Plan Info
   "noOfHqPlanned", "noOfExPlanned", "noOfOsPlanned",
-  "actualHqWorked", "actualExWorked", "actualOsWorked"
+  "actualHqWorked", "actualExWorked", "actualOsWorked", "noOfTpDeviationDays",
+  // Core Drs Info
+  "coreDrsTagged", "coreDrsMet", "coreDrsSeen", "coreDrsMissed", "coreDrsCoveragePct",
+  // Expense Info (partial -- see custom-report-compute.ts: no HQ/EX/OS
+  // split or km field exists, so only these two are real)
+  "totalAmount", "miscellaneous",
+  // Leave Info (partial -- Taken counts only; no eligibility/balance
+  // schema exists anywhere in this codebase)
+  "clTaken", "plTaken", "slTaken", "lopTaken",
+  // Target Info (partial -- Growth needs a defined prior-period baseline
+  // this round did not assume; Target/Primary/Secondary Sale/Achievement
+  // are real)
+  "target", "primarySale", "secondarySale", "achievement",
+  // Online Quiz
+  "quizRaised", "quizAttended", "quizTotalQuestions", "quizMarksObtained", "quizPercentage"
 ]);
