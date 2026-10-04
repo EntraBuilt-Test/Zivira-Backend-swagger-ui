@@ -178,5 +178,16 @@ for (const k of ["drs", "products"]) { r = await get(`/company/mis/heat/${k}?emp
 r = await get(`/company/mis/heat/hqs?employeeCode=E1&months=4`); assert.equal(r.status, 200); assert.equal(r.json.data.designations.length, 14); assert.ok(r.json.data.rows.every((x: any) => !x.isSelected));
 assert.equal((await get(`/company/mis/heat/drs?employeeCode=E1&months=9`)).status, 400);
 assert.equal((await get(`/company/mis/heat/drs?months=3`)).status, 400);
+// Round 44 routes
+r = await get(`/company/mis/visit-details/options`); assert.equal(r.status, 200); assert.ok(Array.isArray(r.json.data.specialities)); assert.deepEqual(r.json.data.classes, ["Nil", "A", "B", "C"]);
+r = await get(`/company/mis/visit-details/cat-cls?employeeCode=E1&mode=Category&fromMonth=2026-10&toMonth=2026-10&values=Nil||CORE`); assert.equal(r.status, 200); assert.equal(r.json.data.rows.at(-1).isManager, true); assert.deepEqual(r.json.data.values, ["Nil", "CORE"]);
+r = await get(`/company/mis/visit-details/cat-cls?employeeCode=E1&mode=Category&fromMonth=2026-10&toMonth=2026-10`); assert.equal(r.status, 400);
+r = await get(`/company/mis/visit-details/cat-cls?employeeCode=E1&mode=Bogus&fromMonth=2026-10&toMonth=2026-10`); assert.equal(r.status, 400);
+r = await get(`/company/mis/visit-details/cat-cls?employeeCode=E1&mode=Listed Doctor&fromMonth=2026-10&toMonth=2026-09`); assert.equal(r.status, 400);
+r = await get(`/company/mis/visit-details/cat-cls?employeeCode=E1&mode=Listed Doctor&fromMonth=2026-09&toMonth=2026-10&withVacants=true`); assert.equal(r.status, 200); assert.deepEqual(r.json.data.months, ["2026-09", "2026-10"]);
+r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=2026-10`); assert.equal(r.status, 200); assert.equal(r.json.data.matrix, false); assert.equal(r.json.data.weeks.length, 5);
+r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=2026-10&week=1`); assert.equal(r.status, 200); assert.equal(r.json.data.days.length, 4);
+r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=2026-10&week=9`); assert.equal(r.status, 404);
+r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=bad`); assert.equal(r.status, 400);
 console.log("R42 ROUTES OK");
 server.close(); process.exit(0);

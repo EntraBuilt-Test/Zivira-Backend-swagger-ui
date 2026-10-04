@@ -44,6 +44,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
 import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
 import XLSX from "xlsx";
+import { visitDetailOptions, computeCatClsVisit, computeDateWise, VISIT_MODES, type VisitMode } from "../utils/visit-details-reports.js";
 import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat, computeHqVisits } from "../utils/pob-rx-reports.js";
 import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
 import type { OrgEmployee } from "../utils/org-hierarchy.js";
@@ -153,7 +154,9 @@ const doctorSchema = z.object({
   // why "Qualification" and "Mobile" showed "-" for doctors added through
   // this form, not just for older seed rows.
   qualification: z.string().optional().nullable(),
-  phone: z.string().optional().nullable()
+  phone: z.string().optional().nullable(),
+  // Round 44 -- names from the Doctor Type master (a doctor can hold several).
+  doctorTypes: z.array(z.string().trim().min(1)).optional()
 });
 
 const productSchema = z.object({
@@ -5524,6 +5527,48 @@ companyRouter.get(
     if (!(months >= 1 && months <= 6)) throw new HttpError(400, "months must be 1 to 6");
     const result = kind === "hqs" ? await computeHqVisits(tenantSlug, code, months) : await computeHeat(tenantSlug, kind, code, months);
     if (!result) throw new HttpError(404, "Field force not found");
+    res.json({ data: result });
+  })
+);
+
+// ── Round 44 -- MIS Reports > Visit Details ───────────────────────────────
+companyRouter.get(
+  "/mis/visit-details/options",
+  asyncHandler(async (req, res) => {
+    res.json({ data: await visitDetailOptions(req.auth!.tenantSlug!) });
+  })
+);
+
+companyRouter.get(
+  "/mis/visit-details/cat-cls",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const mode = String(req.query.mode || "") as VisitMode;
+    if (!VISIT_MODES.includes(mode)) throw new HttpError(400, "Select a mode");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth) || fromMonth > toMonth) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM with From not after To");
+    const values = String(req.query.values || "").split("||").map((v) => v.trim()).filter(Boolean);
+    if (mode !== "Listed Doctor" && values.length === 0 && mode !== "Campaign") throw new HttpError(400, `Select at least one ${mode}`);
+    const result = await computeCatClsVisit(tenantSlug, code, fromMonth, toMonth, mode, values, String(req.query.withVacants) === "true");
+    if (!result) throw new HttpError(404, "Field force not found");
+    res.json({ data: result });
+  })
+);
+
+companyRouter.get(
+  "/mis/visit-details/datewise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const month = String(req.query.month || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const week = req.query.week === undefined || req.query.week === "" ? undefined : parseInt(String(req.query.week), 10);
+    const result = await computeDateWise(tenantSlug, code, month, week);
+    if (!result) throw new HttpError(404, week === undefined ? "Field force not found" : "Field force or week not found");
     res.json({ data: result });
   })
 );

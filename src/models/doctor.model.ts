@@ -49,6 +49,8 @@ const doctorSchema = new Schema(
     // Round 41 item 3 -- campaign this doctor is mapped to (name of a
     // campaignMaster row), kept in sync with the Doctor - Campaign Map master.
     campaign: { type: String, trim: true, default: null, index: true },
+    // Round 44 -- names from the Doctor Type master (doctorTypeMaster).
+    doctorTypes: { type: [String], default: [] },
     // Round 41 item 4 -- supportive chemists for this doctor.
     supportiveChemists: { type: [new Schema({ dealerId: { type: String, required: true }, dealerName: { type: String, default: "" } }, { _id: false })], default: [] }
   },

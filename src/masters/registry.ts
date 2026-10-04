@@ -1261,6 +1261,17 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Round 44 -- Doctor Type list (Core drs, Academica, ...). Doctors carry
+    // doctor.doctorTypes[] with these names; seeded per tenant on boot.
+    key: "doctorTypeMaster",
+    title: "Doctor Type",
+    keyFields: ["doctorTypeName"],
+    fields: [
+      { key: "doctorTypeName", label: "Doctor Type" },
+      { key: "status", label: "Status", options: ACTIVE_INACTIVE }
+    ]
+  },
+  {
     // Phase 1 — admin-visible mirror of every real CampaignVisitModel row a
     // field rep creates via Campaign Planning (POST /field/campaign-visits).
     // Same write-through-mirror pattern already used for Camp/Market Survey

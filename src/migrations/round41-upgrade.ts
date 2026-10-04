@@ -49,6 +49,13 @@ export async function upgradeTenant(tenantSlug: string) {
       out.campaigns += res.modifiedCount ?? 0;
     }
   } catch { /* master not configured */ }
+  // Round 44 -- seed the Doctor Type master (idempotent; never overwrites edits).
+  try {
+    const Model = getMasterModel("doctorTypeMaster");
+    for (const name of ["Core drs", "Academica", "BILFL", "Clinic Utilitie", "Just for You"]) {
+      await Model.updateOne({ tenantSlug, doctorTypeName: name }, { $setOnInsert: { status: "Active" } }, { upsert: true });
+    }
+  } catch { /* master not configured */ }
   return out;
 }
 
