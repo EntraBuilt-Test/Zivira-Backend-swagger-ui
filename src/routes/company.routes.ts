@@ -44,6 +44,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
 import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
 import XLSX from "xlsx";
+import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
 import { visitDetailOptions, computeCatClsVisit, computeDateWise, VISIT_MODES, type VisitMode } from "../utils/visit-details-reports.js";
 import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat, computeHqVisits } from "../utils/pob-rx-reports.js";
 import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
@@ -5572,3 +5573,89 @@ companyRouter.get(
     res.json({ data: result });
   })
 );
+
+// ── Round 45 -- Quiz Test Result, Summary dumps, Digital Detailing, Slide Analysis, Drs Analyis ──
+const MON = (v: unknown, name = "month") => { const m = String(v || ""); if (!MONTH_RE.test(m)) throw new HttpError(400, `${name} must be YYYY-MM`); return m; };
+const codeOf = (req: any) => String(req.query.employeeCode || "");
+const names = (v: unknown) => String(v || "").split("||").map((x) => x.trim()).filter(Boolean);
+
+companyRouter.get("/mis/quiz-result", asyncHandler(async (req, res) => {
+  const code = codeOf(req); if (!code) throw new HttpError(400, "Select a field force");
+  const scope = String(req.query.scope || "Team") === "Individual" ? "Individual" : "Team";
+  const result = await computeQuizResult(req.auth!.tenantSlug!, code, scope, MON(req.query.month));
+  if (!result) throw new HttpError(404, "Field force not found");
+  res.json({ data: result });
+}));
+
+// File download. "xlsx" (default) is a real workbook; "xls" is the legacy HTML-table-as-Excel file.
+companyRouter.get("/mis/daywise-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const code = codeOf(req); if (!code) throw new HttpError(400, "Select a field force");
+  if (code !== "admin") await requireEmployeeByCode(req.auth!.tenantSlug!, code);
+  const { lines } = await buildCallLines(req.auth!.tenantSlug!, code, month, [], false, true);
+  const [y, m] = month.split("-").map(Number);
+  const base = `DayWise_Report_Dump_${["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][m - 1]}${y}`;
+  if (String(req.query.format || "xlsx") === "xls") {
+    res.setHeader("Content-Type", "application/vnd.ms-excel");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.xls"`);
+    res.send(dayWiseHtmlXls(lines));
+    return;
+  }
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${base}.xlsx"`);
+  res.send(await aoaToXlsx("DayWise_Report_Dump", DAYWISE_HEADERS, lines.map(dayWiseCells), "FFADD8E6"));
+}));
+
+companyRouter.get("/mis/call-report-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const code = codeOf(req); if (!code) throw new HttpError(400, "Select a field force");
+  if (code !== "admin") await requireEmployeeByCode(req.auth!.tenantSlug!, code);
+  const days = String(req.query.days || "").split(",").map((d) => parseInt(d, 10)).filter((d) => d >= 1 && d <= 31);
+  const { lines, division } = await buildCallLines(req.auth!.tenantSlug!, code, month, days, String(req.query.vacant) === "true", false);
+  const base = `Call_Report_Dump_${month}`;
+  if (String(req.query.format || "csv") === "xlsx") {
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.xlsx"`);
+    res.send(await aoaToXlsx("Call_Report_Dump", CALL_REPORT_HEADERS, lines.map((l) => callReportCells(l, division))));
+    return;
+  }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${base}.csv"`);
+  res.send(callReportCsv(lines, division));
+}));
+
+companyRouter.get("/mis/detailing/options", asyncHandler(async (req, res) => { res.json({ data: await detailingOptions(req.auth!.tenantSlug!) }); }));
+companyRouter.get("/mis/detailing/visit-wise", asyncHandler(async (req, res) => {
+  const mode = String(req.query.mode || ""); if (mode !== "Brand" && mode !== "Product") throw new HttpError(400, "Select a mode (Brand or Product)");
+  const sel = names(req.query.names); if (!sel.length) throw new HttpError(400, `Select at least one ${mode}`);
+  const result = await computeDetailingVisitWise(req.auth!.tenantSlug!, codeOf(req) || "admin", MON(req.query.month), mode, sel);
+  if (!result) throw new HttpError(404, "Field force not found");
+  res.json({ data: result });
+}));
+companyRouter.get("/mis/detailing/star-rating", asyncHandler(async (req, res) => {
+  const sel = names(req.query.names); if (!sel.length) throw new HttpError(400, "Select at least one Brand");
+  const result = await computeBrandStarRating(req.auth!.tenantSlug!, codeOf(req) || "admin", MON(req.query.month), sel);
+  if (!result) throw new HttpError(404, "Field force not found");
+  res.json({ data: result });
+}));
+
+companyRouter.get("/mis/slide-analysis/options", asyncHandler(async (req, res) => { res.json({ data: await slideAnalysisOptions(req.auth!.tenantSlug!) }); }));
+companyRouter.get("/mis/slide-analysis", asyncHandler(async (req, res) => {
+  const basedOn = String(req.query.basedOn || "Product") === "Brand" ? "Brand" : "Product";
+  const kind = String(req.query.filterKind || "ALL") as SlideFilterKind;
+  if (!["ALL", "Doctor Speciality", "Doctor Category", "Doctor Qualification", "Doctor Class", "Doctor Territory", "Product / Brand"].includes(kind)) throw new HttpError(400, "Unknown filter");
+  const from = MON(req.query.fromMonth, "fromMonth"), to = MON(req.query.toMonth || req.query.fromMonth, "toMonth");
+  if (from > to) throw new HttpError(400, "From must not be after To");
+  const result = await computeSlideAnalysis(req.auth!.tenantSlug!, codeOf(req) || "admin", from, to, basedOn, kind, String(req.query.filterValue || ""));
+  if (!result) throw new HttpError(404, "Field force not found");
+  res.json({ data: result });
+}));
+
+companyRouter.get("/mis/drs-analysis", asyncHandler(async (req, res) => {
+  const code = codeOf(req); if (!code) throw new HttpError(400, "Select a field force");
+  const from = MON(req.query.fromMonth, "fromMonth"), to = MON(req.query.toMonth || req.query.fromMonth, "toMonth");
+  if (from > to) throw new HttpError(400, "From must not be after To");
+  const result = await computeDrsAnalysis(req.auth!.tenantSlug!, code, from, to);
+  if (!result) throw new HttpError(404, "Field force not found");
+  res.json({ data: result });
+}));

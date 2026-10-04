@@ -189,5 +189,38 @@ r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=2026-10
 r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=2026-10&week=1`); assert.equal(r.status, 200); assert.equal(r.json.data.days.length, 4);
 r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=2026-10&week=9`); assert.equal(r.status, 404);
 r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=bad`); assert.equal(r.status, 400);
+// Round 45 routes
+{
+  const nowMonth = new Date().toISOString().slice(0, 7), today = new Date().toISOString().slice(0, 10);
+  const drC = String(asId(103)), drOther = String(asId(104));
+  let x = await call("POST", `/field/slide-views`, "e2", { doctorId: drC, brandName: "DEXNOVA", productName: "DEXNOVA", durationSec: 42 });
+  assert.equal(x.status, 201, JSON.stringify(x.json));
+  x = await call("POST", `/field/slide-views`, "e2", { doctorId: drOther, durationSec: 5 }); assert.equal(x.status, 404);          // not in his list
+  x = await call("POST", `/field/dcrs`, "e2", { doctorId: drC, productsDetailed: ["DEXNOVA"], brandRatings: [{ brandName: "DEXNOVA", stars: 6 }] }); assert.equal(x.status, 400);
+  x = await call("POST", `/field/dcrs`, "e2", { doctorId: drC, productsDetailed: ["DEXNOVA"], brandRatings: [{ brandName: "DEXNOVA", stars: 4 }] });
+  assert.equal(x.status, 201, JSON.stringify(x.json));
+  assert.equal(x.json.data.submissionChannel, "E-detailing");                                                                       // slides were shown to this doctor today
+  assert.equal((store["doctor_brand_ratings"] || []).length, 1); assert.equal(store["doctor_brand_ratings"][0].stars, 4); assert.equal(store["doctor_brand_ratings"][0].month, nowMonth);
+  x = await call("GET", `/field/slide-views?date=${today}`, "e2"); assert.equal(x.json.data.length, 1);
+  let y = await get(`/company/mis/quiz-result?employeeCode=E1&month=${nowMonth}`); assert.equal(y.status, 200); assert.equal(y.json.data.rows.at(-1).name, "SANDEEP R SHENOY");
+  y = await get(`/company/mis/quiz-result?employeeCode=E1&month=bad`); assert.equal(y.status, 400);
+  y = await get(`/company/mis/daywise-dump?employeeCode=E1&month=2026-10&format=xls`); assert.equal(y.status, 200); assert.ok(String(y.buf).startsWith("<table width = '100%' border='1'><tr><th style='background-color:lightblue'>ECODE</th>"));
+  y = await get(`/company/mis/daywise-dump?employeeCode=E1&month=2026-10`); assert.equal(y.status, 200); assert.ok(y.buf && y.buf.length > 1000);
+  y = await get(`/company/mis/call-report-dump?employeeCode=admin&month=2026-10`); assert.equal(y.status, 200); assert.ok(String(y.text).startsWith("Field Force Name,Employee Code,hq,"));
+  y = await get(`/company/mis/call-report-dump?employeeCode=E1&month=2026-10&format=xlsx&days=1,2`); assert.equal(y.status, 200);
+  y = await get(`/company/mis/call-report-dump?month=2026-10`); assert.equal(y.status, 400);
+  y = await get(`/company/mis/detailing/options`); assert.equal(y.json.data.brands[0], "Nil");
+  y = await get(`/company/mis/detailing/visit-wise?employeeCode=admin&month=2026-10&mode=Product&names=DEXNOVA`); assert.equal(y.status, 200); assert.ok(y.json.data.rows.length >= 1);
+  y = await get(`/company/mis/detailing/visit-wise?employeeCode=admin&month=2026-10&mode=Bogus&names=A`); assert.equal(y.status, 400);
+  y = await get(`/company/mis/detailing/visit-wise?employeeCode=admin&month=2026-10&mode=Brand`); assert.equal(y.status, 400);
+  y = await get(`/company/mis/detailing/star-rating?employeeCode=admin&month=${nowMonth}&names=DEXNOVA`); assert.equal(y.status, 200);
+  assert.equal(y.json.data.rows.find((r: any) => r.employeeCode === "E2").groups["DEXNOVA"].stars[3], 1);                      // the 4-star rating just captured
+  y = await get(`/company/mis/slide-analysis?employeeCode=admin&fromMonth=${nowMonth}&toMonth=${nowMonth}&basedOn=Product`); assert.equal(y.status, 200); assert.equal(y.json.data.rows.length, 1);
+  y = await get(`/company/mis/slide-analysis?employeeCode=admin&fromMonth=${nowMonth}&toMonth=${nowMonth}&filterKind=Nope`); assert.equal(y.status, 400);
+  y = await get(`/company/mis/slide-analysis/options`); assert.ok(Array.isArray(y.json.data["Doctor Speciality"]));
+  y = await get(`/company/mis/drs-analysis?employeeCode=E1&fromMonth=${nowMonth}&toMonth=${nowMonth}`); assert.equal(y.status, 200);
+  assert.equal(y.json.data.rows.find((r: any) => r.employeeCode === "E2").perMonth[nowMonth].edet, 1);
+  y = await get(`/company/mis/drs-analysis?fromMonth=${nowMonth}`); assert.equal(y.status, 400);
+}
 console.log("R42 ROUTES OK");
 server.close(); process.exit(0);

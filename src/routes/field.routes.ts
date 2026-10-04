@@ -34,6 +34,8 @@ import { NoticeModel } from "../models/notice.model.js";
 import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { SlideDownloadModel } from "../models/slide-download.model.js";
+import { SlideViewModel } from "../models/slide-view.model.js";
+import { DoctorBrandRatingModel } from "../models/doctor-brand-rating.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
 import { DispatchModel } from "../models/dispatch.model.js";
 import { InventoryStockModel } from "../models/inventory-stock.model.js";
@@ -185,6 +187,8 @@ const dcrSchema = z.object({
     jointWorkType:        z.enum(["FIELD_WORK", "ON_JOB_TRAINING", "PERFORMANCE_REVIEW"]).optional(),
     managerObservations:  z.string().optional()
   }).optional(),
+  // Round 45 -- 1-5 star rating per brand detailed on this call (Brand Wise Star Rating).
+  brandRatings: z.array(z.object({ brandName: z.string().min(1), stars: z.number().int().min(1).max(5) })).default([]),
   overrideOverVisitWarning: z.boolean().optional(), // MR clicked "Confirm" on the 4th-visit modal
   // Round 36 Item A -- real client-detected submission channel (the field
   // app sends the actual device type it detected itself); falls back to
@@ -500,6 +504,13 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     }
   }
 
+  // Round 45 -- a call whose doctor was shown slides today (Present slides flow)
+  // is an E-detailing call. Calls made before this existed keep "Others".
+  let channel = body.submissionChannel || "Others";
+  if (body.doctorId) {
+    const shown = await SlideViewModel.countDocuments({ tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, visitDateOnly });
+    if (shown > 0) channel = "E-detailing";
+  }
   const dcr = await DcrModel.create({
     tenantSlug,
     employeeCode: employee.employeeCode,
@@ -518,7 +529,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     jointWork: body.jointWork,
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
-    submissionChannel: body.submissionChannel || "Others",
+    submissionChannel: channel,
     gpsLocation: body.gpsLocation,
     hospitalClinic: body.hospitalClinic,
     visitDurationMinutes: body.visitDurationMinutes,
@@ -536,6 +547,11 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     status: "SUBMITTED",
     adminVisibleAt: new Date()
   });
+  if (body.doctorId && body.brandRatings.length) {
+    await DoctorBrandRatingModel.create(body.brandRatings.map((r) => ({
+      tenantSlug, doctorId: body.doctorId, brandName: r.brandName.trim(), stars: r.stars, ratedBy: employee.employeeCode, month, dcrId: String(dcr._id), ratedAt: new Date()
+    })));
+  }
   await audit("FIELD_DCR_SUBMITTED", "Dcr", String(dcr._id), {
     tenantSlug, employeeCode: employee.employeeCode,
     overVisitFlag, overrideAcknowledged: body.overrideOverVisitWarning ?? false
@@ -1350,6 +1366,42 @@ fieldRouter.post("/slides/:id/mark-downloaded", asyncHandler(async (req, res) =>
   );
   await audit("FIELD_SLIDE_DOWNLOADED", "SlideDownload", String(record._id), { tenantSlug, employeeCode: employee.employeeCode, slideId: req.params.id });
   res.status(201).json({ data: serializeDocument(record) });
+}));
+
+// Round 45 -- "Present slides": one row per slide shown to a listed doctor.
+const slideViewSchema = z.object({
+  doctorId: z.string().min(1),
+  slideId: z.string().optional(),
+  brandName: z.string().optional(),
+  productName: z.string().optional(),
+  startedAt: z.string().optional(),
+  durationSec: z.number().int().min(0).max(4 * 3600)
+});
+fieldRouter.post("/slide-views", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = slideViewSchema.parse(req.body);
+  if (!mongoose.isValidObjectId(body.doctorId)) throw new HttpError(400, "Invalid doctor reference.");
+  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode });
+  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  const startedAt = body.startedAt ? new Date(body.startedAt) : new Date();
+  if (Number.isNaN(startedAt.getTime()) || startedAt.getTime() > Date.now() + 5 * 60000) throw new HttpError(400, "Invalid start time");
+  const iso = startedAt.toISOString();
+  const row = await SlideViewModel.create({
+    tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, slideId: body.slideId || null,
+    brandName: (body.brandName || "").trim(), productName: (body.productName || "").trim(), startedAt, durationSec: body.durationSec,
+    visitDateOnly: iso.slice(0, 10), month: iso.slice(0, 7)
+  });
+  res.status(201).json({ data: serializeDocument(row) });
+}));
+fieldRouter.get("/slide-views", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const filter: Record<string, unknown> = { tenantSlug, employeeCode: employee.employeeCode };
+  if (typeof req.query.doctorId === "string" && req.query.doctorId) filter.doctorId = req.query.doctorId;
+  if (typeof req.query.date === "string" && req.query.date) filter.visitDateOnly = req.query.date;
+  const rows = await SlideViewModel.find(filter).sort({ startedAt: -1 }).limit(200);
+  res.json({ data: rows.map(serializeDocument) });
 }));
 
 fieldRouter.get("/slide-downloads", asyncHandler(async (req, res) => {
