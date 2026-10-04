@@ -11,6 +11,7 @@
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { DcrModel } from "../models/dcr.model.js";
+import { loadRateMap, docPobValue } from "./mis-reports-compute.js";
 
 export type CoverageAnalysisRow = {
   empCode: string;
@@ -59,16 +60,23 @@ export async function computeCoverageAnalysis2(
     status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED", "AUTO_APPROVED"] }
   }).lean();
 
-  type Bucket = { calls: number; days: Set<string>; doctors: Set<string> };
+  type Bucket = { calls: number; days: Set<string>; doctors: Set<string>; amount: number };
+  const rates = await loadRateMap(tenantSlug);
+  const fwdDays = new Map<string, Set<string>>();
   const buckets = new Map<string, Map<string, Bucket>>();
   for (const row of dcrRows as any[]) {
     const tt = row.doctorId ? territoryTypeByDoctorId.get(String(row.doctorId)) || "HQ" : "HQ";
     if (!buckets.has(row.employeeCode)) buckets.set(row.employeeCode, new Map());
     const byType = buckets.get(row.employeeCode)!;
-    if (!byType.has(tt)) byType.set(tt, { calls: 0, days: new Set(), doctors: new Set() });
+    if (!byType.has(tt)) byType.set(tt, { calls: 0, days: new Set(), doctors: new Set(), amount: 0 });
     const b = byType.get(tt)!;
     b.calls += 1;
-    if (row.visitDateOnly) b.days.add(row.visitDateOnly);
+    b.amount += docPobValue(row, rates); // Round 41 Gap B -- real POB amount
+    if (row.visitDateOnly) {
+      b.days.add(row.visitDateOnly);
+      const fd = fwdDays.get(row.employeeCode) || new Set<string>();
+      fd.add(row.visitDateOnly); fwdDays.set(row.employeeCode, fd);
+    }
     if (row.doctorId) b.doctors.add(String(row.doctorId));
   }
 
@@ -89,8 +97,8 @@ export async function computeCoverageAnalysis2(
         seen,
         coverage: totalMapped > 0 ? Number(((seen / totalMapped) * 100).toFixed(1)) : "-",
         calAvg: dw > 0 ? Number((tc / dw).toFixed(1)) : "-",
-        amt: "-",
-        amtPerCall: "-"
+        amt: b && b.amount > 0 ? Number(b.amount.toFixed(2)) : "-",
+        amtPerCall: b && b.amount > 0 && tc > 0 ? Number((b.amount / tc).toFixed(2)) : "-"
       };
     }
     let firstLevelManager = "-";
@@ -109,7 +117,7 @@ export async function computeCoverageAnalysis2(
       hq: emp.territory || "-",
       firstLevelManager,
       secondLevelManager,
-      noOfFwd: 0,
+      noOfFwd: fwdDays.get(emp.employeeCode)?.size || 0, // Round 41 -- real distinct field-work days
       noOfFwdExp: 0,
       ttlDrs: (mappedByType.get("HQ")?.size || 0) + (mappedByType.get("EX")?.size || 0) + (mappedByType.get("OS")?.size || 0),
       territoryTypes

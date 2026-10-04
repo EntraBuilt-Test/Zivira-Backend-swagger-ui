@@ -17,6 +17,7 @@ import { getMasterModel } from "../models/master-record.model.js";
 import { buildDayStatusContext, classifyDay } from "./day-status.js";
 import { computeCustomReportMetrics } from "./custom-report-compute.js";
 import { getDirectReports, getAllDescendants, getUpwardChain, type OrgEmployee } from "./org-hierarchy.js";
+import { loadCoreMap, tierOfDoctor, type Tier } from "./doctor-tier.js";
 
 function daysInMonth(month: string): number {
   const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
@@ -104,21 +105,21 @@ export async function computeDayCallsSummary(tenantSlug: string, employeeCode: s
   // SUPER CORE have no distinct real tier in this schema -- the only real
   // classification here is a binary isCore Yes/No, not a 4-tier scheme --
   // so both stay honestly 0 rather than guessed.
-  let coreDrsMet = 0, nCoreDrsMet = 0;
-  try {
-    const CoreMapModel = getMasterModel("managerwiseCoreDoctorMap");
-    const coreRows = await CoreMapModel.find({ tenantSlug, mrName: emp.name }).lean();
-    const coreCodes = new Set((coreRows as any[]).filter((r) => r.isCore === "Yes").map((r) => r.doctorCode));
-    const nonCoreCodes = new Set((coreRows as any[]).filter((r) => r.isCore === "No").map((r) => r.doctorCode));
-    const metCodes = new Set((dcrs as any[]).map((d) => d.doctorId?.doctorCode).filter(Boolean));
-    coreDrsMet = Array.from(coreCodes).filter((c) => metCodes.has(c)).length;
-    nCoreDrsMet = Array.from(nonCoreCodes).filter((c) => metCodes.has(c)).length;
-  } catch { /* managerwiseCoreDoctorMap not configured for this tenant */ }
+  // Round 41 item 2 -- real 4-tier DoctorModel.doctorCategory (legacy isCore
+  // flag only as a fallback for never-migrated doctors), so Nil and S CORE
+  // are real counts now.
+  const coreMap = await loadCoreMap(tenantSlug, [emp.name]);
+  const metByTier: Record<Tier, Set<string>> = { Nil: new Set(), CORE: new Set(), "N CORE": new Set(), "S CORE": new Set() };
+  for (const d of dcrs as any[]) {
+    if (!d.doctorId) continue;
+    metByTier[tierOfDoctor(d.doctorId, coreMap, emp.name)].add(String(d.doctorId._id));
+  }
+  const nilDrsMet = metByTier.Nil.size, coreDrsMet = metByTier.CORE.size, nCoreDrsMet = metByTier["N CORE"].size, sCoreDrsMet = metByTier["S CORE"].size;
 
   return {
     calendarDays: numDays, sundaysHolidays, workingDaysExclHolSun, fieldworkDays, noFieldworkDays: Math.max(noFieldworkDays, 0),
     leave, tpDeviationDays, listedDrsMet, listedDrsSeen, callAverage, morningCalls, eveningCalls, bothCalls,
-    nilDrsMet: 0, coreDrsMet, nCoreDrsMet, sCoreDrsMet: 0
+    nilDrsMet, coreDrsMet, nCoreDrsMet, sCoreDrsMet
   };
 }
 
@@ -128,7 +129,7 @@ function sumSummaries(rows: DayCallsSummary[]): DayCallsSummary {
     out.calendarDays += r.calendarDays; out.sundaysHolidays += r.sundaysHolidays; out.workingDaysExclHolSun += r.workingDaysExclHolSun;
     out.fieldworkDays += r.fieldworkDays; out.noFieldworkDays += r.noFieldworkDays; out.leave += r.leave; out.tpDeviationDays += r.tpDeviationDays;
     out.listedDrsMet += r.listedDrsMet; out.listedDrsSeen += r.listedDrsSeen; out.morningCalls += r.morningCalls; out.eveningCalls += r.eveningCalls; out.bothCalls += r.bothCalls;
-    out.coreDrsMet += r.coreDrsMet; out.nCoreDrsMet += r.nCoreDrsMet;
+    out.coreDrsMet += r.coreDrsMet; out.nCoreDrsMet += r.nCoreDrsMet; out.nilDrsMet += r.nilDrsMet; out.sCoreDrsMet += r.sCoreDrsMet;
   }
   out.callAverage = rows.length > 0 ? +(rows.reduce((s, r) => s + r.callAverage, 0) / rows.length).toFixed(2) : 0;
   return out;
@@ -260,6 +261,9 @@ export async function computeJointWorkWithManager(tenantSlug: string, employeeCo
 export const FIELDWORK_DESIGNATION_CODES = ["BM", "BH", "BDE", "RBM", "Sr.RBM", "ABM", "ZBM", "BDM", "BRM", "NBM", "Sr ABM", "HM", "MH", "SM"];
 
 export async function computeFieldworkManagerRow(tenantSlug: string, member: OrgEmployee, months: string[]) {
+  // Round 41 item 6 -- First / Second Level Manager names from the real
+  // upward reporting chain (was the raw manager employee CODE).
+  const chain = await getUpwardChain(tenantSlug, member.employeeCode);
   // Build a name -> designation lookup once per rep's real DCR set (most
   // tenants have a small manager roster, so this stays cheap).
   const perMonth: Record<string, Record<string, number>> = {};
@@ -286,7 +290,8 @@ export async function computeFieldworkManagerRow(tenantSlug: string, member: Org
   return {
     employeeCode: member.employeeCode, name: member.name, designation: member.designation, hq: member.territory,
     joinDate: member.joinDate || null,
-    firstLevelManager: member.reportingManager || null,
+    firstLevelManager: chain[0]?.name || null,
+    secondLevelManager: chain[1]?.name || null,
     perMonth
   };
 }
@@ -379,14 +384,13 @@ export async function computeSpecialityVisitWise(tenantSlug: string, team: OrgEm
 }
 
 export async function computeCategoryVisitWise(tenantSlug: string, team: OrgEmployee[], months: string[]) {
-  // Nil/CORE/NON CORE/SUPER CORE -- same real managerwiseCoreDoctorMap
-  // isCore Yes/No tagging as everywhere else in this codebase. Nil and
-  // SUPER CORE have no distinct real tier anywhere in this schema (only a
-  // binary isCore flag exists), so both stay honestly 0 rather than
-  // fabricated, matching every prior round's disclosure on this exact
-  // point.
+  // Nil / CORE / NON CORE / SUPER CORE -- Round 41 item 2: the real 4-tier
+  // DoctorModel.doctorCategory (legacy isCore flag only as a fallback for
+  // never-migrated doctors), so Nil and SUPER CORE are real counts.
   const categories = ["Nil", "CORE", "NON CORE", "SUPER CORE"] as const;
+  const display: Record<Tier, (typeof categories)[number]> = { Nil: "Nil", CORE: "CORE", "N CORE": "NON CORE", "S CORE": "SUPER CORE" };
   const perMonth: Record<string, Record<string, { v1: number; v2: number; v3: number; vMore: number }>> = {};
+  const coreMap = await loadCoreMap(tenantSlug, team.map((m) => m.name));
   for (const month of months) {
     const byCategory: Record<string, { v1: number; v2: number; v3: number; vMore: number }> = {
       Nil: { v1: 0, v2: 0, v3: 0, vMore: 0 }, CORE: { v1: 0, v2: 0, v3: 0, vMore: 0 },
@@ -395,29 +399,17 @@ export async function computeCategoryVisitWise(tenantSlug: string, team: OrgEmpl
     for (const member of team) {
       const dcrs = await DcrModel.find({ tenantSlug, employeeCode: member.employeeCode, month }).populate("doctorId").lean();
       const visitCountByDoctor = new Map<string, number>();
-      const doctorCodeById = new Map<string, string | undefined>();
+      const doctorById = new Map<string, any>();
       for (const d of dcrs as any[]) {
-        const docId = String(d.doctorId?._id || d.doctorId);
+        if (!d.doctorId) continue;
+        const docId = String(d.doctorId._id);
         visitCountByDoctor.set(docId, (visitCountByDoctor.get(docId) || 0) + 1);
-        doctorCodeById.set(docId, d.doctorId?.doctorCode);
+        doctorById.set(docId, d.doctorId);
       }
-      let coreCodes = new Set<string>(), nonCoreCodes = new Set<string>();
-      try {
-        const CoreMapModel = getMasterModel("managerwiseCoreDoctorMap");
-        const rows = await CoreMapModel.find({ tenantSlug, mrName: member.name }).lean();
-        coreCodes = new Set((rows as any[]).filter((r) => r.isCore === "Yes").map((r) => r.doctorCode));
-        nonCoreCodes = new Set((rows as any[]).filter((r) => r.isCore === "No").map((r) => r.doctorCode));
-      } catch { /* not configured for this tenant */ }
-      // Count each real visited doctor once, into the bucket matching
-      // their real total visit count that month, under whichever real
-      // category their doctorCode is tagged -- a doctor with no real
-      // managerwiseCoreDoctorMap tag at all contributes to no category
-      // row here (not fabricated into one).
+      // Count each real visited doctor once, into the bucket matching their
+      // real total visit count that month, under their real category.
       for (const [docId, count] of visitCountByDoctor) {
-        const docCode = doctorCodeById.get(docId);
-        const cat: "CORE" | "NON CORE" | null = docCode && coreCodes.has(docCode) ? "CORE" : docCode && nonCoreCodes.has(docCode) ? "NON CORE" : null;
-        if (!cat) continue;
-        const bucket = byCategory[cat];
+        const bucket = byCategory[display[tierOfDoctor(doctorById.get(docId), coreMap, member.name)]];
         if (count === 1) bucket.v1++; else if (count === 2) bucket.v2++; else if (count === 3) bucket.v3++; else if (count > 3) bucket.vMore++;
       }
     }

@@ -250,5 +250,21 @@ export const COMPUTED_METRIC_KEYS = new Set([
   // are real)
   "target", "primarySale", "secondarySale", "achievement",
   // Online Quiz
-  "quizRaised", "quizAttended", "quizTotalQuestions", "quizMarksObtained", "quizPercentage"
+  "quizRaised", "quizAttended", "quizTotalQuestions", "quizMarksObtained", "quizPercentage",
+  // Round 41 -- now real: 4-tier doctor category, unlisted drs, campaign,
+  // product exposure, RCPA, missed dates (DCR locks), expense split,
+  // growth and leave eligibility.
+  "nilList", "coreList", "nonCoreList", "superCoreList",
+  "nilMet", "nilSeen", "coreMet", "coreSeen", "nonCoreMet", "nonCoreSeen", "superCoreMet", "superCoreSeen",
+  "nilCoveragePct", "coreCoveragePct", "nonCoreCoveragePct", "superCoreCoveragePct",
+  "nilMet2x", "nilAdherCoverage", "nilMissed", "coreMet2x", "coreAdherCoverage", "coreMissed",
+  "nonCoreMet2x", "nonCoreAdherCoverage", "nonCoreMissed", "superCoreAdherCoverage", "superCoreMissed",
+  "unlistedDrsMet", "unlistedDrsSeen", "unlstCoveragePct", "unlstCallAverage", "unlstMissedCall",
+  "listedUnlistedDrsSeen", "lstUnlstCallAverage", "repeatedCallsMet", "repeatedCoveragePct",
+  "campaignList", "campaignMet", "campaignSeen", "campaignMissed",
+  "noOfDetailingDrs", "noOfRxDrs", "callFeedbackSeen",
+  "rcpaDrsCount", "totalPotentialRs", "yieldRs",
+  "missedPostedDays", "missedReleaseDays", "missedCompletedDays",
+  "hqAmountRs", "exAmountRs", "osAmountRs", "growth",
+  "clEligibility", "plEligibility", "slEligibility", "lopEligibility"
 ]);

@@ -32,6 +32,8 @@ import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { nextDoctorCode } from "../utils/doctor-code.js";
 import { TaskModel } from "../models/task.model.js";
 import { TaskModeModel } from "../models/task-mode.model.js";
+import { DcrLockModel } from "../models/dcr-lock.model.js";
+import { detectLocks, releaseLocks, utcDateString, LOCK_LOOKBACK_DAYS } from "../utils/dcr-lock.js";
 import { computeCoverageAnalysis2 } from "../utils/coverage-analysis.js";
 
 // Real custom-behavior actions for three "Options" screens that can't be
@@ -781,7 +783,7 @@ mastersActionsRouter.get(
           // own CORE / NON CORE / Nil wording purely for this screen's
           // display, matching the reference screenshots exactly without
           // changing the real stored category values anywhere else.
-          category: r.category === "A" ? "CORE" : r.category === "B" || r.category === "C" ? "NON CORE" : "Nil",
+          category: r.doctorCategory === "NIL" ? "Nil" : r.doctorCategory === "CORE" || r.doctorCategory === "N CORE" || r.doctorCategory === "S CORE" ? r.doctorCategory : r.category === "A" ? "CORE" : r.category === "B" || r.category === "C" ? "N CORE" : "Nil",
           speciality: r.specialty,
           territory: r.territory
         }))
@@ -950,15 +952,12 @@ mastersActionsRouter.post(
   })
 );
 
-// ── 10. Delayed Release ─────────────────────────────────────────────────
-// Matches sanpharma.info's Delayed_Release.aspx: a Year/Month + FieldForce
-// filter, a table of field force with delayed/missing DCR dates, and a
-// Release action. Built on the SAME real DCR-gap computation the Compliance
-// Analytics dashboard already uses (computeComplianceRows, missedLast30Days)
-// rather than a fabricated table — a field force only shows up here if they
-// genuinely have missed working-day DCRs in the window. "Released" is a
-// real, persisted per (month, employee) flag in the generic CompanyConfig
-// key/value store, so a released row stays released across refreshes.
+// ── 10. Delayed Release (Round 41: real DcrLock records) ────────────────
+// A DCR date is locked once it passes the company delay window (setting
+// DCR_DELAY_DAYS, default 3) with no submission; locks are detected lazily
+// here, persisted, and also swept daily by the background job. Release
+// stamps releasedAt / releasedBy on the lock row. The legacy CompanyConfig
+// "delayedReleased:<month>:<code>" flag is still written for compatibility.
 mastersActionsRouter.get(
   "/delayedRelease/action/list",
   asyncHandler(async (req, res) => {
@@ -970,32 +969,43 @@ mastersActionsRouter.get(
     if (fieldForceName) {
       employeeFilter.name = new RegExp(fieldForceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
-    const employees = await EmployeeModel.find(employeeFilter).lean();
+    const employees = (await EmployeeModel.find(employeeFilter).lean()) as any[];
 
-    const complianceRows = await computeComplianceRows(
-      tenantSlug!,
-      employees.map((e: any) => ({ employeeCode: e.employeeCode, name: e.name, joinDate: e.joinDate })),
-      { month: month || undefined }
-    );
-
-    const monthKey = month || "current";
-    const releasedRows = await CompanyConfigModel.find({ tenantSlug, key: { $regex: `^delayedReleased:${monthKey}:` } }).lean();
-    const releasedSet = new Set(releasedRows.map((r: any) => String(r.key).split(":")[2]));
-
-    const empByCode = new Map(employees.map((e: any) => [e.employeeCode, e]));
-
-    const result = complianceRows
-      .filter((r) => r.missedLast30Days > 0)
-      .map((r) => {
-        const emp = empByCode.get(r.employeeCode);
+    const today = utcDateString(new Date());
+    let from: string;
+    let to: string;
+    if (/^\d{4}-\d{2}$/.test(month)) {
+      const [y, m] = month.split("-").map(Number);
+      from = `${month}-01`;
+      to = `${month}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+    } else {
+      from = utcDateString(new Date(Date.now() - LOCK_LOOKBACK_DAYS * 86400000));
+      to = today;
+    }
+    await detectLocks(tenantSlug, employees, from, to);
+    const codes = employees.map((e) => e.employeeCode);
+    const locks = (await DcrLockModel.find({ tenantSlug, employeeCode: { $in: codes }, dcrDate: { $gte: from, $lte: to } }).sort({ dcrDate: 1 }).lean()) as any[];
+    const byEmp = new Map<string, any[]>();
+    for (const l of locks) {
+      if (!byEmp.has(l.employeeCode)) byEmp.set(l.employeeCode, []);
+      byEmp.get(l.employeeCode)!.push(l);
+    }
+    const result = employees
+      .filter((e) => byEmp.has(e.employeeCode))
+      .map((e) => {
+        const rows = byEmp.get(e.employeeCode)!;
+        const open = rows.filter((r) => !r.releasedAt);
         return {
-          employeeCode: r.employeeCode,
-          fieldForceName: r.employeeName,
-          hq: emp?.territory || "-",
-          designation: emp?.designation || "-",
-          state: emp?.state || "-",
-          delayedMissingDates: `${r.missedLast30Days} day(s) missed in last 30 days`,
-          released: releasedSet.has(r.employeeCode)
+          employeeCode: e.employeeCode,
+          fieldForceName: e.name,
+          hq: e.territory || "-",
+          designation: e.designation || "-",
+          state: e.state || "-",
+          delayedMissingDates: rows.map((r) => r.dcrDate + (r.releasedAt ? " (released)" : "")).join(", "),
+          lockedDates: rows.map((r) => ({ date: r.dcrDate, lockedAt: r.lockedAt, reason: r.lockReason, releasedAt: r.releasedAt || null, releasedBy: r.releasedBy || null, requested: !!r.releaseRequestedAt })),
+          openLocks: open.length,
+          releaseRequested: open.some((r) => r.releaseRequestedAt),
+          released: open.length === 0
         };
       });
 
@@ -1005,7 +1015,8 @@ mastersActionsRouter.get(
 
 const releaseDelayedSchema = z.object({
   employeeCodes: z.array(z.string()).min(1),
-  month: z.string().optional().default("current")
+  month: z.string().optional().default("current"),
+  dates: z.array(z.string()).optional()
 });
 
 mastersActionsRouter.post(
@@ -1013,15 +1024,22 @@ mastersActionsRouter.post(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = releaseDelayedSchema.parse(req.body);
+    let releasedCount = 0;
     for (const code of body.employeeCodes) {
+      const emp = (await EmployeeModel.findOne({ tenantSlug, employeeCode: code }).lean()) as any;
+      if (emp) {
+        const today = utcDateString(new Date());
+        await detectLocks(tenantSlug, [emp], utcDateString(new Date(Date.now() - LOCK_LOOKBACK_DAYS * 86400000)), today);
+      }
+      releasedCount += await releaseLocks(tenantSlug, code, body.dates?.length ? body.dates : "all", `admin:${req.auth!.sub}`);
       await CompanyConfigModel.findOneAndUpdate(
         { tenantSlug, key: `delayedReleased:${body.month}:${code}` },
         { $set: { value: true } },
         { upsert: true }
       );
     }
-    await audit("DELAYED_RELEASE_RELEASED", "delayedRelease", "BULK", { tenantSlug, ...body });
-    res.status(201).json({ data: { success: true, releasedCount: body.employeeCodes.length } });
+    await audit("DELAYED_RELEASE_RELEASED", "delayedRelease", "BULK", { tenantSlug, ...body, releasedCount });
+    res.status(201).json({ data: { success: true, releasedCount, employees: body.employeeCodes.length } });
   })
 );
 

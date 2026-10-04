@@ -15,7 +15,7 @@ const fieldVisitLogSchema = new Schema(
   {
     tenantSlug: { type: String, required: true, lowercase: true, trim: true, index: true },
     employeeCode: { type: String, required: true, trim: true, index: true },
-    visitType: { type: String, enum: ["Stockist", "UnlistedDoctor", "CIP"], required: true, index: true },
+    visitType: { type: String, enum: ["Stockist", "UnlistedDoctor", "CIP", "Hospital"], required: true, index: true },
     // Free-text entity reference -- a real Stockist/UnlistedDoctor name the
     // rep typed or picked, or a CIP (Camp/Institution Program) location
     // name. Not foreign-keyed to StockistModel/UnlistedDoctorModel: those

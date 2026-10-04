@@ -692,6 +692,9 @@ export const MASTERS: MasterConfig[] = [
         "Gastroenterologist", "Dermatologist", "Neurologist", "Nephrologist", "Orthopaedic Surgeon"
       ] },
       { key: "registrationNumber", label: "Registration Number" },
+      // Round 41 item 2 -- real 4-tier Doctor Category (stored on
+      // DoctorModel.doctorCategory by utils/doctor-sync.ts).
+      { key: "doctorTier", label: "Doctor Category", options: ["NIL", "CORE", "N CORE", "S CORE"] },
       // The Doctor Master screen also displays these columns (joined in from
       // the Address / Contact Details sub-tabs in the UI) — declared here so
       // the backend actually persists them instead of silently discarding

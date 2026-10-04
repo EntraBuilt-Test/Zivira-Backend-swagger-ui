@@ -29,6 +29,10 @@ const expenseClaimSchema = new Schema(
     expenseDate: { type: String, required: true },                // 'YYYY-MM-DD'
     amountRs: { type: Number, required: true, min: 0 },
     description: { type: String, trim: true },
+    // Round 41 item 5 -- HQ / EX / OS split for the Review Report's Expense
+    // panel. Captured by the field app going forward; old claims are unset
+    // and count only toward Total / Misc (never guessed into a split).
+    territoryType: { type: String, enum: ["HQ", "EX", "OS"], default: null },
     status: {
       type: String,
       enum: ["SUBMITTED", "APPROVED", "REJECTED"],

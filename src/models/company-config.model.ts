@@ -22,7 +22,11 @@ export const CompanyConfigModel = mongoose.model("CompanyConfig", companyConfigS
 
 export const DEFAULT_CONFIG: Record<string, unknown> = {
   GIFT_VALUE_THRESHOLD_RS: 500,
-  AUTO_APPROVE_HOURS: 24
+  AUTO_APPROVE_HOURS: 24,
+  // Round 41 -- DCR lock window (days after the DCR date) and the visit
+  // norms per doctor category; see utils/settings.ts.
+  DCR_DELAY_DAYS: 3,
+  CATEGORY_NORMS: { NIL: 2, CORE: 2, "N CORE": 2, "S CORE": 1 }
 };
 
 export async function getConfigValue(tenantSlug: string, key: string): Promise<unknown> {

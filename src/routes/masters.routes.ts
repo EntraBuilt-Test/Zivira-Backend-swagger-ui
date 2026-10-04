@@ -10,6 +10,7 @@ import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { ensureEmployeeLoginAccount } from "../utils/credentials.js";
 import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
+import { syncDoctorDerivedFields } from "../utils/doctor-sync.js";
 
 export const mastersRouter = Router();
 
@@ -183,6 +184,7 @@ async function syncDoctorMappingToDoctor(tenantSlug: string, record: Record<stri
         email: (doctorMasterRecord.email as string) || null,
         registrationNo: (doctorMasterRecord.registrationNumber as string) || null,
         ...(category ? { category } : {}),
+        ...(["NIL", "CORE", "N CORE", "S CORE"].includes(doctorMasterRecord.doctorTier as string) ? { doctorCategory: doctorMasterRecord.doctorTier as string } : {}),
         status
       }
     },
@@ -370,6 +372,7 @@ mastersRouter.post(
     if (config.key === "doctorMapping") {
       await syncDoctorMappingToDoctor(tenantSlug!, created.toObject());
     }
+    await syncDoctorDerivedFields(tenantSlug!, config.key, created.toObject());
 
     await audit(`MASTER_${config.key.toUpperCase()}_CREATED`, config.key, String(created._id), { tenantSlug });
     // Item 3 — "if the admin changes some things, it must send a
@@ -473,6 +476,7 @@ mastersRouter.put(
     if (config.key === "doctorMapping") {
       await syncDoctorMappingToDoctor(tenantSlug!, updated.toObject());
     }
+    await syncDoctorDerivedFields(tenantSlug!, config.key, updated.toObject());
 
     // Round 36 Item B -- real append-only audit row for every approve/
     // reject action taken through this generic single-row edit path

@@ -17,12 +17,12 @@ export type DayStatus =
   | { kind: "tour"; area: string; town: string; purpose: string }
   | { kind: "holiday"; name: string }
   | { kind: "weeklyOff" }
-  | { kind: "leave"; leaveType: string }
+  | { kind: "leave"; leaveType: string; workTypeCode?: string }
   | { kind: "notPlanned" };
 
 export type DayStatusContext = {
   holidaysByDate: Map<string, string>; // 'YYYY-MM-DD' -> description
-  leaveRangesByEmployee: Map<string, { from: Date; to: Date; leaveType: string }[]>;
+  leaveRangesByEmployee: Map<string, { from: Date; to: Date; leaveType: string; workTypeCode?: string }[]>;
   tourPlanByEmployee: Map<string, Map<string, { area: string; town: string; purpose: string }>>; // employeeCode -> date -> location
 };
 
@@ -57,10 +57,10 @@ export async function buildDayStatusContext(tenantSlug: string, month: string, e
         toDate: { $gte: monthStart }
       }).lean()
     : [];
-  const leaveRangesByEmployee = new Map<string, { from: Date; to: Date; leaveType: string }[]>();
+  const leaveRangesByEmployee = new Map<string, { from: Date; to: Date; leaveType: string; workTypeCode?: string }[]>();
   for (const l of leaves as any[]) {
     const arr = leaveRangesByEmployee.get(l.employeeCode) || [];
-    arr.push({ from: new Date(l.fromDate), to: new Date(l.toDate), leaveType: l.leaveType });
+    arr.push({ from: new Date(l.fromDate), to: new Date(l.toDate), leaveType: l.leaveType, workTypeCode: l.workTypeCode || undefined });
     leaveRangesByEmployee.set(l.employeeCode, arr);
   }
 
@@ -92,7 +92,7 @@ export function classifyDay(ctx: DayStatusContext, employeeCode: string, dateStr
 
   const leaveRanges = ctx.leaveRangesByEmployee.get(employeeCode) || [];
   for (const range of leaveRanges) {
-    if (date >= range.from && date <= range.to) return { kind: "leave", leaveType: range.leaveType };
+    if (date >= range.from && date <= range.to) return { kind: "leave", leaveType: range.leaveType, workTypeCode: range.workTypeCode };
   }
 
   return { kind: "notPlanned" };

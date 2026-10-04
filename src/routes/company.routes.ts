@@ -54,6 +54,7 @@ import { computeCustomReportMetrics } from "../utils/custom-report-compute.js";
 import { buildDayStatusContext, classifyDay, dayStatusLabel } from "../utils/day-status.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
+import { FieldVisitLogModel } from "../models/field-visit-log.model.js";
 import { SurveyQuestionModel } from "../models/survey-question.model.js";
 import { SurveyModel } from "../models/survey.model.js";
 import { SurveyAnswerModel } from "../models/survey-answer.model.js";
@@ -83,6 +84,15 @@ import { computeSampleDistribution } from "../utils/sample-distribution.js";
 import { computeKpiEngine } from "../utils/kpi-engine.js";
 import { computeAlerts } from "../utils/alerts-engine.js";
 import { CompanyConfigModel, DEFAULT_CONFIG, getConfigValue } from "../models/company-config.model.js";
+import { DcrLockModel } from "../models/dcr-lock.model.js";
+import { WorkTypeCodeModel, WORK_TYPE_TO_CODE } from "../models/work-type-code.model.js";
+import { RcpaModel } from "../models/rcpa.model.js";
+import { CrmModel } from "../models/crm.model.js";
+import { detectLocks, releaseLocks, utcDateString, LOCK_LOOKBACK_DAYS } from "../utils/dcr-lock.js";
+import { getDcrDelayDays, getCategoryNorms, getCompanyTimezone, saveSetting, DCR_DELAY_DAYS_KEY, CATEGORY_NORMS_KEY, COMPANY_TIMEZONE_KEY } from "../utils/settings.js";
+import { ensureWorkTypeCodes, listWorkTypeCodes } from "../utils/work-type-codes.js";
+import { tierOfDoctor, loadCoreMap } from "../utils/doctor-tier.js";
+import { docPobValue, loadRateMap } from "../utils/mis-reports-compute.js";
 
 // Case-insensitive exact match, so "division" filters agree regardless of how a value
 // was originally cased (Excel import vs. manual entry through the Add form).
@@ -292,6 +302,9 @@ companyRouter.get(
       .sort({ territory: 1, name: 1 })
       .lean();
 
+    // Round 41 item 2 -- Category is the real 4-tier doctorCategory now (was
+    // derived from the A/B/C class); Class stays the A/B/C category letter.
+    const terrCore = await loadCoreMap(tenantSlug!, [(employee as any).name]);
     const byTerritory = new Map<string, any[]>();
     for (const d of doctors as any[]) {
       const key = d.territory || "Unassigned";
@@ -299,7 +312,7 @@ companyRouter.get(
       byTerritory.get(key)!.push({
         name: d.name,
         specialty: d.specialty || "Nil",
-        category: d.category === "A" ? "CORE" : d.category === "B" || d.category === "C" ? "N CORE" : "Nil",
+        category: tierOfDoctor(d, terrCore, (employee as any).name),
         qual: d.qualification || "Nil",
         class: d.category || "Nil"
       });
@@ -647,6 +660,35 @@ companyRouter.get(
     const employeeCode = String(req.query.employeeCode || "");
     const month = String(req.query.month || "");
     const withVacants = req.query.withVacants === "true";
+    const statewise = req.query.statewise === "true";
+    // Round 41 item 7 -- State wise: every employee grouped by the real
+    // Employee.state with their own Tour Plan status (whole company, or the
+    // chosen manager's subtree when employeeCode is given).
+    if (statewise) {
+      if (!month) { res.json({ data: { states: [] } }); return; }
+      let people: any[] = employeeCode ? [...(await getAllDescendants(tenantSlug, employeeCode))] : ((await EmployeeModel.find({ tenantSlug }).sort({ name: 1 }).lean()) as any[]);
+      if (!withVacants) people = people.filter((e) => e.status === "ACTIVE");
+      const codesAll = people.map((e) => e.employeeCode);
+      const plans = codesAll.length ? ((await TourPlanModel.find({ tenantSlug, employeeCode: { $in: codesAll }, month }).lean()) as any[]) : [];
+      const planBy = new Map(plans.map((tp) => [tp.employeeCode, tp]));
+      const groups = new Map<string, any[]>();
+      for (const e of people) {
+        const st = e.state || "(No State)";
+        const arr = groups.get(st) || [];
+        const tp = planBy.get(e.employeeCode);
+        arr.push({ employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, status: tp?.status || "NOT SUBMITTED", entryDate: tp?.createdAt || null, approvedDate: tp?.approvedAt || null });
+        groups.set(st, arr);
+      }
+      const states = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([state, rows]) => ({
+        state, total: rows.length,
+        submitted: rows.filter((r) => r.status !== "NOT SUBMITTED").length,
+        approved: rows.filter((r) => r.status === "APPROVED").length,
+        notSubmitted: rows.filter((r) => r.status === "NOT SUBMITTED").length,
+        rows
+      }));
+      res.json({ data: { states } });
+      return;
+    }
     if (!employeeCode || !month) { res.json({ data: [] }); return; }
 
     let team = await getDirectReports(tenantSlug, employeeCode);
@@ -735,6 +777,9 @@ companyRouter.get(
 const DCR_MODE_DATE_PICKER = new Set([
   "dcr-dates", "not-approved-dates", "tp-my-day-plan", "rcpa-view", "reminder-calls"
 ]);
+// Round 41 item 4 -- "RCPA View" lists the real doctor-linked RCPA entries
+// for the date; "Reminder calls" lists the calls where the rep marked a
+// follow-up (followUpRequired) due on / created that date.
 
 // Item 5 -- DCR > View. One parameterized endpoint, dispatching on `mode`
 // to match each of the legacy's 9 distinct result-page behaviours.
@@ -762,6 +807,29 @@ companyRouter.get(
     // Modes that are plain date-pickers until a date+Go is actually chosen.
     if (DCR_MODE_DATE_PICKER.has(mode)) {
       if (!date) { res.json({ data: { mode, needsDate: true, rows: [] } }); return; }
+      if (mode === "rcpa-view") {
+        const rcpa = (await RcpaModel.find({ tenantSlug, employeeCode: { $in: codes }, date }).sort({ createdAt: 1 }).lean()) as any[];
+        const nameByCode = new Map(team.map((e: any) => [e.employeeCode, e.name]));
+        res.json({ data: { mode, needsDate: false, rows: rcpa.map((r) => ({
+          employeeCode: r.employeeCode, fieldForceName: nameByCode.get(r.employeeCode) || r.employeeCode, doctorName: r.doctorName, chemistName: r.chemistName || "",
+          ourProduct: r.ourProduct, ourQty: r.ourQty, competitorProduct: r.competitorProduct || "", competitorQty: r.competitorQty || 0, visitDate: r.date
+        })) } });
+        return;
+      }
+      if (mode === "reminder-calls") {
+        const dayStart = new Date(`${date}T00:00:00.000Z`);
+        const dayEnd = new Date(`${date}T23:59:59.999Z`);
+        const reminders = (await DcrModel.find({
+          tenantSlug, employeeCode: { $in: codes }, followUpRequired: true,
+          $or: [{ followUpDate: { $gte: dayStart, $lte: dayEnd } }, { visitDateOnly: date }]
+        }).populate("doctorId").lean()) as any[];
+        const nameByCode = new Map(team.map((e: any) => [e.employeeCode, e.name]));
+        res.json({ data: { mode, needsDate: false, rows: reminders.map((d) => ({
+          employeeCode: d.employeeCode, fieldForceName: nameByCode.get(d.employeeCode) || d.employeeCode, doctorName: d.doctorId?.name || "",
+          visitDate: d.visitDateOnly, followUpDate: d.followUpDate ? utcDateString(new Date(d.followUpDate)) : "", callSession: d.callSession, status: d.status, notes: d.notes || ""
+        })) } });
+        return;
+      }
       const dcrs = await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: date }).populate("doctorId").lean();
       const rows = dcrs.map((d: any) => ({
         employeeCode: d.employeeCode,
@@ -771,10 +839,6 @@ companyRouter.get(
         status: d.status,
         notes: d.notes || ""
       }));
-      // RCPA View / Reminder calls -- coordinator-confirmed identical flow
-      // to "View All DCR Date(s)": no distinct RCPA/reminder-call schema
-      // exists, so these two modes render this same real per-date DCR
-      // listing rather than a fabricated distinct shape.
       res.json({ data: { mode, needsDate: false, rows } });
       return;
     }
@@ -798,6 +862,12 @@ companyRouter.get(
         byDate.set(d.visitDateOnly, arr);
       }
       const chemistCalls = await ChemistCallModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).lean();
+      // Round 41 item 1 -- stockist / unlisted-doctor visits are real field
+      // visit logs now; POB comes from the captured order values.
+      const visitLogs = (await FieldVisitLogModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).lean()) as any[];
+      const rates = await loadRateMap(tenantSlug);
+      const logsByDate = new Map<string, any[]>();
+      for (const l of visitLogs) { const arr = logsByDate.get(l.visitDateOnly) || []; arr.push(l); logsByDate.set(l.visitDateOnly, arr); }
       const chemistByDate = new Map<string, any[]>();
       for (const c of chemistCalls as any[]) {
         const arr = chemistByDate.get(c.visitDateOnly) || [];
@@ -811,7 +881,8 @@ companyRouter.get(
         const key = dateKey(month, d);
         const dayDcrs = byDate.get(key) || [];
         const dayChemists = chemistByDate.get(key) || [];
-        if (dayDcrs.length === 0 && dayChemists.length === 0) {
+        const dayLogs = logsByDate.get(key) || [];
+        if (dayDcrs.length === 0 && dayChemists.length === 0 && dayLogs.length === 0) {
           return { date: key, submitted: false };
         }
         submittedDays++;
@@ -826,11 +897,11 @@ companyRouter.get(
           endTime: (dayDcrs[dayDcrs.length - 1] as any)?.checkOutTime || "",
           workType: (dayDcrs[0] as any)?.workType || "Field Work",
           listedDrMet: listedMet,
-          listedDrPob: listedMet, // approximated -- see file-header disclosure
+          listedDrPob: Number(dayDcrs.reduce((sum: number, d: any) => sum + docPobValue(d, rates), 0).toFixed(2)),
           chemistMet: dayChemists.length,
-          chemistPob: dayChemists.filter((c: any) => (c.pob || []).length > 0).length,
-          stockistMet: 0, // unsupported -- see file-header disclosure
-          nonListedDrMet: 0 // unsupported -- see file-header disclosure
+          chemistPob: Number(dayChemists.reduce((sum: number, c: any) => sum + docPobValue(c, rates), 0).toFixed(2)),
+          stockistMet: dayLogs.filter((l: any) => l.visitType === "Stockist").length,
+          nonListedDrMet: dayLogs.filter((l: any) => l.visitType === "UnlistedDoctor").length
         };
       });
 
@@ -839,9 +910,9 @@ companyRouter.get(
           mode,
           employee: self ? { name: (self as any).name, designation: (self as any).designation, hq: (self as any).territory } : null,
           days,
-          pobIsApproximated: true,
-          nonListedUnsupported: true,
-          stockistUnsupported: true,
+          pobIsApproximated: false,
+          nonListedUnsupported: false,
+          stockistUnsupported: false,
           totals: {
             submittedDays,
             listedDrMet: totalListedMet,
@@ -878,7 +949,9 @@ companyRouter.get(
 // SW/AW/DS/WFH/S) have no distinct backing concept anywhere in this schema
 // and are intentionally NOT fabricated; `unsupportedCodes` lists them so the
 // frontend can disclose the gap instead of inventing data for them.
-const DCR_STATUS_UNSUPPORTED_CODES = ["LP","MD","MR","NA","R","M","TR","T","CF","SS","CW","IW","CM","SW","AW","DS","WFH","S"];
+// Round 41 item 7 -- the legend is now the real WorkTypeCode master (seeded
+// per tenant, editable), DCR / leave records carry a `workTypeCode`, and the
+// grid below derives each day's code from those records.
 const DCR_STATUS_CODE_MAP: Record<string, string> = {
   tour: "FW", holiday: "H", weeklyOff: "WO", leave: "L", notPlanned: ""
 };
@@ -921,9 +994,14 @@ companyRouter.get(
 
     const dcrByEmpDate = new Map<string, Set<string>>(); // employeeCode:date -> distinct doctor territories (subdivisions)
     const drsCountByEmpDate = new Map<string, number>();
+    const codeVotes = new Map<string, Map<string, number>>(); // employeeCode:date -> workTypeCode -> DCR count
     for (const d of dcrs as any[]) {
       const key = `${d.employeeCode}:${d.visitDateOnly}`;
       drsCountByEmpDate.set(key, (drsCountByEmpDate.get(key) || 0) + 1);
+      const code = d.workTypeCode || (d.workType && WORK_TYPE_TO_CODE[d.workType]) || "FW";
+      const votes = codeVotes.get(key) || new Map<string, number>();
+      votes.set(code, (votes.get(code) || 0) + 1);
+      codeVotes.set(key, votes);
       const subdivSet = dcrByEmpDate.get(key) || new Set<string>();
       if (d.doctorId?.territory) subdivSet.add(d.doctorId.territory);
       dcrByEmpDate.set(key, subdivSet);
@@ -947,7 +1025,10 @@ companyRouter.get(
         const status = classifyDay(ctx, e.employeeCode, key);
         const empDateKey = `${e.employeeCode}:${key}`;
         const hasDcr = drsCountByEmpDate.has(empDateKey);
-        const code = hasDcr ? "FW" : DCR_STATUS_CODE_MAP[status.kind] || "";
+        // Most-used workTypeCode among that day's DCRs; leave days carry the
+        // leave application's own code; otherwise the plain day-kind code.
+        const topCode = hasDcr ? Array.from(codeVotes.get(empDateKey)!.entries()).sort((a, b) => b[1] - a[1])[0][0] : "";
+        const code = hasDcr ? topCode : status.kind === "leave" ? (status.workTypeCode || "L") : DCR_STATUS_CODE_MAP[status.kind] || "";
         if (code === "FW") presentDays++;
         if (!detailed) return { day: d, code };
         return {
@@ -976,7 +1057,8 @@ companyRouter.get(
         periodwise,
         rangeStart,
         rangeEnd,
-        unsupportedCodes: DCR_STATUS_UNSUPPORTED_CODES
+        legend: await listWorkTypeCodes(tenantSlug),
+        unsupportedCodes: [] as string[]
       }
     });
   })
@@ -1282,15 +1364,10 @@ companyRouter.get(
   })
 );
 
-// Item 6 -- DCR > Checkin-Checkout. Real geo-stamped checkin/checkout only
-// exists in this schema for the Doctor mode (DcrModel.gpsLocation +
-// checkInTime/checkOutTime). No visit-level checkin/checkout schema exists
-// anywhere for Stockist, Unlisted Doctor, or Hospital (consistent with
-// earlier rounds' disclosed gaps); Chemist calls exist (ChemistCallModel)
-// but without a gps/checkin field. CIP has no model anywhere in this
-// codebase at all. Every mode below runs a real query against whatever
-// does exist and returns real rows or a genuine empty result -- nothing is
-// forced empty for reasons unrelated to real data availability.
+// Item 6 -- DCR > Checkin-Checkout. Round 41: every mode is real now --
+// Doctor (DcrModel gps + times), Chemist (ChemistCall check-in/out times),
+// and Stockist / Unlisted Doctor / CIP / Hospital (FieldVisitLog rows the
+// field app writes). Chemist calls carry no GPS stamp, so lat/lng stay blank.
 companyRouter.get(
   "/reports/dcr-checkin-checkout",
   asyncHandler(async (req, res) => {
@@ -1316,13 +1393,20 @@ companyRouter.get(
       return;
     }
     if (mode === "Chemist") {
-      // ChemistCallModel has no gps/checkin-checkout field at all -- real
-      // query, genuinely returns no rows with checkin data because none
-      // is ever captured.
-      res.json({ data: { mode, rows: [], unsupported: true, reason: "ChemistCallModel has no geo-stamped checkin/checkout field." } });
+      // Round 41 item 1 -- chemist calls carry real check-in / check-out times.
+      const calls = (await ChemistCallModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).sort({ visitDateOnly: 1 }).lean()) as any[];
+      res.json({ data: { mode, rows: calls.map((c) => ({ date: c.visitDateOnly, name: c.chemistName || "", checkIn: c.checkInTime || "-", checkOut: c.checkOutTime || "-", lat: null, lng: null })), unsupported: false } });
       return;
     }
-    res.json({ data: { mode, rows: [], unsupported: true, reason: `No visit-level checkin/checkout schema exists for ${mode} anywhere in this codebase.` } });
+    // Stockist / Unlisted Doctor / CIP / Hospital -- real FieldVisitLog rows.
+    const typeByMode: Record<string, string> = { Stockist: "Stockist", "Unlisted Doctor": "UnlistedDoctor", UnlistedDoctor: "UnlistedDoctor", CIP: "CIP", Hospital: "Hospital" };
+    const logType = typeByMode[mode];
+    if (logType) {
+      const logs = (await FieldVisitLogModel.find({ tenantSlug, employeeCode, visitType: logType, visitDateOnly: { $regex: `^${month}` } }).sort({ visitDateOnly: 1 }).lean()) as any[];
+      res.json({ data: { mode, rows: logs.map((l) => ({ date: l.visitDateOnly, name: l.entityName, checkIn: l.checkInTime || "-", checkOut: l.checkOutTime || "-", lat: l.gpsLocation?.latitude ?? null, lng: l.gpsLocation?.longitude ?? null })), unsupported: false } });
+      return;
+    }
+    res.json({ data: { mode, rows: [], unsupported: false } });
   })
 );
 
@@ -1730,6 +1814,7 @@ companyRouter.post(
 // "Route not found" handler. This is the real, missing route.
 const dcrUpdateSchema = z.object({
   workType: z.enum(["Field Work", "Holiday", "Weekly Off", "Transit", "Meeting"]).optional(),
+  workTypeCode: z.string().max(10).optional(), // Round 41 item 7 -- legend code from the WorkTypeCode master
   visitDate: z.string().optional(),
   hospitalClinic: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
@@ -1746,6 +1831,11 @@ companyRouter.patch(
     const tenantSlug = req.auth!.tenantSlug!;
     const body = dcrUpdateSchema.parse(req.body);
     const update: Record<string, unknown> = { ...body };
+    if (body.workTypeCode) {
+      await ensureWorkTypeCodes(tenantSlug);
+      const known = await WorkTypeCodeModel.findOne({ tenantSlug, code: body.workTypeCode, status: "ACTIVE" }).lean();
+      if (!known) throw new HttpError(400, `Unknown work type code ${body.workTypeCode}`);
+    }
     if (body.visitDate) update.visitDate = new Date(body.visitDate);
     if (body.followUpDate) update.followUpDate = new Date(body.followUpDate);
     else if (body.followUpDate === null) update.followUpDate = null;
@@ -5146,5 +5236,210 @@ companyRouter.get(
     if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
     const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
     res.json({ data: await computeAssessment(tenantSlug, emp, monthRange(fromMonth, toMonth)) });
+  })
+);
+
+// ═══ Round 41 -- settings, DCR locks, work-type codes, CRM/RCPA review ═════
+// (See src/utils/settings.ts, dcr-lock.ts, work-type-codes.ts.)
+
+// GET/PUT /company/settings/r41 -- DCR delay window (lock-after-days),
+// per-category visit norms and the company timezone.
+companyRouter.get(
+  "/settings/r41",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    res.json({ data: { dcrDelayDays: await getDcrDelayDays(tenantSlug), categoryNorms: await getCategoryNorms(tenantSlug), companyTimezone: await getCompanyTimezone(tenantSlug) } });
+  })
+);
+
+const settingsR41Schema = z.object({
+  dcrDelayDays: z.number().int().min(0).max(60).optional(),
+  categoryNorms: z.object({ NIL: z.number().int().min(0).max(31), CORE: z.number().int().min(0).max(31), "N CORE": z.number().int().min(0).max(31), "S CORE": z.number().int().min(0).max(31) }).optional(),
+  companyTimezone: z.string().min(3).max(64).optional()
+});
+
+companyRouter.put(
+  "/settings/r41",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = settingsR41Schema.parse(req.body);
+    if (body.dcrDelayDays !== undefined) await saveSetting(tenantSlug, DCR_DELAY_DAYS_KEY, body.dcrDelayDays, req.auth!.sub);
+    if (body.categoryNorms) await saveSetting(tenantSlug, CATEGORY_NORMS_KEY, body.categoryNorms, req.auth!.sub);
+    if (body.companyTimezone) {
+      try { new Intl.DateTimeFormat("en-US", { timeZone: body.companyTimezone }); } catch { throw new HttpError(400, "Unknown timezone"); }
+      await saveSetting(tenantSlug, COMPANY_TIMEZONE_KEY, body.companyTimezone, req.auth!.sub);
+    }
+    await audit("SETTINGS_R41_SAVED", "CompanyConfig", "r41", { tenantSlug });
+    res.json({ data: { dcrDelayDays: await getDcrDelayDays(tenantSlug), categoryNorms: await getCategoryNorms(tenantSlug), companyTimezone: await getCompanyTimezone(tenantSlug) } });
+  })
+);
+
+// GET /company/dcr-locks?month=YYYY-MM[&employeeCode=] -- lock rows for the
+// admin (persists any newly detected locks first).
+companyRouter.get(
+  "/dcr-locks",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    const employeeCode = String(req.query.employeeCode || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const emps = (await EmployeeModel.find({ tenantSlug, status: "ACTIVE", ...(employeeCode ? { employeeCode } : {}) }).lean()) as any[];
+    const first = `${month}-01`;
+    const last = `${month}-${String(daysInMonth(month)).padStart(2, "0")}`;
+    await detectLocks(tenantSlug, emps, first, last);
+    const rows = (await DcrLockModel.find({ tenantSlug, dcrDate: { $gte: first, $lte: last }, ...(employeeCode ? { employeeCode } : {}) }).sort({ dcrDate: 1 }).lean()) as any[];
+    const nameByCode = new Map(emps.map((e) => [e.employeeCode, e]));
+    res.json({
+      data: rows.map((l) => ({
+        employeeCode: l.employeeCode, name: nameByCode.get(l.employeeCode)?.name || l.employeeCode, hq: nameByCode.get(l.employeeCode)?.territory || "",
+        date: l.dcrDate, lockedAt: l.lockedAt, reason: l.lockReason, releasedAt: l.releasedAt || null, releasedBy: l.releasedBy || null,
+        releaseRequestedAt: l.releaseRequestedAt || null, releaseRequestNote: l.releaseRequestNote || null
+      })),
+      delayDays: await getDcrDelayDays(tenantSlug)
+    });
+  })
+);
+
+const lockActionSchema = z.object({ employeeCode: z.string().min(1), dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional() });
+
+// POST /company/dcr-locks/release -- stamps releasedAt / releasedBy.
+companyRouter.post(
+  "/dcr-locks/release",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = lockActionSchema.parse(req.body);
+    const emp = (await EmployeeModel.findOne({ tenantSlug, employeeCode: body.employeeCode }).lean()) as any;
+    if (!emp) throw new HttpError(404, "Field force not found");
+    const today = utcDateString(new Date());
+    await detectLocks(tenantSlug, [emp], utcDateString(new Date(Date.now() - LOCK_LOOKBACK_DAYS * 86400000)), today);
+    const released = await releaseLocks(tenantSlug, body.employeeCode, body.dates?.length ? body.dates : "all", `admin:${req.auth!.sub}`);
+    await audit("DCR_LOCKS_RELEASED", "DcrLock", body.employeeCode, { tenantSlug, released, dates: body.dates });
+    res.json({ data: { released } });
+  })
+);
+
+// POST /company/dcr-locks/lock -- admin manually locks a date.
+companyRouter.post(
+  "/dcr-locks/lock",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = lockActionSchema.parse(req.body);
+    if (!body.dates?.length) throw new HttpError(400, "dates are required");
+    await requireEmployeeByCode(tenantSlug, body.employeeCode);
+    for (const date of body.dates) {
+      await DcrLockModel.findOneAndUpdate(
+        { tenantSlug, employeeCode: body.employeeCode, dcrDate: date },
+        { $set: { lockReason: "manual", lockedAt: new Date(), releasedAt: null, releasedBy: null }, $setOnInsert: { detectedAt: new Date() } },
+        { upsert: true }
+      );
+    }
+    await audit("DCR_LOCKS_MANUAL", "DcrLock", body.employeeCode, { tenantSlug, dates: body.dates });
+    res.json({ data: { locked: body.dates.length } });
+  })
+);
+
+// Work type codes (DCR Status legend).
+companyRouter.get(
+  "/work-type-codes",
+  asyncHandler(async (req, res) => {
+    res.json({ data: await listWorkTypeCodes(req.auth!.tenantSlug!) });
+  })
+);
+
+const workTypeCodeSchema = z.object({
+  code: z.string().min(1).max(10).transform((v) => v.trim().toUpperCase()),
+  name: z.string().min(1).max(60),
+  category: z.enum(["Field", "Leave", "Holiday", "Office", "Meeting", "Training", "Travel", "Other"]).default("Other")
+});
+
+companyRouter.post(
+  "/work-type-codes",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = workTypeCodeSchema.parse(req.body);
+    await ensureWorkTypeCodes(tenantSlug);
+    const row = await WorkTypeCodeModel.findOneAndUpdate({ tenantSlug, code: body.code }, { $set: { name: body.name, category: body.category, status: "ACTIVE" } }, { upsert: true, new: true });
+    await audit("WORK_TYPE_CODE_SAVED", "WorkTypeCode", body.code, { tenantSlug });
+    res.status(201).json({ data: { code: row.code, name: row.name, category: row.category } });
+  })
+);
+
+companyRouter.delete(
+  "/work-type-codes/:code",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    await WorkTypeCodeModel.updateOne({ tenantSlug, code: req.params.code.toUpperCase() }, { $set: { status: "INACTIVE" } });
+    res.json({ data: { deactivated: true } });
+  })
+);
+
+// CRM review (manager/admin approval of doctor CRM entries) + RCPA listing.
+companyRouter.get(
+  "/crm",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const filter: Record<string, unknown> = { tenantSlug };
+    if (typeof req.query.month === "string" && MONTH_RE.test(req.query.month)) filter.month = req.query.month;
+    if (typeof req.query.status === "string" && req.query.status) filter.status = req.query.status;
+    if (typeof req.query.employeeCode === "string" && req.query.employeeCode) filter.employeeCode = req.query.employeeCode;
+    const rows = await CrmModel.find(filter).sort({ date: -1 }).limit(500);
+    res.json({ data: await enrichWithEmployeeNames(tenantSlug, rows.map(serializeDocument), ["employeeCode"]) });
+  })
+);
+
+companyRouter.post(
+  "/crm/:id/:action",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const action = req.params.action;
+    if (action !== "approve" && action !== "reject") throw new HttpError(404, "Unknown action");
+    const row = await CrmModel.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug },
+      { $set: { status: action === "approve" ? "APPROVED" : "REJECTED", approvedBy: `admin:${req.auth!.sub}`, approvedAt: new Date() } },
+      { new: true }
+    );
+    if (!row) throw new HttpError(404, "CRM entry not found");
+    await audit(`CRM_${action.toUpperCase()}D`, "Crm", String(row._id), { tenantSlug });
+    res.json({ data: serializeDocument(row) });
+  })
+);
+
+companyRouter.get(
+  "/rcpa",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const filter: Record<string, unknown> = { tenantSlug };
+    if (typeof req.query.month === "string" && MONTH_RE.test(req.query.month)) filter.month = req.query.month;
+    if (typeof req.query.employeeCode === "string" && req.query.employeeCode) filter.employeeCode = req.query.employeeCode;
+    const rows = await RcpaModel.find(filter).sort({ date: -1 }).limit(500);
+    res.json({ data: await enrichWithEmployeeNames(tenantSlug, rows.map(serializeDocument), ["employeeCode"]) });
+  })
+);
+
+// Admin sets the supportive chemists of a doctor (also settable by the rep).
+companyRouter.put(
+  "/doctors/:id/supportive-chemists",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const dealerIds = z.object({ dealerIds: z.array(z.string()).max(20) }).parse(req.body).dealerIds;
+    const doctor = await DoctorModel.findOne({ _id: req.params.id, tenantSlug });
+    if (!doctor) throw new HttpError(404, "Doctor not found");
+    const dealers = await DealerModel.find({ _id: { $in: dealerIds }, tenantSlug });
+    doctor.supportiveChemists = dealers.map((d: any) => ({ dealerId: String(d._id), dealerName: d.dealerName })) as any;
+    await doctor.save();
+    res.json({ data: serializeDocument(doctor) });
+  })
+);
+
+// Doctor 4-tier category: bulk set (Doctor Master also edits it per doctor).
+companyRouter.put(
+  "/doctors/:id/category-tier",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const tier = z.object({ doctorCategory: z.enum(["NIL", "CORE", "N CORE", "S CORE"]) }).parse(req.body).doctorCategory;
+    const doctor = await DoctorModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, { $set: { doctorCategory: tier } }, { new: true });
+    if (!doctor) throw new HttpError(404, "Doctor not found");
+    await audit("DOCTOR_TIER_SET", "Doctor", String(doctor._id), { tenantSlug, tier });
+    res.json({ data: serializeDocument(doctor) });
   })
 );

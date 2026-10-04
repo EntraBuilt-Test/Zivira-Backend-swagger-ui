@@ -29,6 +29,8 @@ import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { StateModel } from "../models/state.model.js";
 import { CompanyConfigModel } from "../models/company-config.model.js";
+import { DcrLockModel } from "../models/dcr-lock.model.js";
+import { loadCoreMap, tierOfDoctor } from "./doctor-tier.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { buildDayStatusContext, classifyDay } from "./day-status.js";
 import { getAllDescendants, isManagerRole, type OrgEmployee } from "./org-hierarchy.js";
@@ -73,6 +75,19 @@ function rowValue(row: any, rates: Map<string, number>): number {
 export function pobValue(rows: any[] | undefined, rates: Map<string, number>): number {
   return (rows || []).reduce((s, r) => s + rowValue(r, rates), 0);
 }
+// Round 41 Gap B -- order value of a whole call document: per-product rows
+// win (explicit valueRs, else qty x rate); otherwise the single order amount
+// the rep entered (pobAmountRs). Historic calls have neither -> 0.
+export function docPobValue(doc: { pob?: any[]; pobAmountRs?: number | null } | null | undefined, rates: Map<string, number>): number {
+  if (!doc) return 0;
+  const rows = pobValue(doc.pob, rates);
+  if (rows > 0) return rows;
+  return typeof doc.pobAmountRs === "number" ? doc.pobAmountRs : 0;
+}
+// A call is "productive" when any order was recorded for it.
+export function hasPob(doc: { pob?: any[]; pobAmountRs?: number | null } | null | undefined): boolean {
+  return !!doc && ((doc.pob || []).length > 0 || (typeof doc.pobAmountRs === "number" && doc.pobAmountRs > 0));
+}
 
 // ── Team helpers ────────────────────────────────────────────────────────
 export async function selfAndTeam(tenantSlug: string, employeeCode: string): Promise<OrgEmployee[]> {
@@ -87,13 +102,15 @@ export async function computeDcrAnalysis(tenantSlug: string, emp: OrgEmployee, m
   const code = emp.employeeCode;
   const numDays = daysInMonth(month);
   const monthRegex = new RegExp(`^${month}`);
-  const [dcrs, chemCalls, visitLogs, rates, doctorTotal, releasedCfg] = await Promise.all([
+  const [dcrs, chemCalls, visitLogs, rates, doctorTotal, releasedCfg, lockRows] = await Promise.all([
     DcrModel.find({ tenantSlug, employeeCode: code, month }).populate("doctorId").lean(),
     ChemistCallModel.find({ tenantSlug, employeeCode: code, visitDateOnly: monthRegex }).lean(),
     FieldVisitLogModel.find({ tenantSlug, employeeCode: code, visitDateOnly: monthRegex }).lean(),
     loadRateMap(tenantSlug),
     DoctorModel.countDocuments({ tenantSlug, mappedEmployeeCode: code, status: "ACTIVE" }),
-    CompanyConfigModel.findOne({ tenantSlug, key: `delayedReleased:${month}:${code}` }).lean()
+    CompanyConfigModel.findOne({ tenantSlug, key: `delayedReleased:${month}:${code}` }).lean(),
+    // Round 41 Gap A -- real DCR lock rows (see utils/dcr-lock.ts).
+    DcrLockModel.find({ tenantSlug, employeeCode: code, dcrDate: monthRegex }).sort({ dcrDate: 1 }).lean()
   ]);
   const ctx = await buildDayStatusContext(tenantSlug, month, [code], [emp.state]);
 
@@ -145,10 +162,10 @@ export async function computeDcrAnalysis(tenantSlug: string, emp: OrgEmployee, m
       dev: planned ? 0 : 1, // worked on a day with no Tour Plan entry
       listedDrMet: x.dcrs.length,
       listedDrUnique: new Set(x.dcrs.map((d) => String(d.doctorId?._id || d.doctorId))).size,
-      drsPob: round2(x.dcrs.reduce((s, d) => s + pobValue(d.pob, rates), 0)),
+      drsPob: round2(x.dcrs.reduce((s, d) => s + docPobValue(d, rates), 0)),
       unlistDrMet: x.unlisted.length,
       chemistMet: x.chem.length,
-      chemistPob: round2(x.chem.reduce((s, c) => s + pobValue(c.pob, rates), 0)),
+      chemistPob: round2(x.chem.reduce((s, c) => s + docPobValue(c, rates), 0)),
       stockistMet: x.stockist.length,
       startTime: startCandidates.length ? startCandidates.sort()[0] : "-",
       endTime: endCandidates.length ? endCandidates.sort()[endCandidates.length - 1] : "-"
@@ -210,7 +227,15 @@ export async function computeDcrAnalysis(tenantSlug: string, emp: OrgEmployee, m
   const chemistsMet = new Set((chemCalls as any[]).map((c) => c.chemistId)).size;
   const nlMet = new Set((visitLogs as any[]).filter((v) => v.visitType === "UnlistedDoctor").map((v) => v.entityName)).size;
   const workedDays = rows.length;
-  const releasedDate = releasedCfg ? ymd((releasedCfg as any).updatedAt) : null;
+  // Locked Date / Released Date: real DcrLock rows. Falls back to the
+  // legacy "released" flag's timestamp (pre-lock-era Delayed Release clicks)
+  // only when no lock row carries a release.
+  const locks = (lockRows as any[]).map((l) => ({
+    date: l.dcrDate, lockedAt: ymd(l.lockedAt), releasedAt: ymd(l.releasedAt), releasedBy: l.releasedBy || null, reason: l.lockReason
+  }));
+  const releasedFromLocks = locks.filter((l) => l.releasedAt).map((l) => l.releasedAt as string);
+  const releasedDate = releasedFromLocks.length ? Array.from(new Set(releasedFromLocks)).join(", ") : releasedCfg ? ymd((releasedCfg as any).updatedAt) : null;
+  const lockedDate = locks.length ? Array.from(new Set(locks.map((l) => l.lockedAt).filter(Boolean))).join(", ") : null;
 
   return {
     employee: { employeeCode: code, name: emp.name, designation: emp.designation, hq: emp.territory },
@@ -218,11 +243,9 @@ export async function computeDcrAnalysis(tenantSlug: string, emp: OrgEmployee, m
     rows,
     totals,
     delayed: {
-      // No DCR lock date is persisted anywhere in this schema (only the
-      // admin "Delayed Release" action's release flag, stored with its own
-      // updatedAt) -- so Locked Date is honestly Nil.
-      lockedDate: null as string | null,
-      releasedDate
+      lockedDate,
+      releasedDate,
+      locks
     },
     workTypeDays,
     callsDetails: {
@@ -266,26 +289,28 @@ async function safeMasterRows(key: string, filter: Record<string, unknown>): Pro
 export async function computeVisitAnalysis(tenantSlug: string, members: OrgEmployee[], months: string[], type: VisitAnalysisType) {
   const codes = members.map((m) => m.employeeCode);
   const doctors = (await DoctorModel.find({ tenantSlug, mappedEmployeeCode: { $in: codes }, status: "ACTIVE" })
-    .select("name specialty category doctorCode mappedEmployeeCode territoryType").lean()) as any[];
+    .select("name specialty category doctorCode mappedEmployeeCode territoryType doctorCategory campaign").lean()) as any[];
   const docCodes = doctors.map((d) => d.doctorCode).filter(Boolean);
-  const [classRows, campaignRows, coreRows] = await Promise.all([
+  const [classRows, campaignRows, coreMap] = await Promise.all([
     safeMasterRows("doctorClassification", { tenantSlug, doctorCode: { $in: docCodes } }),
     type === "Campaign" ? safeMasterRows("doctorCampaignMap", { tenantSlug, doctorCode: { $in: docCodes } }) : Promise.resolve([]),
-    type === "Category" ? safeMasterRows("managerwiseCoreDoctorMap", { tenantSlug, mrName: { $in: members.map((m) => m.name) } }) : Promise.resolve([])
+    type === "Category" ? loadCoreMap(tenantSlug, members.map((m) => m.name)) : Promise.resolve(new Map<string, string>())
   ]);
   const classByCode = new Map<string, any>(classRows.map((r) => [r.doctorCode, r]));
   const campaignByCode = new Map<string, string>(campaignRows.filter((r) => r.campaignSubCategory).map((r) => [r.doctorCode, String(r.campaignSubCategory)]));
-  const coreByKey = new Map<string, string>(coreRows.map((r) => [`${r.mrName}|${r.doctorCode}`, r.isCore]));
   const nameByCode = new Map(members.map((m) => [m.employeeCode, m.name]));
 
   function groupOf(d: any): string | null {
     if (type === "Speciality") return d.specialty || "(Unspecified)";
     if (type === "Class") return classByCode.get(d.doctorCode)?.doctorCategory || d.category || null;
-    if (type === "Campaign") return campaignByCode.get(d.doctorCode) || null;
-    const core = coreByKey.get(`${nameByCode.get(d.mappedEmployeeCode)}|${d.doctorCode}`);
-    // Doctors with no managerwiseCoreDoctorMap row are genuinely unclassified
-    // ("Nil"). A 4th "SUPER CORE" tier has no backing field -- never emitted.
-    return core === "Yes" ? "CORE" : core === "No" ? "NON CORE" : "Nil";
+    // Round 41 item 3 -- Doctor.campaign is the real field (kept in sync with
+    // the Doctor - Campaign Map master); the map is only a fallback.
+    if (type === "Campaign") return d.campaign || campaignByCode.get(d.doctorCode) || null;
+    // Round 41 item 2 -- real 4-tier DoctorModel.doctorCategory (Nil / CORE /
+    // N CORE / S CORE), with the legacy isCore flag only as a fallback for
+    // doctors that were never migrated.
+    const tier = tierOfDoctor(d, coreMap, nameByCode.get(d.mappedEmployeeCode) || "");
+    return tier === "N CORE" ? "NON CORE" : tier === "S CORE" ? "SUPER CORE" : tier;
   }
   function freqBucket(d: any): 1 | 2 | 0 {
     const v = FREQUENCY_VISITS_PER_MONTH[classByCode.get(d.doctorCode)?.visitFrequency as string];
@@ -380,7 +405,7 @@ export async function computeVisitAnalysis(tenantSlug: string, members: OrgEmplo
     rows,
     // Campaign has real backing only through the doctorCampaignMap master;
     // when it has no rows for this team the table is genuinely empty.
-    campaignsAvailable: type !== "Campaign" || campaignRows.length > 0
+    campaignsAvailable: type !== "Campaign" || campaignRows.length > 0 || doctors.some((d) => !!d.campaign)
   };
 }
 
@@ -397,21 +422,21 @@ export async function computeSalesDetailsRows(tenantSlug: string, members: OrgEm
   const monthRegex = new RegExp(`^${month}`);
   const [doctors, dcrs, unlistedMaster, unlistedVisits, dealers, chemCalls] = await Promise.all([
     DoctorModel.find({ tenantSlug, mappedEmployeeCode: { $in: codes }, status: "ACTIVE" }).select("mappedEmployeeCode").lean(),
-    DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).select("employeeCode doctorId pob").lean(),
+    DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).select("employeeCode doctorId pob pobAmountRs").lean(),
     UnlistedDoctorModel.find({ tenantSlug, mr: { $in: names }, status: { $ne: "Rejected" } }).select("mr").lean(),
     FieldVisitLogModel.find({ tenantSlug, employeeCode: { $in: codes }, visitType: "UnlistedDoctor", visitDateOnly: monthRegex }).select("employeeCode entityName").lean(),
     DealerModel.find({ tenantSlug, employeeCode: { $in: codes }, status: "ACTIVE" }).select("employeeCode").lean(),
-    ChemistCallModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: monthRegex }).select("employeeCode chemistId pob").lean()
+    ChemistCallModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: monthRegex }).select("employeeCode chemistId pob pobAmountRs").lean()
   ]);
   const count = (arr: any[], key: string, val: string) => arr.filter((x) => x[key] === val).length;
   return members.map((m) => {
     const myDcrs = (dcrs as any[]).filter((d) => d.employeeCode === m.employeeCode);
     const visited = new Set(myDcrs.map((d) => String(d.doctorId)));
-    const productive = new Set(myDcrs.filter((d) => (d.pob || []).length > 0).map((d) => String(d.doctorId)));
+    const productive = new Set(myDcrs.filter((d) => hasPob(d)).map((d) => String(d.doctorId)));
     const myUnlistedVisits = new Set((unlistedVisits as any[]).filter((v) => v.employeeCode === m.employeeCode).map((v) => v.entityName));
     const myChem = (chemCalls as any[]).filter((c) => c.employeeCode === m.employeeCode);
     const chemVisited = new Set(myChem.map((c) => c.chemistId));
-    const chemProductive = new Set(myChem.filter((c) => (c.pob || []).length > 0).map((c) => c.chemistId));
+    const chemProductive = new Set(myChem.filter((c) => hasPob(c)).map((c) => c.chemistId));
     return {
       employeeCode: m.employeeCode, name: m.name, designation: m.designation, hq: m.territory,
       listed: triple(count(doctors as any[], "mappedEmployeeCode", m.employeeCode), visited.size, productive.size),
@@ -430,8 +455,8 @@ export async function computeSalesDetailsStatewise(tenantSlug: string, month: st
   ]);
   const monthRegex = new RegExp(`^${month}`);
   const [dcrs, chemCalls] = await Promise.all([
-    DcrModel.find({ tenantSlug, month, "pob.0": { $exists: true } }).select("employeeCode visitDateOnly pob").lean(),
-    ChemistCallModel.find({ tenantSlug, visitDateOnly: monthRegex, "pob.0": { $exists: true } }).select("employeeCode visitDateOnly pob").lean()
+    DcrModel.find({ tenantSlug, month, $or: [{ "pob.0": { $exists: true } }, { pobAmountRs: { $gt: 0 } }] }).select("employeeCode visitDateOnly pob pobAmountRs").lean(),
+    ChemistCallModel.find({ tenantSlug, visitDateOnly: monthRegex, $or: [{ "pob.0": { $exists: true } }, { pobAmountRs: { $gt: 0 } }] }).select("employeeCode visitDateOnly pob pobAmountRs").lean()
   ]);
   const stateByCode = new Map((employees as any[]).map((e) => [e.employeeCode, e.state || ""]));
   const today = ymd(new Date())!;
@@ -450,8 +475,8 @@ export async function computeSalesDetailsStatewise(tenantSlug: string, month: st
       else if (r.visitDateOnly < today) cell.till += v;
     }
   };
-  add(dcrs as any[], "listed", (r) => pobValue(r.pob, rates));
-  add(chemCalls as any[], "chemist", (r) => pobValue(r.pob, rates));
+  add(dcrs as any[], "listed", (r) => docPobValue(r, rates));
+  add(chemCalls as any[], "chemist", (r) => docPobValue(r, rates));
   const rows = Array.from(byState.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([state, v]) => {
     const t = (c: Cell) => round2(c.till + c.today);
     return {

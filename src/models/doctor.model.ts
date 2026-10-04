@@ -41,7 +41,16 @@ const doctorSchema = new Schema(
     // schema before. Defaults every doctor to "HQ" (the common case) so
     // existing records stay queryable immediately; genuinely EX/OS doctors
     // can be reclassified via the normal doctor edit flow.
-    territoryType: { type: String, enum: ["HQ", "EX", "OS"], default: "HQ", index: true }
+    territoryType: { type: String, enum: ["HQ", "EX", "OS"], default: "HQ", index: true },
+    // Round 41 item 2 -- real 4-tier category (A/B/C `category` above is the
+    // CLASS). Unset = not yet migrated (readers fall back to the legacy
+    // managerwiseCoreDoctorMap flag); the boot upgrader sets every doctor.
+    doctorCategory: { type: String, enum: ["NIL", "CORE", "N CORE", "S CORE"], index: true },
+    // Round 41 item 3 -- campaign this doctor is mapped to (name of a
+    // campaignMaster row), kept in sync with the Doctor - Campaign Map master.
+    campaign: { type: String, trim: true, default: null, index: true },
+    // Round 41 item 4 -- supportive chemists for this doctor.
+    supportiveChemists: { type: [new Schema({ dealerId: { type: String, required: true }, dealerName: { type: String, default: "" } }, { _id: false })], default: [] }
   },
   { timestamps: true }
 );

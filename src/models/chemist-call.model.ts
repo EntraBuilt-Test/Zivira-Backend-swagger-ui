@@ -34,7 +34,10 @@ const pobRowSchema = new Schema(
   {
     productId: { type: String, required: true }, // string id of a real ProductModel row
     productName: { type: String, required: true, trim: true },
-    qty: { type: Number, required: true, min: 0 }
+    qty: { type: Number, required: true, min: 0 },
+    // Round 41 Gap B -- order value for the row (blank = priced from the
+    // product master rate x qty at report time).
+    valueRs: { type: Number, default: null, min: 0 }
   },
   { _id: false }
 );
@@ -83,6 +86,7 @@ const chemistCallSchema = new Schema(
     checkOutTime: { type: String, default: null },
     rcpa: { type: [rcpaRowSchema], default: [] },
     pob: { type: [pobRowSchema], default: [] },
+    pobAmountRs: { type: Number, default: null, min: 0 }, // Round 41 Gap B -- single order total when no per-row values
     shortExpiry: { type: [shortExpiryRowSchema], default: [] },
     jcc: { type: [jccRowSchema], default: [] },
     status: { type: String, enum: ["SUBMITTED"], default: "SUBMITTED" }

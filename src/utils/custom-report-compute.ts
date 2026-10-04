@@ -22,12 +22,21 @@ import { ChemistCallModel } from "../models/chemist-call.model.js";
 import { StockistModel } from "../models/stockist.model.js";
 import { HospitalModel } from "../models/hospital.model.js";
 import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
-import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { QuizModel } from "../models/quiz.model.js";
 import { QuizAttemptModel } from "../models/quiz-attempt.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { buildDayStatusContext, classifyDay } from "./day-status.js";
+import { RcpaModel } from "../models/rcpa.model.js";
+import { loadRateMap, docPobValue, hasPob } from "./mis-reports-compute.js";
+import { computeDelayStats, computeExpenseSplit, computeSpend, computeOtherVisits, computeTierStats } from "./r41-metrics.js";
+
+// Round 41 update: the 4-tier doctor category (DoctorModel.doctorCategory),
+// unlisted/stockist/hospital visits, RCPA/CRM, DCR locks, expense split and
+// leave eligibility now have real backing and are computed in the "Round 41
+// extras" block near the bottom of computeCustomReportMetrics (which
+// overrides the older zero placeholders above it). Only EX/OS fare (kms) and
+// Fixed Expenses remain without any data source.
 
 function daysInMonth(month: string): number {
   const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
@@ -206,25 +215,17 @@ export async function computeCustomReportMetrics(
   }
 
   // ── Core Drs Info (real isCore tagging) ────────────────────────────
-  let coreDrsTagged = 0, coreDrsMet = 0;
-  try {
-    const CoreMapModel = getMasterModel("managerwiseCoreDoctorMap");
-    const coreRows = await CoreMapModel.find({ tenantSlug, mrName: emp.name, isCore: "Yes" }).lean();
-    coreDrsTagged = coreRows.length;
-    const coreDoctorCodes = new Set((coreRows as any[]).map((r) => r.doctorCode));
-    const metDoctorCodes = new Set((dcrs as any[]).map((d) => d.doctorId?.doctorCode).filter(Boolean));
-    coreDrsMet = Array.from(coreDoctorCodes).filter((c) => metDoctorCodes.has(c)).length;
-  } catch {
-    coreDrsTagged = 0; coreDrsMet = 0;
-  }
+  const tierRun = await computeTierStats(tenantSlug, emp, dcrs as any[]);
+  const coreDrsTagged = tierRun.stats.CORE.list;
+  const coreDrsMet = tierRun.stats.CORE.met;
   const coreDrsMissed = Math.max(coreDrsTagged - coreDrsMet, 0);
   const coreDrsCoveragePct = coreDrsTagged > 0 ? +((coreDrsMet / coreDrsTagged) * 100).toFixed(1) : 0;
 
   // ── Expense Info (real Total Amount + Miscellaneous; no HQ/EX/OS split
   // or km field exists in ExpenseClaimModel, so those stay unsupported) ──
-  const expenses = await ExpenseClaimModel.find({ tenantSlug, employeeCode, month, status: { $ne: "REJECTED" } }).lean();
-  const totalAmount = (expenses as any[]).reduce((sum, e) => sum + (e.amountRs || 0), 0);
-  const miscellaneous = (expenses as any[]).filter((e) => e.category === "Other").reduce((sum, e) => sum + (e.amountRs || 0), 0);
+  const expenseSplit = await computeExpenseSplit(tenantSlug, employeeCode, month);
+  const totalAmount = expenseSplit.total;
+  const miscellaneous = expenseSplit.misc;
 
   // ── Leave Info (real Taken counts by leaveType substring match; no
   // eligibility/balance schema exists anywhere, so *Eligibility stays
@@ -265,6 +266,75 @@ export async function computeCustomReportMetrics(
   const quizMarksObtained = (attempts as any[]).reduce((s, a) => s + (a.score || 0), 0);
   const quizTotalPossible = (attempts as any[]).reduce((s, a) => s + (a.totalPossible || 0), 0);
   const quizPercentage = quizTotalPossible > 0 ? +((quizMarksObtained / quizTotalPossible) * 100).toFixed(1) : 0;
+
+  // ── Round 41 extras ───────────────────────────────────────────────────
+  const rates = await loadRateMap(tenantSlug);
+  const [others, delay, rcpaRows, entitlementRows, prevPrimary] = await Promise.all([
+    computeOtherVisits(tenantSlug, employeeCode, month),
+    computeDelayStats(tenantSlug, emp, month),
+    RcpaModel.find({ tenantSlug, employeeCode, month }).lean() as Promise<any[]>,
+    (async () => {
+      try { return (await getMasterModel("leaveEntitlementEntry").find({ tenantSlug, employeeCode, year: String(year) }).lean()) as any[]; } catch { return []; }
+    })(),
+    (async () => {
+      try {
+        const prev = mon === 1 ? `${year - 1}-12` : `${year}-${String(mon - 1).padStart(2, "0")}`;
+        const rows = (await getMasterModel("primarySales").find({ tenantSlug, hq: emp.territory, month: prev }).lean()) as any[];
+        return rows.reduce((sum: number, r: any) => sum + (r.salesValue || 0), 0);
+      } catch { return 0; }
+    })()
+  ]);
+  const spend = await computeSpend(tenantSlug, dcrs as any[], rates, employeeCode, month);
+  const T = tierRun.stats;
+  const tierKey = { Nil: "nil", CORE: "core", "N CORE": "nonCore", "S CORE": "superCore" } as const;
+  const tierMetrics: Record<string, number> = {};
+  for (const tier of ["Nil", "CORE", "N CORE", "S CORE"] as const) {
+    const k = tierKey[tier]; const st = T[tier];
+    tierMetrics[`${k}List`] = st.list; tierMetrics[`${k}Met`] = st.met; tierMetrics[`${k}Seen`] = st.seen;
+    tierMetrics[`${k}CoveragePct`] = st.list ? +((st.met / st.list) * 100).toFixed(1) : 0;
+    tierMetrics[`${k}Met2x`] = st.adhered; // visits >= the configured norm for the tier
+    tierMetrics[`${k}AdherCoverage`] = st.list ? +((st.adhered / st.list) * 100).toFixed(1) : 0;
+    tierMetrics[`${k}Missed`] = Math.max(st.list - st.adhered, 0);
+  }
+  const campaignDocs = (await DoctorModel.find({ tenantSlug, mappedEmployeeCode: employeeCode, status: "ACTIVE", campaign: { $nin: [null, ""] } }).select("_id").lean()) as any[];
+  const campaignIds = new Set(campaignDocs.map((d) => String(d._id)));
+  const campaignMetSet = new Set<string>(); let campaignSeenCount = 0;
+  for (const d of dcrs as any[]) { const id = String(d.doctorId?._id || d.doctorId); if (campaignIds.has(id)) { campaignMetSet.add(id); campaignSeenCount++; } }
+  const unlistedSeen = others.unlisted.seen;
+  const rateOf = (name: string) => rates.get(String(name).trim().toLowerCase()) || 0;
+  const potential = rcpaRows.reduce((sum: number, r: any) => sum + (r.ourQty + (r.competitorQty || 0)) * rateOf(r.ourProduct), 0);
+  const rcpaYield = rcpaRows.reduce((sum: number, r: any) => sum + r.ourQty * rateOf(r.ourProduct), 0);
+  const ent = (entitlementRows as any[])[0] || {};
+  const repeated = visit2Drs + visit3Drs + visitMoreThan3Drs;
+  const extra: Record<string, number> = {
+    ...tierMetrics,
+    unlistedDrsMet: others.unlisted.met, unlistedDrsSeen: unlistedSeen,
+    unlstCoveragePct: totalUnlistedDrsInList > 0 ? +((others.unlisted.met / totalUnlistedDrsInList) * 100).toFixed(1) : 0,
+    unlstCallAverage: fwDays > 0 ? +(unlistedSeen / fwDays).toFixed(2) : 0,
+    unlstMissedCall: Math.max(totalUnlistedDrsInList - others.unlisted.met, 0),
+    stockistMet: others.stockist.met, stockistSeen: others.stockist.seen,
+    hospitalMet: others.hospital.met, hospitalSeen: others.hospital.seen,
+    cipMet: others.cip.met, cipSeen: others.cip.seen,
+    listedUnlistedDrsSeen: dcrs.length + unlistedSeen,
+    lstUnlstCallAverage: fwDays > 0 ? +((dcrs.length + unlistedSeen) / fwDays).toFixed(2) : 0,
+    repeatedCallsMet: repeated, repeatedCoveragePct: pct(repeated),
+    campaignList: campaignIds.size, campaignMet: campaignMetSet.size, campaignSeen: campaignSeenCount, campaignMissed: Math.max(campaignIds.size - campaignMetSet.size, 0),
+    noOfDetailingDrs: new Set((dcrs as any[]).filter((d) => (d.productsDetailed || []).length > 0).map((d) => String(d.doctorId?._id || d.doctorId))).size,
+    noOfRxDrs: new Set((dcrs as any[]).filter((d) => (d.rxItems || []).some((r: any) => (r.qty || 0) > 0)).map((d) => String(d.doctorId?._id || d.doctorId))).size,
+    callFeedbackSeen: (dcrs as any[]).filter((d) => d.productFeedback || d.prescriptionInterest || d.notes).length,
+    rcpaDrsCount: new Set(rcpaRows.map((r: any) => r.doctorId)).size, totalPotentialRs: +potential.toFixed(2), yieldRs: +rcpaYield.toFixed(2),
+    missedPostedDays: delay.locks.length, missedReleaseDays: delay.locks.filter((l) => l.releasedAt).length,
+    missedCompletedDays: delay.delayedDates.filter((d) => d.kind === "late-submitted").length,
+    delayedDays: delay.delayedDates.length, delayedTotalDays: delay.total,
+    hqAmountRs: expenseSplit.hq, exAmountRs: expenseSplit.ex, osAmountRs: expenseSplit.os,
+    sampleSpentRs: spend.sample, inputSpentRs: spend.input, drServiceSpentRs: spend.drService,
+    chemistPobCount: (chemistCalls as any[]).filter((c) => hasPob(c)).length,
+    chemistPobValue: +(chemistCalls as any[]).reduce((sum, c) => sum + docPobValue(c, rates), 0).toFixed(2),
+    doctorPobValue: +(dcrs as any[]).reduce((sum, d) => sum + docPobValue(d, rates), 0).toFixed(2),
+    // Growth = primary sale vs the previous month's primary sale for the HQ.
+    growth: prevPrimary > 0 ? +(((primarySale - prevPrimary) / prevPrimary) * 100).toFixed(1) : 0,
+    clEligibility: Number(ent.cl || 0), plEligibility: Number(ent.pl || 0), slEligibility: Number(ent.sl || 0), lopEligibility: Number(ent.lop || 0)
+  };
 
   return {
     // Working Info
@@ -310,6 +380,8 @@ export async function computeCustomReportMetrics(
     // Target Info
     target, primarySale, secondarySale, achievement,
     // Online Quiz
-    quizRaised: quizzesRaised, quizAttended, quizTotalQuestions, quizMarksObtained, quizPercentage
+    quizRaised: quizzesRaised, quizAttended, quizTotalQuestions, quizMarksObtained, quizPercentage,
+    // Round 41 extras (override the older placeholders above)
+    ...extra
   };
 }

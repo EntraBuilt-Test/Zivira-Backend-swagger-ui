@@ -38,9 +38,27 @@ const inputSchema = new Schema(
 // read this; rows exist only for calls where POB was actually entered.
 const pobSchema = new Schema(
   {
+    // Round 41 Gap B -- the field app now captures POB per product from the
+    // product picker, so each row also carries the real product id/code.
+    productId:   { type: String, default: null },
+    productCode: { type: String, default: null },
     productName: { type: String, required: true },
     qty:         { type: Number, required: true, default: 0, min: 0 },
     valueRs:     { type: Number, default: null, min: 0 }
+  },
+  { _id: false }
+);
+
+// Round 41 Gap B -- per-product prescription (Rx) quantity captured by the
+// rep for each doctor call (what the doctor says he prescribes / will
+// prescribe). Feeds the dump's "Product Rx" column, "No of Rx Drs" and the
+// Review / Assessment reports.
+const rxSchema = new Schema(
+  {
+    productId:   { type: String, default: null },
+    productCode: { type: String, default: null },
+    productName: { type: String, required: true },
+    qty:         { type: Number, required: true, default: 0, min: 0 }
   },
   { _id: false }
 );
@@ -66,6 +84,17 @@ const dcrSchema = new Schema(
     samplesGiven:    { type: [sampleSchema], default: [] },
     inputsGiven:     { type: [inputSchema],  default: [] },
     pob:             { type: [pobSchema],    default: [] },
+    // Round 41 Gap B -- order amount for the call when the rep enters one
+    // total (used when no per-product pob row carries a value). Old DCRs
+    // have neither pob rows nor this amount: honestly blank, never backfilled.
+    pobAmountRs:     { type: Number, default: null, min: 0 },
+    rxItems:         { type: [rxSchema],     default: [] },
+    // Round 41 Gap C -- the real recorded call timestamp (server receive
+    // time) alongside the rep-entered callTime; Session in the DCR dump is
+    // derived from the call time of day, not from callSession.
+    callAt:          { type: Date, default: null },
+    // Round 41 item 7 -- legend code from the WorkTypeCode master (FW, M, TR...).
+    workTypeCode:    { type: String, default: null },
     jointWork: {
       accompanyingManager: { type: String },
       jointWorkType:       { type: String, enum: ["FIELD_WORK", "ON_JOB_TRAINING", "PERFORMANCE_REVIEW"], default: "FIELD_WORK" },

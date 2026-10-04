@@ -18,6 +18,8 @@ import { essRouter } from "./routes/ess.routes.js";
 import { openApiSpec } from "./openapi-spec.js";
 import { startAutoApproveJob }   from "./jobs/auto-approve.job.js";
 import { startManagerDigestJob } from "./jobs/manager-digest.job.js";
+import { startDcrLockJob } from "./jobs/dcr-lock.job.js";
+import { runRound41Upgrade } from "./migrations/round41-upgrade.js";
 import { runDataCorrections } from "./seed/fix-data-corrections.js";
 
 const app = express();
@@ -87,6 +89,13 @@ setTimeout(() => {
     console.error("Startup data corrections failed (server is already serving):", err);
   });
 }, 5000);
+
+// Round 41 -- idempotent background upgrader + daily DCR lock sweep (both
+// after the port bind, never blocking it).
+setTimeout(() => {
+  runRound41Upgrade().catch((err) => console.error("Round 41 upgrade failed (server is serving):", err));
+}, 8000);
+startDcrLockJob();
 
 startAutoApproveJob();
 startManagerDigestJob();

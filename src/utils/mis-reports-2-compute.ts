@@ -3,12 +3,16 @@
 // DCR Analysis Dump, Missed Call, Single Doctor Analysis, Rep Vs Manager,
 // Review Report, Assessment Report. Same real sources and honesty rules as
 // mis-reports-compute.ts (Round 39) and custom-report-compute.ts:
-//   Category -> managerwiseCoreDoctorMap.isCore (Yes = CORE, No = N CORE,
-//               no row = Nil). A separate "S CORE" tier has no backing field
-//               anywhere -> always 0 / empty, never invented.
+// Round 41 update -- the previously disclosed gaps are closed:
+//   Category -> DoctorModel.doctorCategory (real NIL / CORE / N CORE / S CORE
+//               enum); legacy managerwiseCoreDoctorMap.isCore only as a
+//               fallback for doctors that were never migrated.
 //   Class    -> doctorClassification.doctorCategory, else DoctorModel.category
-//   Campaign -> doctorCampaignMap.campaignSubCategory
-//   POB      -> DcrModel.pob (valueRs, else qty x Product.rate)
+//   Campaign -> DoctorModel.campaign (synced from the Doctor - Campaign Map)
+//   POB      -> DcrModel.pob rows / pobAmountRs captured by the field app
+//               (see docPobValue); historic calls without POB stay blank
+//   Delays   -> DcrLock rows + late-submission detection (utils/dcr-lock.ts)
+//   Session  -> derived from the call time of day (M < 12:00, else E)
 
 import { EmployeeModel } from "../models/employee.model.js";
 import { DcrModel } from "../models/dcr.model.js";
@@ -21,7 +25,12 @@ import { getMasterModel } from "../models/master-record.model.js";
 import { buildDayStatusContext, classifyDay } from "./day-status.js";
 import { computeCustomReportMetrics } from "./custom-report-compute.js";
 import { getAllDescendants, getUpwardChain, findVacantManagerCodes, isManagerRole, type OrgEmployee } from "./org-hierarchy.js";
-import { loadRateMap, pobValue } from "./mis-reports-compute.js";
+import { loadRateMap, docPobValue, hasPob } from "./mis-reports-compute.js";
+import { loadCoreMap, tierOfDoctor, TIERS, type Tier } from "./doctor-tier.js";
+import { getCategoryNorms } from "./settings.js";
+import { computeDelayStats, computeExpenseSplit, computeSpend, computeRcpaCrm, computeOtherVisits, computeTierStats, computeSecondaryRows } from "./r41-metrics.js";
+import { RcpaModel } from "../models/rcpa.model.js";
+import { CrmModel } from "../models/crm.model.js";
 
 function daysInMonth(month: string): number {
   const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
@@ -48,19 +57,15 @@ async function safeMasterRows(key: string, filter: Record<string, unknown>): Pro
   try { return (await getMasterModel(key).find(filter).lean()) as any[]; } catch { return []; }
 }
 
-type Category = "Nil" | "CORE" | "N CORE" | "S CORE";
-const CATEGORIES: Category[] = ["Nil", "CORE", "N CORE", "S CORE"];
-const NORMS: Record<Category, number> = { Nil: 2, CORE: 2, "N CORE": 2, "S CORE": 1 };
+type Category = Tier;
+const CATEGORIES: Category[] = TIERS;
 
-async function loadCoreMap(tenantSlug: string, mrNames: string[]) {
-  const rows = await safeMasterRows("managerwiseCoreDoctorMap", { tenantSlug, mrName: { $in: mrNames } });
-  const map = new Map<string, string>();
-  for (const r of rows) map.set(`${r.mrName}|${r.doctorCode}`, r.isCore);
-  return map;
-}
-function categoryOf(core: Map<string, string>, mrName: string, doctorCode: string | undefined): Category {
-  const v = core.get(`${mrName}|${doctorCode}`);
-  return v === "Yes" ? "CORE" : v === "No" ? "N CORE" : "Nil";
+// Session of a call from its recorded time of day: M before 12:00, else E.
+// Falls back to the recorded callSession only when no usable time exists.
+export function sessionOfCall(time: string, recorded: string | null | undefined): string {
+  const m = /^(\d{1,2}):(\d{2})/.exec(time || "");
+  if (m) return parseInt(m[1], 10) < 12 ? "M" : "E";
+  return recorded === "MORNING" ? "M" : recorded ? "E" : "";
 }
 
 // Org-ordered list: every employee under rootCode (or the whole company when
@@ -124,15 +129,9 @@ export async function computeWorkHygiene(tenantSlug: string, manager: OrgEmploye
       if (classifyDay(ctx, m.employeeCode, `${month}-${String(d).padStart(2, "0")}`).kind === "leave") leave++;
     }
     const pendingDates = new Set(mine.filter((d) => d.status === "SUBMITTED").map((d) => d.visitDateOnly));
-    // A day is "delayed" when its DCR was created after the visit date; the
-    // lateness of a day is its worst (latest-created) DCR.
-    const lateness = new Map<string, number>();
-    for (const d of mine) {
-      const created = ymd(d.createdAt);
-      if (!created) continue;
-      const late = dayDiff(created, d.visitDateOnly);
-      if (late > 0) lateness.set(d.visitDateOnly, Math.max(lateness.get(d.visitDateOnly) || 0, late));
-    }
+    // Round 41 Gap A -- delayed dates = late submissions + still-locked,
+    // never-submitted dates (real DcrLock rows, see computeDelayStats).
+    const delay = await computeDelayStats(tenantSlug, m, month);
     const unl = (unlisted as any[]).filter((u) => u.employeeCode === m.employeeCode).length;
     const fwd = fwdDates.size;
     const jointDays: Record<string, Set<string>> = {};
@@ -149,7 +148,7 @@ export async function computeWorkHygiene(tenantSlug: string, manager: OrgEmploye
       unlistedVisits: unl, unlistedCallAvg: fwd > 0 ? round2(unl / fwd) : 0,
       cumulativeCallAvg: fwd > 0 ? round2((mine.length + unl) / fwd) : 0,
       dcrSubmittedDays: submittedDates.size, approvalPendingDates: pendingDates.size,
-      delayReportingDates: lateness.size, totalDelayReporting: Array.from(lateness.values()).reduce((s, v) => s + v, 0),
+      delayReportingDates: delay.delayedDates.length, totalDelayReporting: delay.total,
       joint: Object.fromEntries(Object.entries(jointDays).map(([k, v]) => [k, v.size])),
       isSelected: m.employeeCode === manager.employeeCode
     });
@@ -169,13 +168,13 @@ export async function computeClassWiseView(tenantSlug: string, emp: OrgEmployee,
     safeMasterRows("doctorClassification", { tenantSlug, doctorCode: { $in: docCodes } }),
     loadCoreMap(tenantSlug, members.map((m) => m.name)),
     loadRateMap(tenantSlug),
-    DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month: { $in: months }, "pob.0": { $exists: true } }).select("doctorId month pob").lean()
+    DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month: { $in: months }, $or: [{ "pob.0": { $exists: true } }, { pobAmountRs: { $gt: 0 } }] }).select("doctorId month pob pobAmountRs").lean()
   ]);
   const classByCode = new Map<string, string>(classRows.filter((r) => r.doctorCategory).map((r) => [r.doctorCode, r.doctorCategory]));
   const business = new Map<string, number>(); // `${doctorId}|${month}`
   for (const d of dcrs as any[]) {
     const k = `${String(d.doctorId)}|${d.month}`;
-    business.set(k, (business.get(k) || 0) + pobValue(d.pob, rates));
+    business.set(k, (business.get(k) || 0) + docPobValue(d, rates));
   }
   const rows = doctors.map((d) => {
     const klass = classByCode.get(d.doctorCode) || (["A", "B", "C"].includes(d.category) ? d.category : "Nil");
@@ -186,7 +185,7 @@ export async function computeClassWiseView(tenantSlug: string, emp: OrgEmployee,
       total += amount;
       perMonth[m] = { amount, className: klass };
     }
-    const cat = categoryOf(core, nameByCode.get(d.mappedEmployeeCode) || "", d.doctorCode);
+    const cat = tierOfDoctor(d, core, nameByCode.get(d.mappedEmployeeCode) || "");
     return { doctorName: d.name, speciality: d.specialty, category: cat, className: klass, territory: d.territory, perMonth, total: round2(total) };
   });
   return { months, rows, grandTotal: round2(rows.reduce((s, r) => s + r.total, 0)) };
@@ -262,14 +261,15 @@ export async function buildDcrDump(tenantSlug: string, rootCode: string, month: 
       const time = hhmm(d.callTime) || hhmm(d.checkInTime);
       const gps = d.gpsLocation || {};
       const hasGps = typeof gps.latitude === "number" && typeof gps.longitude === "number";
-      const category = categoryOf(core, emp.name, doc.doctorCode);
+      const category = tierOfDoctor(doc, core, emp.name);
       rows.push({
         date: d.visitDateOnly, time,
         cells: [
           dmySlash(d.visitDateOnly), submission(d.createdAt, d.visitDateOnly), "", d.workType || "Field Work", doc.territory || emp.territory, doc.doctorCode || "", "Listed Doctor",
-          doc.name || "", doc.address1 || doc.location || doc.city || "", d.callSession === "MORNING" ? "M" : "E", time, category, doc.specialty || "", doc.qualification || "",
-          workedWith(d), String(round2(pobValue(d.pob, rates))), hasGps ? `${gps.latitude} - ${gps.longitude}` : "0.0 - 0.0", "NA", d.notes || "",
-          (d.productsDetailed || []).join(";"), (d.samplesGiven || []).map((s: any) => `${s.productName} - ${Number(s.qty || 0).toFixed(2)}`).join(";"), "",
+          doc.name || "", doc.address1 || doc.location || doc.city || "", sessionOfCall(time, d.callSession), time, category, doc.specialty || "", doc.qualification || "",
+          workedWith(d), String(round2(docPobValue(d, rates))), hasGps ? `${gps.latitude} - ${gps.longitude}` : "0.0 - 0.0", "NA", d.notes || "",
+          (d.productsDetailed || []).join(";"), (d.samplesGiven || []).map((s: any) => `${s.productName} - ${Number(s.qty || 0).toFixed(2)}`).join(";"),
+          (d.rxItems || []).map((r: any) => `${r.productName} - ${Number(r.qty || 0).toFixed(2)}`).join(";"),
           (d.inputsGiven || []).map((i: any) => i.inputName).join(";"), plannedTerritory(d.visitDateOnly), hasGps ? "YES" : "NO"
         ]
       });
@@ -282,7 +282,7 @@ export async function buildDcrDump(tenantSlug: string, rootCode: string, month: 
         cells: [
           dmySlash(c.visitDateOnly), submission(c.createdAt, c.visitDateOnly), "", "Field Work", emp.territory, dealer?.sourceSNo != null ? String(dealer.sourceSNo) : "", "Chemist",
           c.chemistName || dealer?.dealerName || "", dealer?.address || dealer?.city || "", "", time, "", "", "", "",
-          String(round2(pobValue(c.pob, rates))), "0.0 - 0.0", "NA", "", "", "", "", "", plannedTerritory(c.visitDateOnly), "NO"
+          String(round2(docPobValue(c, rates))), "0.0 - 0.0", "NA", "", "", "", "", "", plannedTerritory(c.visitDateOnly), "NO"
         ]
       });
     }
@@ -293,7 +293,7 @@ export async function buildDcrDump(tenantSlug: string, rootCode: string, month: 
       rows.push({
         date: l.visitDateOnly, time,
         cells: [
-          dmySlash(l.visitDateOnly), submission(l.createdAt, l.visitDateOnly), "", "Field Work", emp.territory, "", l.visitType === "Stockist" ? "Stockist" : l.visitType === "UnlistedDoctor" ? "Unlisted Doctor" : l.visitType,
+          dmySlash(l.visitDateOnly), submission(l.createdAt, l.visitDateOnly), "", "Field Work", emp.territory, "", l.visitType === "Stockist" ? "Stockist" : l.visitType === "UnlistedDoctor" ? "Unlisted Doctor" : l.visitType === "Hospital" ? "Hospital" : l.visitType,
           l.entityName || "", "", "", time, "", "", "", "", "0", hasGps ? `${gps.latitude} - ${gps.longitude}` : "0.0 - 0.0", "NA", l.notes || "", "", "", "", "", plannedTerritory(l.visitDateOnly), hasGps ? "YES" : "NO"
         ]
       });
@@ -353,7 +353,7 @@ export async function computeMissedCallDetailed(tenantSlug: string, emp: OrgEmpl
   const core = await loadCoreMap(tenantSlug, [emp.name]);
   const visits = new Map<string, number>();
   for (const d of dcrs) visits.set(String(d.doctorId), (visits.get(String(d.doctorId)) || 0) + 1);
-  const withCat = doctors.map((d) => ({ id: String(d._id), name: d.name, category: categoryOf(core, emp.name, d.doctorCode) }));
+  const withCat = doctors.map((d) => ({ id: String(d._id), name: d.name, category: tierOfDoctor(d, core, emp.name) }));
   const missedDoctors = withCat.filter((d) => !visits.has(d.id));
   const per = (cat: Category) => {
     const all = withCat.filter((d) => d.category === cat);
@@ -385,12 +385,15 @@ export async function listDoctorsForForce(tenantSlug: string, emp: OrgEmployee) 
 export async function computeSingleDoctor(tenantSlug: string, emp: OrgEmployee, doctorId: string, months: string[]) {
   const doctor = (await DoctorModel.findOne({ tenantSlug, _id: doctorId }).lean()) as any;
   if (!doctor) return null;
-  const [classRows, campaignRows, core, rates, dcrs] = await Promise.all([
+  const [classRows, campaignRows, core, rates, dcrs, rcpaRows, crmRows] = await Promise.all([
     safeMasterRows("doctorClassification", { tenantSlug, doctorCode: doctor.doctorCode }),
     safeMasterRows("doctorCampaignMap", { tenantSlug, doctorCode: doctor.doctorCode }),
     loadCoreMap(tenantSlug, [emp.name]),
     loadRateMap(tenantSlug),
-    DcrModel.find({ tenantSlug, doctorId: doctor._id, month: { $in: months } }).sort({ visitDate: 1 }).lean()
+    DcrModel.find({ tenantSlug, doctorId: doctor._id, month: { $in: months } }).sort({ visitDate: 1 }).lean(),
+    // Round 41 item 4 -- real doctor-linked RCPA and CRM entries.
+    RcpaModel.find({ tenantSlug, doctorId: String(doctor._id), month: { $in: months } }).sort({ date: 1 }).lean(),
+    CrmModel.find({ tenantSlug, doctorId: String(doctor._id), month: { $in: months } }).sort({ date: 1 }).lean()
   ]);
   const klass = classRows[0]?.doctorCategory || (["A", "B", "C"].includes(doctor.category) ? doctor.category : "Nil");
   const perMonth: Record<string, any> = {};
@@ -408,7 +411,10 @@ export async function computeSingleDoctor(tenantSlug: string, emp: OrgEmployee, 
       sampled: Array.from(sampled.entries()).map(([name, qty]) => ({ name, qty })),
       inputs: Array.from(inputs.entries()).map(([name, qty]) => ({ name, qty })),
       remarks: mine.map((d) => d.notes || d.productFeedback).filter(Boolean) as string[],
-      business: round2(mine.reduce((s, d) => s + pobValue(d.pob, rates), 0))
+      rcpa: (rcpaRows as any[]).filter((r) => r.month === m).map((r) => ({ date: r.date, chemist: r.chemistName || "", ourProduct: r.ourProduct, ourQty: r.ourQty, competitorProduct: r.competitorProduct || "", competitorQty: r.competitorQty || 0 })),
+      crm: (crmRows as any[]).filter((c) => c.month === m).map((c) => ({ date: c.date, type: c.type, amountRs: c.amountRs, status: c.status, approvedBy: c.approvedBy || "" })),
+      rx: (() => { const mp = new Map<string, number>(); for (const d of mine) for (const r of d.rxItems || []) mp.set(r.productName, (mp.get(r.productName) || 0) + (r.qty || 0)); return Array.from(mp.entries()).map(([name, qty]) => ({ name, qty })); })(),
+      business: round2(mine.reduce((s, d) => s + docPobValue(d, rates), 0))
     };
   }
   return {
@@ -416,9 +422,10 @@ export async function computeSingleDoctor(tenantSlug: string, emp: OrgEmployee, 
     months,
     profile: {
       doctorName: doctor.name, address: [doctor.address1, doctor.location, doctor.city].filter(Boolean).join(", "), mobile: doctor.phone || "", email: doctor.email || "",
-      hospitalAddress: [doctor.clinicName, doctor.location].filter(Boolean).join(", "), category: categoryOf(core, emp.name, doctor.doctorCode),
+      hospitalAddress: [doctor.clinicName, doctor.location].filter(Boolean).join(", "), category: tierOfDoctor(doctor, core, emp.name),
       speciality: doctor.specialty || "", className: klass, qualification: doctor.qualification || "",
-      campaignName: campaignRows[0]?.campaignSubCategory || "", drUniqueCode: doctor.uniqueSlNo || doctor.doctorCode || ""
+      campaignName: doctor.campaign || campaignRows[0]?.campaignSubCategory || "", drUniqueCode: doctor.uniqueSlNo || doctor.doctorCode || "",
+      supportiveChemists: ((doctor.supportiveChemists || []) as any[]).map((c) => c.dealerName).filter(Boolean)
     },
     perMonth
   };
@@ -444,19 +451,62 @@ export async function computeRepVsManager(tenantSlug: string, manager: OrgEmploy
   return { month, manager: { employeeCode: manager.employeeCode, name: manager.name, designation: manager.designation, hq: manager.territory, metrics: mgrMetrics }, rows };
 }
 
+
 // ═══ Item 7 -- Review Report ══════════════════════════════════════════════
 export async function computeReviewReport(tenantSlug: string, emp: OrgEmployee, month: string) {
-  const metrics = await computeCustomReportMetrics(tenantSlug, emp.employeeCode, month);
-  const dcrs = (await DcrModel.find({ tenantSlug, employeeCode: emp.employeeCode, month }).select("productsDetailed inputsGiven").lean()) as any[];
+  const base = await computeCustomReportMetrics(tenantSlug, emp.employeeCode, month);
+  const monthRegex = new RegExp(`^${month}`);
+  const [dcrs, chem, rates, delay, expense, others, rcpaCrm, tiers, secondary, full] = await Promise.all([
+    DcrModel.find({ tenantSlug, employeeCode: emp.employeeCode, month }).lean() as unknown as Promise<any[]>,
+    ChemistCallModel.find({ tenantSlug, employeeCode: emp.employeeCode, visitDateOnly: monthRegex }).lean() as unknown as Promise<any[]>,
+    loadRateMap(tenantSlug),
+    computeDelayStats(tenantSlug, emp, month),
+    computeExpenseSplit(tenantSlug, emp.employeeCode, month),
+    computeOtherVisits(tenantSlug, emp.employeeCode, month),
+    computeRcpaCrm(tenantSlug, emp.employeeCode, month),
+    (async () => computeTierStats(tenantSlug, emp, (await DcrModel.find({ tenantSlug, employeeCode: emp.employeeCode, month }).select("doctorId").lean()) as any[]))(),
+    computeSecondaryRows(tenantSlug, emp.territory, month),
+    EmployeeModel.findOne({ tenantSlug, employeeCode: emp.employeeCode }).lean() as Promise<any>
+  ]);
   const counts = new Map<string, number>();
   for (const d of dcrs) for (const p of d.productsDetailed || []) counts.set(p, (counts.get(p) || 0) + 1);
   const top5 = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, count]) => ({ name, count }));
-  const inputSpent = round2(dcrs.reduce((s, d) => s + (d.inputsGiven || []).reduce((x: number, i: any) => x + (i.valueRs || 0) * (i.qty || 1), 0), 0));
-  const full = (await EmployeeModel.findOne({ tenantSlug, employeeCode: emp.employeeCode }).lean()) as any;
+  const spend = await computeSpend(tenantSlug, dcrs, rates, emp.employeeCode, month);
+  const fw = Number(base.fwDays || 0);
+  const num = (k: string) => Number(base[k] || 0);
+  const m: Record<string, number | string> = { ...base };
+
+  m.delayedDays = delay.delayedDates.length;
+  m.delayedTotalDays = delay.total;
+  m.lockedOutstanding = delay.delayedDates.filter((d) => d.kind === "locked-outstanding").length;
+  m.chemistPobCount = chem.filter((c) => hasPob(c)).length;
+  m.chemistPobValue = round2(chem.reduce((s, c) => s + docPobValue(c, rates), 0));
+  m.doctorPobValue = round2(dcrs.reduce((s, d) => s + docPobValue(d, rates), 0));
+
+  const key: Record<Tier, string> = { Nil: "nil", CORE: "core", "N CORE": "nCore", "S CORE": "sCore" };
+  for (const t of TIERS) {
+    const st = tiers.stats[t];
+    m[`${key[t]}List`] = st.list; m[`${key[t]}Met`] = st.met; m[`${key[t]}Missed`] = st.missed;
+    m[`${key[t]}Adhered`] = st.adhered; m[`${key[t]}AdherPct`] = st.list ? pct(st.adhered, st.list) : 0;
+  }
+  m.unlistedDrsMet = others.unlisted.met; m.unlistedDrsSeen = others.unlisted.seen;
+  m.unlstCallAverage = fw > 0 ? round2(others.unlisted.seen / fw) : 0;
+  m.unlstMissedCall = Math.max(num("totalUnlistedDrsInList") - others.unlisted.met, 0);
+  m.stockistMet = others.stockist.met; m.stockistSeen = others.stockist.seen;
+  m.hospitalMet = others.hospital.met; m.hospitalSeen = others.hospital.seen;
+  m.cipMet = others.cip.met; m.cipSeen = others.cip.seen;
+  m.noOfDetailingDrs = new Set(dcrs.filter((d) => (d.productsDetailed || []).length > 0).map((d) => String(d.doctorId))).size;
+  m.noOfRxDrs = new Set(dcrs.filter((d) => (d.rxItems || []).some((r: any) => (r.qty || 0) > 0)).map((d) => String(d.doctorId))).size;
+  m.sampleSpentRs = spend.sample; m.inputSpentRs = spend.input; m.drServiceSpentRs = spend.drService;
+  m.hqAmountRs = expense.hq; m.exAmountRs = expense.ex; m.osAmountRs = expense.os;
+  m.miscellaneous = expense.misc; m.totalAmount = expense.total;
+  Object.assign(m, rcpaCrm);
+
   return {
     month,
     employee: { name: emp.name, employeeCode: emp.employeeCode, designation: emp.designation, hq: emp.territory, state: full?.state || "", division: full?.division || "", isManager: isManagerRole(emp.role) },
-    metrics, top5, inputSpent
+    metrics: m, top5, inputSpent: spend.input, secondaryRows: secondary,
+    delayedDates: delay.delayedDates
   };
 }
 
@@ -466,7 +516,9 @@ export const ASSESS_DESIGNATIONS = ["BH", "ZBM", "ABM", "RBM"];
 export async function computeAssessment(tenantSlug: string, emp: OrgEmployee, months: string[]) {
   const doctors = (await DoctorModel.find({ tenantSlug, mappedEmployeeCode: emp.employeeCode, status: "ACTIVE" }).lean()) as any[];
   const core = await loadCoreMap(tenantSlug, [emp.name]);
-  const catById = new Map<string, Category>(doctors.map((d) => [String(d._id), categoryOf(core, emp.name, d.doctorCode)]));
+  const norms = await getCategoryNorms(tenantSlug);
+  const NORMS: Record<Category, number> = { Nil: norms.NIL, CORE: norms.CORE, "N CORE": norms["N CORE"], "S CORE": norms["S CORE"] };
+  const catById = new Map<string, Category>(doctors.map((d) => [String(d._id), tierOfDoctor(d, core, emp.name)]));
   const chemTotal = await DealerModel.countDocuments({ tenantSlug, employeeCode: emp.employeeCode, status: "ACTIVE" });
   const rates = await loadRateMap(tenantSlug);
   const cols: Record<string, Record<number, string>> = {};
@@ -476,9 +528,10 @@ export async function computeAssessment(tenantSlug: string, emp: OrgEmployee, mo
     const set = (n: number, val: number | string | null | undefined) => { v[n] = val === 0 || val == null ? "" : String(val); };
     const numDays = daysInMonth(month);
     const monthRegex = new RegExp(`^${month}`);
-    const [dcrs, chem] = await Promise.all([
+    const [dcrs, chem, delay] = await Promise.all([
       DcrModel.find({ tenantSlug, employeeCode: emp.employeeCode, month }).populate("doctorId").lean() as unknown as Promise<any[]>,
-      ChemistCallModel.find({ tenantSlug, employeeCode: emp.employeeCode, visitDateOnly: monthRegex }).lean() as unknown as Promise<any[]>
+      ChemistCallModel.find({ tenantSlug, employeeCode: emp.employeeCode, visitDateOnly: monthRegex }).lean() as unknown as Promise<any[]>,
+      computeDelayStats(tenantSlug, emp, month)
     ]);
     const ctx = await buildDayStatusContext(tenantSlug, month, [emp.employeeCode], [(emp as any).state]);
     let holiday = 0, leave = 0;
@@ -490,11 +543,10 @@ export async function computeAssessment(tenantSlug: string, emp: OrgEmployee, mo
     const fieldDates = new Set(dcrs.map((d) => d.visitDateOnly));
     const typeDates: Record<string, Set<string>> = { HQ: new Set(), EX: new Set(), OS: new Set() };
     for (const d of dcrs) { const t = d.doctorId?.territoryType || "HQ"; (typeDates[t] || typeDates.HQ).add(d.visitDateOnly); }
-    const lateDates = new Set<string>();
-    for (const d of dcrs) { const c = ymd(d.createdAt); if (c && dayDiff(c, d.visitDateOnly) > 0) lateDates.add(d.visitDateOnly); }
     set(1, numDays); set(2, holiday); set(3, fieldDates.size); set(4, leave);
     set(5, Math.max(numDays - holiday - fieldDates.size - leave, 0));
-    set(6, typeDates.HQ.size); set(7, typeDates.EX.size); set(8, typeDates.OS.size); set(9, lateDates.size);
+    set(6, typeDates.HQ.size); set(7, typeDates.EX.size); set(8, typeDates.OS.size);
+    set(9, delay.delayedDates.length); // Round 41 Gap A -- real late + locked dates
 
     const visits = new Map<string, number>();
     for (const d of dcrs) { const id = String(d.doctorId?._id || d.doctorId); visits.set(id, (visits.get(id) || 0) + 1); }
@@ -507,16 +559,19 @@ export async function computeAssessment(tenantSlug: string, emp: OrgEmployee, mo
     set(19, chemTotal ? pct(chemMet, chemTotal) : 0);
     set(20, fieldDates.size ? round2(chem.length / fieldDates.size) : 0);
     set(21, Math.max(chemTotal - chemMet, 0));
-    const chemPob = chem.filter((c) => (c.pob || []).length > 0);
+    // Round 41 Gap B -- real chemist POB (per-row value, order amount, or
+    // qty x product rate); historic calls without POB stay blank / "-".
+    const chemPob = chem.filter((c) => hasPob(c));
     set(22, chemPob.length);
-    const chemValue = round2(chemPob.reduce((s, c) => s + pobValue(c.pob, rates), 0));
+    const chemValue = round2(chemPob.reduce((s, c) => s + docPobValue(c, rates), 0));
     v[23] = chemValue > 0 ? String(chemValue) : "-";
 
     const counts = Array.from(visits.values());
     set(25, counts.filter((n) => n === 1).length); set(26, counts.filter((n) => n === 2).length);
     set(27, counts.filter((n) => n === 3).length); set(28, counts.filter((n) => n > 3).length);
 
-    // Category blocks (rows 30-61) and frequency blocks (68-90).
+    // Category blocks (rows 30-61) and frequency blocks (68-90), driven by
+    // the real doctorCategory tier and the configurable visit norms.
     let totalNorm = 0, visitNorm = 0;
     const freqStart: Record<Category, number> = { Nil: 68, CORE: 74, "N CORE": 80, "S CORE": 86 };
     CATEGORIES.forEach((cat, ci) => {
@@ -533,13 +588,13 @@ export async function computeAssessment(tenantSlug: string, emp: OrgEmployee, mo
       set(f, ids.length);
       set(f + 1, ids.filter((id) => n(id) === 0).length);
       set(f + 2, ids.filter((id) => n(id) === 1).length);
-      if (norm === 2) {
+      if (cat !== "S CORE") {
         set(f + 3, ids.filter((id) => n(id) === 2).length);
-        set(f + 4, ids.filter((id) => n(id) > 2).length);
-        set(f + 5, ids.filter((id) => n(id) < 2).length);
+        set(f + 4, ids.filter((id) => n(id) > norm).length);
+        set(f + 5, ids.filter((id) => n(id) < norm).length);
       } else {
-        set(f + 3, ids.filter((id) => n(id) > 1).length); // "More than 1 Visit"
-        set(f + 4, ids.filter((id) => n(id) < 1).length);
+        set(f + 3, ids.filter((id) => n(id) > norm).length);
+        set(f + 4, ids.filter((id) => n(id) < norm).length);
       }
       totalNorm += ids.length * norm;
       visitNorm += ids.reduce((s, id) => s + Math.min(n(id), norm), 0);

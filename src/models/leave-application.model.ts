@@ -14,6 +14,8 @@ const leaveApplicationSchema = new Schema(
     toDate: { type: Date, required: true },
     days: { type: Number, required: true },
     reason: { type: String, trim: true, default: null },
+    // Round 41 item 7 -- legend code (L, LP, MD, MR...) from WorkTypeCode.
+    workTypeCode: { type: String, default: null },
     // LWP = counts as unpaid Loss-of-Pay for the Payroll Run's LWP calc.
     // Any other leave type is treated as paid.
     isLWP: { type: Boolean, default: false },

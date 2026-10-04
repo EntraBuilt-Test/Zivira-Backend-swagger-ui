@@ -7,7 +7,8 @@ const attendanceSchema = new Schema(
     attendanceDate: { type: Date, required: true, index: true },
     status: { type: String, enum: ["PRESENT", "ABSENT", "LEAVE"], default: "PRESENT", index: true },
     checkInAt: { type: Date },
-    checkOutAt: { type: Date }
+    checkOutAt: { type: Date },
+    workTypeCode: { type: String, default: null } // Round 41 item 7
   },
   { timestamps: true }
 );

@@ -41,6 +41,12 @@ import { FieldVisitLogModel } from "../models/field-visit-log.model.js";
 import { SurveyModel } from "../models/survey.model.js";
 import { SurveyQuestionModel } from "../models/survey-question.model.js";
 import { SurveyAnswerModel } from "../models/survey-answer.model.js";
+import { DcrLockModel } from "../models/dcr-lock.model.js";
+import { RcpaModel } from "../models/rcpa.model.js";
+import { CrmModel } from "../models/crm.model.js";
+import { WORK_TYPE_TO_CODE } from "../models/work-type-code.model.js";
+import { detectLocks, getLockState, utcDateString, LOCK_LOOKBACK_DAYS } from "../utils/dcr-lock.js";
+import { getDcrDelayDays } from "../utils/settings.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -149,11 +155,25 @@ const dcrSchema = z.object({
     batchNumber:  z.string().optional(),
     priority:     z.enum(["HIGH", "MEDIUM", "LOW"]).optional()
   })).default([]),
+  // Round 41 Gap B -- real doctor-call POB / Rx capture.
   pob: z.array(z.object({
+    productId:   z.string().optional(),
+    productCode: z.string().optional(),
     productName: z.string(),
     qty:         z.number().min(0),
     valueRs:     z.number().min(0).optional()
   })).default([]),
+  pobAmountRs: z.number().min(0).optional(),
+  rxItems: z.array(z.object({
+    productId:   z.string().optional(),
+    productCode: z.string().optional(),
+    productName: z.string(),
+    qty:         z.number().min(0)
+  })).default([]),
+  // Round 41 Gap A -- back-dated DCR (YYYY-MM-DD). Omitted = today. A date
+  // that is past the company's delay window is locked until released.
+  visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  workTypeCode: z.string().max(10).optional(),
   inputsGiven: z.array(z.object({
     inputName: z.string(),
     itemType:  z.string().optional(),
@@ -199,6 +219,16 @@ function currentUtcMonth() {
 
 function dateOnlyUTC(d: Date) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+// Round 41 Gap A -- shared guard for every field submission that accepts a
+// back-dated visitDate (chemist call, visit log...).
+async function assertDateNotLocked(tenantSlug: string, employeeCode: string, date: string) {
+  const today = dateOnlyUTC(new Date());
+  if (date > today) throw new HttpError(400, "Cannot submit for a future date.");
+  if (date === today) return;
+  const lock = await getLockState(tenantSlug, employeeCode, date);
+  if (lock.locked) throw new HttpError(423, `The date ${date} is locked (delay window exceeded). Request a release from your manager/admin.`);
 }
 
 export const fieldRouter = Router();
@@ -426,8 +456,20 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const body = dcrSchema.parse(req.body);
-  const month = currentUtcMonth();
-  const visitDateOnly = dateOnlyUTC(new Date());
+  const todayStr = dateOnlyUTC(new Date());
+  const visitDateOnly = body.visitDate || todayStr;
+  if (visitDateOnly > todayStr) throw new HttpError(400, "A DCR cannot be submitted for a future date.");
+  if (visitDateOnly < utcDateString(new Date(Date.now() - LOCK_LOOKBACK_DAYS * 86400000))) {
+    throw new HttpError(400, `DCRs older than ${LOCK_LOOKBACK_DAYS} days cannot be submitted from the app.`);
+  }
+  // Round 41 Gap A -- locked dates can't be submitted until an admin releases them.
+  if (visitDateOnly !== todayStr) {
+    const lock = await getLockState(tenantSlug, employee.employeeCode, visitDateOnly);
+    if (lock.locked) {
+      throw new HttpError(423, `DCR for ${visitDateOnly} is locked (delay window exceeded). Request a release from your manager/admin.`);
+    }
+  }
+  const month = visitDateOnly.slice(0, 7);
 
   // ── PRD 12.2 — daily-uniqueness guard (app-layer; rejected visits excluded) ──
   if (body.doctorId) {
@@ -469,6 +511,10 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     samplesGiven: body.samplesGiven,
     inputsGiven: body.inputsGiven,
     pob: body.pob,
+    pobAmountRs: body.pobAmountRs ?? null,
+    rxItems: body.rxItems,
+    callAt: new Date(),
+    workTypeCode: body.workTypeCode || WORK_TYPE_TO_CODE["Field Work"],
     jointWork: body.jointWork,
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
@@ -483,7 +529,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     competitorMentioned: body.competitorMentioned,
     followUpRequired: body.followUpRequired,
     followUpDate: body.followUpDate ? new Date(body.followUpDate) : undefined,
-    visitDate: new Date(),
+    visitDate: visitDateOnly === todayStr ? new Date() : new Date(`${visitDateOnly}T12:00:00.000Z`),
     month,
     overVisitFlag,
     overVisitCount,
@@ -823,7 +869,9 @@ const expenseClaimSubmitSchema = z.object({
   category: z.enum(["Travel", "Lodging", "Food", "Local Conveyance", "Other"]),
   expenseDate: z.string().min(1, "Expense date is required"),
   amountRs: z.number().min(0.01, "Amount must be greater than 0"),
-  description: z.string().optional()
+  description: z.string().optional(),
+  // Round 41 item 5 -- HQ / EX / OS split for the Review Report Expense panel.
+  territoryType: z.enum(["HQ", "EX", "OS"]).optional()
 });
 
 fieldRouter.get("/expense-claims", asyncHandler(async (req, res) => {
@@ -876,6 +924,7 @@ fieldRouter.post("/expense-claims", asyncHandler(async (req, res) => {
       expenseDate: body.expenseDate,
       amountRs: body.amountRs,
       description: body.description,
+      territoryType: body.territoryType ?? null,
       status: "SUBMITTED"
     })
   );
@@ -1110,6 +1159,7 @@ fieldRouter.post("/leave-applications", asyncHandler(async (req, res) => {
     days: body.days,
     reason: leaveType,
     isLWP: false,
+    workTypeCode: "L",
     status: "PENDING"
   });
 
@@ -2106,8 +2156,10 @@ const chemistCallRowSchemas = {
   pob: z.array(z.object({
     productId: z.string().min(1),
     productName: z.string().min(1),
-    qty: z.number().min(0)
+    qty: z.number().min(0),
+    valueRs: z.number().min(0).nullable().optional() // Round 41 Gap B
   })).optional().default([]),
+  pobAmountRs: z.number().min(0).nullable().optional(), // Round 41 Gap B
   shortExpiry: z.array(z.object({
     medicineName: z.string().min(1),
     expiryDate: z.string().nullable().optional(),
@@ -2143,6 +2195,7 @@ fieldRouter.post("/chemist-calls", asyncHandler(async (req, res) => {
 
   const chemist = await DealerModel.findOne({ _id: body.chemistId, tenantSlug, employeeCode: employee.employeeCode, status: "ACTIVE" });
   if (!chemist) throw new HttpError(404, "Chemist not found in your coverage");
+  await assertDateNotLocked(tenantSlug, employee.employeeCode, dateOnly);
 
   const pobRows = body.pob.filter((r) => r.qty > 0);
   const shortExpiryRows = body.shortExpiry.filter((r) => r.qty > 0);
@@ -2154,7 +2207,7 @@ fieldRouter.post("/chemist-calls", asyncHandler(async (req, res) => {
       chemistId: body.chemistId, chemistName: chemist.dealerName,
       visitDate: new Date(dateOnly), visitDateOnly: dateOnly,
       checkInTime: body.checkInTime || null, checkOutTime: body.checkOutTime || null,
-      rcpa: body.rcpa, pob: pobRows, shortExpiry: shortExpiryRows, jcc: body.jcc,
+      rcpa: body.rcpa, pob: pobRows, pobAmountRs: body.pobAmountRs ?? null, shortExpiry: shortExpiryRows, jcc: body.jcc,
       status: "SUBMITTED"
     },
     { upsert: true, new: true }
@@ -2332,7 +2385,7 @@ fieldRouter.get("/visit-logs", asyncHandler(async (req, res) => {
 }));
 
 const visitLogSchema = z.object({
-  visitType: z.enum(["Stockist", "UnlistedDoctor", "CIP"]),
+  visitType: z.enum(["Stockist", "UnlistedDoctor", "CIP", "Hospital"]),
   entityName: z.string().min(1),
   visitDate: z.string().optional(), // YYYY-MM-DD; defaults to today
   checkInTime: z.string().optional(),
@@ -2345,6 +2398,7 @@ fieldRouter.post("/visit-logs", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const body = visitLogSchema.parse(req.body);
   const dateOnly = body.visitDate && body.visitDate.trim() ? body.visitDate.trim() : dateOnlyUTC(new Date());
+  await assertDateNotLocked(tenantSlug, employee.employeeCode, dateOnly);
 
   const log = await FieldVisitLogModel.create({
     tenantSlug,
@@ -2456,4 +2510,160 @@ fieldRouter.post("/surveys/:id/answers", asyncHandler(async (req, res) => {
 
   await audit("FIELD_SURVEY_ANSWERS_SAVED", "Survey", String(survey._id), { tenantSlug, employeeCode: employee.employeeCode, count: saved.length });
   res.status(201).json({ data: { savedCount: saved.length } });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════
+// Round 41 -- DCR locks, doctor RCPA / CRM capture, supportive chemists.
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /field/dcr-locks -- this rep's lock state for the last N days (default
+// 30): every date that is auto-locked (or was locked and released), the
+// company's delay window, and whether a release has already been requested.
+fieldRouter.get("/dcr-locks", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const span = Math.min(Math.max(parseInt(String(req.query.days ?? "30"), 10) || 30, 1), LOCK_LOOKBACK_DAYS);
+  const today = dateOnlyUTC(new Date());
+  const from = utcDateString(new Date(Date.now() - span * 86400000));
+  await detectLocks(tenantSlug, [employee as any], from, today);
+  const delayDays = await getDcrDelayDays(tenantSlug);
+  const rows = (await DcrLockModel.find({ tenantSlug, employeeCode: employee.employeeCode, dcrDate: { $gte: from, $lte: today } }).sort({ dcrDate: -1 }).lean()) as any[];
+  res.json({
+    data: rows.map((l) => ({
+      date: l.dcrDate, locked: !l.releasedAt, reason: l.lockReason, lockedAt: l.lockedAt, releasedAt: l.releasedAt || null,
+      releasedBy: l.releasedBy || null, releaseRequestedAt: l.releaseRequestedAt || null
+    })),
+    delayDays
+  });
+}));
+
+const requestReleaseSchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().max(500).optional() });
+
+// POST /field/dcr-locks/request-release -- the rep asks for a locked date to
+// be released; stamps the lock row (the admin's Delayed Release screen shows
+// the request) and notifies the reporting manager.
+fieldRouter.post("/dcr-locks/request-release", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = requestReleaseSchema.parse(req.body);
+  const state = await getLockState(tenantSlug, employee.employeeCode, body.date);
+  if (!state.locked) throw new HttpError(400, "That date is not locked.");
+  await DcrLockModel.updateOne(
+    { tenantSlug, employeeCode: employee.employeeCode, dcrDate: body.date },
+    { $set: { releaseRequestedAt: new Date(), releaseRequestNote: body.note || null } }
+  );
+  await audit("FIELD_DCR_RELEASE_REQUESTED", "DcrLock", body.date, { tenantSlug, employeeCode: employee.employeeCode });
+  await notifyReportingManager(tenantSlug, employee, "DCR release requested", `${employee.name} (${employee.employeeCode}) requested release of the locked DCR date ${body.date}.${body.note ? ` Note: ${body.note}` : ""}`);
+  res.json({ data: { requested: true, date: body.date } });
+}));
+
+// ── Doctor RCPA (our vs competitor product Rx counts) ──────────────────
+const rcpaEntrySchema = z.object({
+  doctorId: z.string().min(1),
+  chemistId: z.string().optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  ourProduct: z.string().min(1),
+  ourQty: z.number().min(0),
+  competitorProduct: z.string().optional(),
+  competitorQty: z.number().min(0).optional()
+});
+
+fieldRouter.get("/rcpa", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const filter: Record<string, unknown> = { tenantSlug, employeeCode: employee.employeeCode };
+  if (typeof req.query.doctorId === "string" && req.query.doctorId) filter.doctorId = req.query.doctorId;
+  if (typeof req.query.month === "string" && req.query.month) filter.month = req.query.month;
+  const rows = await RcpaModel.find(filter).sort({ date: -1, createdAt: -1 }).limit(300);
+  res.json({ data: rows.map(serializeDocument) });
+}));
+
+fieldRouter.post("/rcpa", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = rcpaEntrySchema.parse(req.body);
+  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode });
+  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  const date = body.date || dateOnlyUTC(new Date());
+  await assertDateNotLocked(tenantSlug, employee.employeeCode, date);
+  let chemistName = "";
+  if (body.chemistId) {
+    const chemist = await DealerModel.findOne({ _id: body.chemistId, tenantSlug, employeeCode: employee.employeeCode });
+    if (!chemist) throw new HttpError(404, "Chemist not found in your coverage");
+    chemistName = chemist.dealerName;
+  }
+  const row = await RcpaModel.create({
+    tenantSlug, employeeCode: employee.employeeCode, doctorId: String(doctor._id), doctorName: doctor.name,
+    chemistId: body.chemistId || null, chemistName, date, month: date.slice(0, 7),
+    ourProduct: body.ourProduct.trim(), ourQty: body.ourQty,
+    competitorProduct: body.competitorProduct?.trim() || "", competitorQty: body.competitorQty ?? 0
+  });
+  await audit("FIELD_RCPA_SAVED", "Rcpa", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId });
+  res.status(201).json({ data: serializeDocument(row) });
+}));
+
+fieldRouter.delete("/rcpa/:id", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const r = await RcpaModel.deleteOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
+  res.json({ data: { deleted: r.deletedCount === 1 } });
+}));
+
+// ── Doctor CRM (CRM given to a doctor; manager/admin approves) ─────────
+const crmEntrySchema = z.object({
+  doctorId: z.string().min(1),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  type: z.string().min(1).max(80),
+  amountRs: z.number().min(0),
+  notes: z.string().max(500).optional()
+});
+
+fieldRouter.get("/crm", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const filter: Record<string, unknown> = { tenantSlug, employeeCode: employee.employeeCode };
+  if (typeof req.query.doctorId === "string" && req.query.doctorId) filter.doctorId = req.query.doctorId;
+  if (typeof req.query.month === "string" && req.query.month) filter.month = req.query.month;
+  const rows = await CrmModel.find(filter).sort({ date: -1, createdAt: -1 }).limit(300);
+  res.json({ data: rows.map(serializeDocument) });
+}));
+
+fieldRouter.post("/crm", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = crmEntrySchema.parse(req.body);
+  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode });
+  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  const date = body.date || dateOnlyUTC(new Date());
+  await assertDateNotLocked(tenantSlug, employee.employeeCode, date);
+  const row = await CrmModel.create({
+    tenantSlug, employeeCode: employee.employeeCode, doctorId: String(doctor._id), doctorName: doctor.name,
+    date, month: date.slice(0, 7), type: body.type.trim(), amountRs: body.amountRs, notes: body.notes || "", status: "PENDING"
+  });
+  await audit("FIELD_CRM_SAVED", "Crm", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, amountRs: body.amountRs });
+  await notifyReportingManager(tenantSlug, employee, "CRM entry submitted", `${employee.name} (${employee.employeeCode}) logged CRM of Rs ${body.amountRs} (${body.type}) for ${doctor.name}.`);
+  res.status(201).json({ data: serializeDocument(row) });
+}));
+
+fieldRouter.delete("/crm/:id", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const r = await CrmModel.deleteOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode, status: "PENDING" });
+  res.json({ data: { deleted: r.deletedCount === 1 } });
+}));
+
+// ── Supportive chemists for a doctor ───────────────────────────────────
+const supportiveSchema = z.object({ dealerIds: z.array(z.string()).max(20) });
+
+fieldRouter.put("/doctors/:id/supportive-chemists", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = supportiveSchema.parse(req.body);
+  const doctor = await DoctorModel.findOne({ _id: req.params.id, tenantSlug, mappedEmployeeCode: employee.employeeCode });
+  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  const dealers = await DealerModel.find({ _id: { $in: body.dealerIds }, tenantSlug, employeeCode: employee.employeeCode });
+  doctor.supportiveChemists = dealers.map((d: any) => ({ dealerId: String(d._id), dealerName: d.dealerName })) as any;
+  await doctor.save();
+  await audit("FIELD_SUPPORTIVE_CHEMISTS_SET", "Doctor", String(doctor._id), { tenantSlug, employeeCode: employee.employeeCode, count: dealers.length });
+  res.json({ data: serializeDocument(doctor) });
 }));
