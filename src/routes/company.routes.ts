@@ -42,6 +42,8 @@ import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
+import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
+import type { OrgEmployee } from "../utils/org-hierarchy.js";
 import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager, computeFieldworkManagerRow, computeManagerWiseCoverageRow, computeSpecialityVisitWise, computeCategoryVisitWise } from "../utils/manager-analysis-compute.js";
 import { CustomReportModel } from "../models/custom-report.model.js";
 import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
@@ -4859,5 +4861,149 @@ companyRouter.get(
 
     const result = await computeSpecialityVisitWise(tenantSlug, team, months);
     res.json({ data: { mode: "Specialitywise Visit", fieldForceName: (manager as any).name, months, ...result } });
+  })
+);
+
+// ═══ Round 39 -- MIS Reports > Analysis: DCR, Visit Analysis, Sales Details,
+// POB Wise, POB Wise - Periodically. All computed in
+// src/utils/mis-reports-compute.ts from real documents (see its header for
+// the exact source of every column and the honest-zero list).
+const MONTH_RE = /^\d{4}-\d{2}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function requireEmployeeByCode(tenantSlug: string, employeeCode: string) {
+  if (!employeeCode) throw new HttpError(400, "employeeCode is required");
+  const emp = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+  if (!emp) throw new HttpError(404, "Field force not found");
+  return emp as unknown as OrgEmployee;
+}
+
+// Base Level dropdown for DCR Analysis: the chosen manager's full team.
+companyRouter.get(
+  "/mis/team",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    await requireEmployeeByCode(tenantSlug, employeeCode);
+    const team = await getAllDescendants(tenantSlug, employeeCode);
+    res.json({ data: team.map((m) => ({ employeeCode: m.employeeCode, name: m.name, designation: m.designation, territory: m.territory })) });
+  })
+);
+
+companyRouter.get(
+  "/mis/dcr-analysis",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const month = String(req.query.month || "");
+    const individual = String(req.query.individual || "") === "true";
+    const baseLevel = String(req.query.baseLevel || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const selected = await requireEmployeeByCode(tenantSlug, employeeCode);
+    let people: OrgEmployee[];
+    if (individual) people = [selected];
+    else if (baseLevel) people = [await requireEmployeeByCode(tenantSlug, baseLevel)];
+    else {
+      const team = await getAllDescendants(tenantSlug, employeeCode);
+      people = team.length > 0 ? team : [selected];
+    }
+    const reports = [];
+    for (const person of people.slice(0, 100)) reports.push(await computeDcrAnalysis(tenantSlug, person, month));
+    res.json({ data: { month, reports, truncated: people.length > 100 } });
+  })
+);
+
+companyRouter.get(
+  "/mis/visit-analysis",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const level = String(req.query.level || "MR");
+    const type = String(req.query.type || "") as VisitAnalysisType;
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!["Category", "Speciality", "Class", "Campaign"].includes(type)) throw new HttpError(400, "Select a Type (Category, Speciality, Class or Campaign)");
+    if (!["MR", "Manager"].includes(level)) throw new HttpError(400, "level must be MR or Manager");
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
+    const selected = await requireEmployeeByCode(tenantSlug, employeeCode);
+    const everyone = await selfAndTeam(tenantSlug, employeeCode);
+    const members = everyone.filter((m) => (level === "Manager" ? isManagerRole(m.role) : !isManagerRole(m.role)));
+    const months = monthRange(fromMonth, toMonth);
+    const result = await computeVisitAnalysis(tenantSlug, members, months, type);
+    res.json({ data: { ...result, level, months, fieldForceName: selected.name, designation: selected.designation, hq: selected.territory, memberCount: members.length } });
+  })
+);
+
+companyRouter.get(
+  "/mis/sales-details",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const mode = String(req.query.mode || "Statewise");
+    const month = String(req.query.month || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    if (mode === "Statewise") {
+      const state = String(req.query.state || "");
+      if (!state) {
+        const rows = await computeSalesDetailsStatewise(tenantSlug, month);
+        res.json({ data: { mode, month, states: rows } });
+        return;
+      }
+      const members = (await EmployeeModel.find({ tenantSlug, state, status: "ACTIVE" }).sort({ name: 1 }).lean()) as unknown as OrgEmployee[];
+      const rows = await computeSalesDetailsRows(tenantSlug, members, month);
+      res.json({ data: { mode, month, state, rows } });
+      return;
+    }
+    const employeeCode = String(req.query.employeeCode || "");
+    const selected = await requireEmployeeByCode(tenantSlug, employeeCode);
+    const members = await selfAndTeam(tenantSlug, employeeCode);
+    const rows = await computeSalesDetailsRows(tenantSlug, members, month);
+    res.json({ data: { mode: "Managerwise", month, fieldForceName: selected.name, designation: selected.designation, hq: selected.territory, rows: rows.map((r, i) => ({ ...r, isSelf: i === 0 })) } });
+  })
+);
+
+companyRouter.get(
+  "/mis/pob-products",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    res.json({ data: await listPobProducts(tenantSlug) });
+  })
+);
+
+function parseProducts(raw: unknown): string[] {
+  return String(raw || "").split("||").map((s) => s.trim()).filter(Boolean);
+}
+
+companyRouter.get(
+  "/mis/pob-wise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    const mode = String(req.query.mode || "Drs/Chem POB wise");
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
+    const selected = await requireEmployeeByCode(tenantSlug, employeeCode);
+    const productMode = mode === "With Produc POB/Rx";
+    const products = productMode ? parseProducts(req.query.products) : [];
+    if (productMode && products.length === 0) throw new HttpError(400, "Select at least one product");
+    const team = await selfAndTeam(tenantSlug, employeeCode);
+    const result = await computePobWise(tenantSlug, team, monthRange(fromMonth, toMonth), products);
+    res.json({ data: { ...result, mode, fieldForceName: selected.name, designation: selected.designation, hq: selected.territory } });
+  })
+);
+
+companyRouter.get(
+  "/mis/pob-periodic",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const employeeCode = String(req.query.employeeCode || "");
+    const from = String(req.query.from || "");
+    const to = String(req.query.to || "");
+    if (!DATE_RE.test(from) || !DATE_RE.test(to) || from > to) throw new HttpError(400, "from/to must be YYYY-MM-DD with from on or before to");
+    const selected = await requireEmployeeByCode(tenantSlug, employeeCode);
+    const products = parseProducts(req.query.products);
+    const team = await selfAndTeam(tenantSlug, employeeCode);
+    const result = await computePobPeriodic(tenantSlug, team, from, to, products);
+    res.json({ data: { ...result, from, to, fieldForceName: selected.name, designation: selected.designation, hq: selected.territory } });
   })
 );

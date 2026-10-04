@@ -6,6 +6,8 @@ services:
     branch: main
     buildCommand: npm install && npm run build
     startCommand: npm start
+    # Round 39 item 1 -- Render only routes traffic once this returns 200.
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: 20

@@ -33,6 +33,9 @@ export async function connectMongo() {
     return;
   }
   await mongoose.connect(config.mongoUri, {
-    autoIndex: true
+    autoIndex: true,
+    // Round 39 item 1 -- fail fast instead of buffering for 30s+ when Atlas
+    // is unreachable, so a login surfaces a real error rather than hanging.
+    serverSelectionTimeoutMS: 10000
   });
 }

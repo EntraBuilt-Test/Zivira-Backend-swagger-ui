@@ -149,6 +149,11 @@ const dcrSchema = z.object({
     batchNumber:  z.string().optional(),
     priority:     z.enum(["HIGH", "MEDIUM", "LOW"]).optional()
   })).default([]),
+  pob: z.array(z.object({
+    productName: z.string(),
+    qty:         z.number().min(0),
+    valueRs:     z.number().min(0).optional()
+  })).default([]),
   inputsGiven: z.array(z.object({
     inputName: z.string(),
     itemType:  z.string().optional(),
@@ -463,6 +468,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     callTime: body.callTime,
     samplesGiven: body.samplesGiven,
     inputsGiven: body.inputsGiven,
+    pob: body.pob,
     jointWork: body.jointWork,
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,

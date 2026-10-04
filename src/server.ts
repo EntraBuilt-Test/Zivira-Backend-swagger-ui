@@ -69,27 +69,35 @@ app.use(errorHandler);
 
 await connectMongo();
 
-// Round 16 — the "Demo Medical Representative" rename (+ doctor-code
-// backfill + generic-master fieldForceName normalization) was previously
-// only reachable via a manual CLI script the user was never going to run
-// against production, so it never actually took effect on the live
-// database across two prior rounds. Every function in
-// fix-data-corrections.ts is deliberately idempotent (each only touches
-// documents that still match its specific bad value, so a second run finds
-// nothing left to do — see that file's own header comment), which is
-// exactly what makes it safe to run unconditionally on every boot rather
-// than needing a separate "have I already run this" flag: the moment the
-// backend redeploys — which happens routinely anyway — this now just
-// applies itself, with no manual step. A failure here is logged, never
-// fatal: it must never block the API from coming up.
-try {
-  await runDataCorrections();
-} catch (err) {
-  console.error("Startup data corrections failed (server will still start):", err);
-}
-
+// Round 39 item 1 -- LOGIN TOOK MINUTES (root cause). runDataCorrections()
+// (nine collection-wide idempotent fixes, see fix-data-corrections.ts) was
+// awaited BEFORE app.listen(). On Render's free tier every cold start
+// (after ~15 min idle) re-ran all nine scans against the live database
+// while the HTTP port was still unbound, so the first Sign In just hung
+// until that finished. The port now binds as soon as Mongo is connected,
+// and the corrections run in the background afterwards -- they are
+// idempotent and were never needed for a login to succeed. A failure is
+// still logged, never fatal.
 app.listen(config.port, () => {
   console.log(`Zivira API listening on http://localhost:${config.port}`);
 });
-startAutoApproveJob();     // ← ADD
-startManagerDigestJob();   // ← ADD
+
+setTimeout(() => {
+  runDataCorrections().catch((err) => {
+    console.error("Startup data corrections failed (server is already serving):", err);
+  });
+}, 5000);
+
+startAutoApproveJob();
+startManagerDigestJob();
+
+// Lightweight keep-warm: while the instance is awake, ping our own public
+// /api/health every 10 min so the free tier's 15-min idle spin-down is not
+// triggered by quiet periods between real requests. (Cannot wake a sleeping
+// instance -- an external uptime pinger hitting /api/health does that.)
+const selfUrl = process.env.RENDER_EXTERNAL_URL;
+if (process.env.NODE_ENV === "production" && selfUrl) {
+  setInterval(() => {
+    fetch(`${selfUrl}/api/health`).catch(() => {});
+  }, 10 * 60 * 1000);
+}

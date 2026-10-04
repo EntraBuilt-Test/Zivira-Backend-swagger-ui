@@ -31,6 +31,20 @@ const inputSchema = new Schema(
   { _id: false }
 );
 
+// Round 39 -- real doctor-side POB (Primary Order Booking) rows per call.
+// Before this, the DCR schema had no order/POB field at all (only samples
+// and inputs), so every POB/Sales report could only show doctor-side POB as
+// 0. Sales Details, POB Wise, POB Wise - Periodically and DCR Analysis now
+// read this; rows exist only for calls where POB was actually entered.
+const pobSchema = new Schema(
+  {
+    productName: { type: String, required: true },
+    qty:         { type: Number, required: true, default: 0, min: 0 },
+    valueRs:     { type: Number, default: null, min: 0 }
+  },
+  { _id: false }
+);
+
 const dcrSchema = new Schema(
   {
     tenantSlug:      { type: String, required: true, lowercase: true, trim: true, index: true },
@@ -51,6 +65,7 @@ const dcrSchema = new Schema(
     callTime:        { type: String },                  // e.g. "10:30"
     samplesGiven:    { type: [sampleSchema], default: [] },
     inputsGiven:     { type: [inputSchema],  default: [] },
+    pob:             { type: [pobSchema],    default: [] },
     jointWork: {
       accompanyingManager: { type: String },
       jointWorkType:       { type: String, enum: ["FIELD_WORK", "ON_JOB_TRAINING", "PERFORMANCE_REVIEW"], default: "FIELD_WORK" },
