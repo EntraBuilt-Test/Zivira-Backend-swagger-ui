@@ -7,14 +7,20 @@ const slideViewSchema = new Schema(
   {
     tenantSlug: { type: String, required: true, lowercase: true, trim: true, index: true },
     employeeCode: { type: String, required: true, trim: true, index: true },
-    doctorId: { type: String, required: true, index: true },
+    doctorId: { type: String, default: "", index: true }, // "" for a chemist presentation
     slideId: { type: String, default: null },
     brandName: { type: String, trim: true, default: "" },
     productName: { type: String, trim: true, default: "" },
     startedAt: { type: Date, required: true },
     durationSec: { type: Number, required: true, min: 0, default: 0 },
     visitDateOnly: { type: String, required: true, index: true }, // YYYY-MM-DD (UTC, from startedAt)
-    month: { type: String, required: true, index: true }
+    month: { type: String, required: true, index: true },
+    // Round 46 -- SKU wise detailing dump (Product Exposure Analysis).
+    slideName: { type: String, trim: true, default: "" },
+    endedAt: { type: Date, default: null },
+    transactionId: { type: String, trim: true, default: "", index: true },
+    targetType: { type: String, enum: ["Doctor", "Chemist"], default: "Doctor" },
+    chemistId: { type: String, default: null }
   },
   { timestamps: true }
 );

@@ -1370,9 +1370,29 @@ fieldRouter.post("/slides/:id/mark-downloaded", asyncHandler(async (req, res) =>
   res.status(201).json({ data: serializeDocument(record) });
 }));
 
+// Round 46 -- field geo-tag capture for a listed doctor (feeds the Listeddr dump).
+const geoTagSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), address: z.string().max(300).optional() });
+fieldRouter.post("/doctors/:id/geo-tag", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const employee = await getFieldProfile(req.auth!.sub);
+  const body = geoTagSchema.parse(req.body);
+  if (!mongoose.isValidObjectId(req.params.id)) throw new HttpError(400, "Invalid doctor reference.");
+  const doctor = await DoctorModel.findOneAndUpdate(
+    { _id: req.params.id, tenantSlug, mappedEmployeeCode: employee.employeeCode },
+    { $push: { geoTags: { lat: body.lat, lng: body.lng, address: body.address || "", taggedAt: new Date(), employeeCode: employee.employeeCode } } },
+    { new: true }
+  );
+  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  await audit("FIELD_DOCTOR_GEO_TAGGED", "Doctor", String(doctor._id), { tenantSlug, employeeCode: employee.employeeCode });
+  res.status(201).json({ data: { id: String(doctor._id), geoTagCount: (doctor as any).geoTags?.length ?? 1 } });
+}));
+
 // Round 45 -- "Present slides": one row per slide shown to a listed doctor.
 const slideViewSchema = z.object({
-  doctorId: z.string().min(1),
+  doctorId: z.string().optional(),
+  chemistId: z.string().optional(),
+  slideName: z.string().optional(),
+  endedAt: z.string().optional(),
   slideId: z.string().optional(),
   brandName: z.string().optional(),
   productName: z.string().optional(),
@@ -1383,16 +1403,26 @@ fieldRouter.post("/slide-views", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const body = slideViewSchema.parse(req.body);
-  if (!mongoose.isValidObjectId(body.doctorId)) throw new HttpError(400, "Invalid doctor reference.");
-  const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode });
-  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  const forChemist = !body.doctorId && !!body.chemistId;
+  if (forChemist) {
+    if (!mongoose.isValidObjectId(body.chemistId)) throw new HttpError(400, "Invalid chemist reference.");
+    const chemist = await DealerModel.findOne({ _id: body.chemistId, tenantSlug, employeeCode: employee.employeeCode });
+    if (!chemist) throw new HttpError(404, "Chemist not found in your coverage");
+  } else {
+    if (!body.doctorId || !mongoose.isValidObjectId(body.doctorId)) throw new HttpError(400, "Invalid doctor reference.");
+    const doctor = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug, mappedEmployeeCode: employee.employeeCode });
+    if (!doctor) throw new HttpError(404, "Doctor not found in your list");
+  }
   const startedAt = body.startedAt ? new Date(body.startedAt) : new Date();
   if (Number.isNaN(startedAt.getTime()) || startedAt.getTime() > Date.now() + 5 * 60000) throw new HttpError(400, "Invalid start time");
   const iso = startedAt.toISOString();
   const row = await SlideViewModel.create({
-    tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, slideId: body.slideId || null,
+    tenantSlug, employeeCode: employee.employeeCode, doctorId: forChemist ? "" : body.doctorId, slideId: body.slideId || null,
     brandName: (body.brandName || "").trim(), productName: (body.productName || "").trim(), startedAt, durationSec: body.durationSec,
-    visitDateOnly: iso.slice(0, 10), month: iso.slice(0, 7)
+    visitDateOnly: iso.slice(0, 10), month: iso.slice(0, 7),
+    slideName: (body.slideName || "").trim(), endedAt: body.endedAt && !Number.isNaN(new Date(body.endedAt).getTime()) ? new Date(body.endedAt) : new Date(startedAt.getTime() + body.durationSec * 1000),
+    transactionId: `SV${employee.employeeCode}${iso.replace(/[-:T.Z]/g, "").slice(0, 14)}${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    targetType: forChemist ? "Chemist" : "Doctor", chemistId: forChemist ? body.chemistId : null
   });
   res.status(201).json({ data: serializeDocument(row) });
 }));
@@ -2619,7 +2649,11 @@ const rcpaEntrySchema = z.object({
   ourProduct: z.string().min(1),
   ourQty: z.number().min(0),
   competitorProduct: z.string().optional(),
-  competitorQty: z.number().min(0).optional()
+  competitorQty: z.number().min(0).optional(),
+  // Round 46 -- RCPA Dump columns.
+  ourPtr: z.number().min(0).optional(),
+  competitorName: z.string().optional(),
+  competitorPtr: z.number().min(0).optional()
 });
 
 fieldRouter.get("/rcpa", asyncHandler(async (req, res) => {
@@ -2650,7 +2684,8 @@ fieldRouter.post("/rcpa", asyncHandler(async (req, res) => {
     tenantSlug, employeeCode: employee.employeeCode, doctorId: String(doctor._id), doctorName: doctor.name,
     chemistId: body.chemistId || null, chemistName, date, month: date.slice(0, 7),
     ourProduct: body.ourProduct.trim(), ourQty: body.ourQty,
-    competitorProduct: body.competitorProduct?.trim() || "", competitorQty: body.competitorQty ?? 0
+    competitorProduct: body.competitorProduct?.trim() || "", competitorQty: body.competitorQty ?? 0,
+    ourPtr: body.ourPtr ?? null, competitorName: body.competitorName?.trim() || "", competitorPtr: body.competitorPtr ?? null
   });
   await audit("FIELD_RCPA_SAVED", "Rcpa", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId });
   res.status(201).json({ data: serializeDocument(row) });

@@ -121,7 +121,7 @@ const idOf = (d: any) => String(d._id);
 (mongoose.Model as any).findById = function (id: any) { const q = new Q(coll(this).filter((d) => idOf(d) === String(id)), this); const t = q.then.bind(q); (q as any).then = (res: any, rej: any) => t((arr: any[]) => arr[0] || null).then(res, rej); return q; };
 (mongoose.Model as any).updateOne = function (f: any, u: any) { const hit = coll(this).filter(sift(f))[0]; if (hit) Object.assign(hit, u.$set || {}); return Promise.resolve({ modifiedCount: hit ? 1 : 0 }); };
 (mongoose.Model as any).deleteMany = function (f: any) { const arr = coll(this); const keep = arr.filter((d) => !sift(f)(d)); const n = arr.length - keep.length; arr.length = 0; arr.push(...keep); return Promise.resolve({ deletedCount: n }); };
-(mongoose.Model as any).findOneAndUpdate = async function (f: any, u: any, o: any = {}) { let hit = coll(this).filter(sift(f))[0]; if (!hit && o.upsert) { hit = { _id: asId(800000 + coll(this).length), ...Object.fromEntries(Object.entries(f).filter(([, v]) => typeof v !== "object")), ...(u.$setOnInsert || {}) }; coll(this).push(hit); } if (hit) Object.assign(hit, u.$set || {}); return hit || null; };
+(mongoose.Model as any).findOneAndUpdate = async function (f: any, u: any, o: any = {}) { let hit = coll(this).filter(sift(f))[0]; if (!hit && o.upsert) { hit = { _id: asId(800000 + coll(this).length), ...Object.fromEntries(Object.entries(f).filter(([, v]) => typeof v !== "object")), ...(u.$setOnInsert || {}) }; coll(this).push(hit); } if (hit) { Object.assign(hit, u.$set || {}); for (const [k, v] of Object.entries(u.$push || {})) (hit[k] = hit[k] || []).push(v); } return hit || null; };
 (mongoose.Model as any).updateMany = function (f: any, u: any) { const hit = coll(this).filter(sift(f)); for (const d of hit) Object.assign(d, u.$set || {}); return Promise.resolve({ modifiedCount: hit.length }); };
 
 const assert = (await import("node:assert")).default;
@@ -221,6 +221,58 @@ r = await get(`/company/mis/visit-details/datewise?employeeCode=E2&month=bad`); 
   y = await get(`/company/mis/drs-analysis?employeeCode=E1&fromMonth=${nowMonth}&toMonth=${nowMonth}`); assert.equal(y.status, 200);
   assert.equal(y.json.data.rows.find((r: any) => r.employeeCode === "E2").perMonth[nowMonth].edet, 1);
   y = await get(`/company/mis/drs-analysis?fromMonth=${nowMonth}`); assert.equal(y.status, 400);
+}
+// ── Round 46 routes ─────────────────────────────────────────────────────
+{
+  const fx = (n: string) => fs2.readFileSync(`scripts/r46-tests/fixtures/${n}`, "utf8");
+  const nowMonth = "2026-10";
+  const y0 = await get(`/company/mis/rcpa-dump?month=${nowMonth}`); assert.equal(y0.status, 400);                     // a manager must be chosen
+  let y = await get(`/company/mis/rcpa-dump?employeeCode=admin&month=${nowMonth}`); assert.equal(y.status, 400);
+  y = await get(`/company/mis/rcpa-dump?employeeCode=E1&month=${nowMonth}`); assert.equal(y.status, 200); assert.equal(String(y.buf), fx("legacy_rcpa.xls"));
+  // field capture -> dump
+  const dealer = { _id: asId(950), tenantSlug: T, dealerName: "City Chemist", employeeCode: "E2", patchName: "KANNUR", status: "ACTIVE", sourceSNo: 9, category: "B", clusterName: "KN-1" };
+  store["dealers"] = [...(store["dealers"] || []), dealer];
+  const rc = await call("POST", "/field/rcpa", "e2", { doctorId: String(asId(101)), chemistId: String(asId(950)), date: "2026-10-03", ourProduct: "DEXNOVA", ourQty: 5, ourPtr: 12.5, competitorProduct: "COMPX", competitorQty: 2, competitorName: "Comp Pharma", competitorPtr: 11 });
+  assert.equal(rc.status, 201); assert.equal(rc.json.data.competitorName, "Comp Pharma"); assert.equal(rc.json.data.ourPtr, 12.5);
+  y = await get(`/company/mis/rcpa-dump?employeeCode=E1&month=${nowMonth}&format=csv`); assert.equal(y.status, 200);
+  const line = String(y.text).split("\r\n")[1]; assert.ok(line.includes("City Chemist") && line.includes("Comp Pharma") && line.includes("12.5") && line.includes("11") && line.endsWith(","), line);
+  y = await get(`/company/mis/rcpa-dump?employeeCode=E1&month=${nowMonth}`); assert.ok(String(y.buf).includes("<td>KN-1</td>") && String(y.buf).endsWith("</table>"));
+  // slide view capture (doctor + chemist) -> SKU dump
+  const sd = await call("POST", "/field/slide-views", "e2", { doctorId: String(asId(101)), slideName: "Intro.pdf", brandName: "DEXNOVA", productName: "DEXNOVA", durationSec: 75 });
+  assert.equal(sd.status, 201); assert.ok(/^SVE2/.test(sd.json.data.transactionId)); assert.equal(sd.json.data.slideName, "Intro.pdf"); assert.ok(sd.json.data.endedAt);
+  const sc = await call("POST", "/field/slide-views", "e2", { chemistId: String(asId(950)), slideName: "Pack.pdf", brandName: "DEXNOVA", durationSec: 30 });
+  assert.equal(sc.status, 201); assert.equal(sc.json.data.targetType, "Chemist");
+  assert.equal((await call("POST", "/field/slide-views", "e2", { durationSec: 5 })).status, 400);
+  y = await get(`/company/mis/sku-dump?employeeCode=admin&month=${new Date().toISOString().slice(0, 7)}`); assert.equal(y.status, 200);
+  const sk = String(y.buf).split("\n"); assert.equal(sk[0], fx("legacy_sku_dump.xls").trim()); assert.equal(sk.filter(Boolean).length, 4, "header + the R45 view + my doctor and chemist views"); assert.ok(sk.filter(Boolean).every((l) => l.split("\t").length === 25) && sk.some((l) => l.includes("\tChemist\t")));
+  y = await get(`/company/mis/sku-dump?employeeCode=admin&month=2020-01`); assert.equal(String(y.buf), fx("legacy_sku_dump.xls"));
+  // geo tag capture -> Listeddr dump
+  const gt = await call("POST", `/field/doctors/${asId(101)}/geo-tag`, "e2", { lat: 12.97, lng: 77.59, address: "Bangalore" }); assert.equal(gt.status, 201);
+  y = await get(`/company/mis/listeddr-dump?employeeCode=E1`); assert.equal(y.status, 200);
+  const ld = String(y.text).split("\r\n"); assert.equal(ld[0], fx("legacy_listeddr_head2.csv").split("\r\n")[0]); assert.ok(ld[1].startsWith('"1",') && ld.at(-1) === "");
+  assert.ok(ld.some((l) => l.includes('"12.97","77.59","Bangalore"')));
+  y = await get(`/company/mis/listeddr-dump?employeeCode=E1&format=xlsx`); assert.equal(y.status, 200);
+  assert.equal(XL.utils.sheet_to_json<any[]>(XL.read(y.buf!, { type: "buffer" }).Sheets["Listeddr"], { header: 1 })[0].length, 66);
+  // xlsx dumps: sheet names, merged title, headers
+  const wbOf = (b: Buffer) => XL.read(b, { type: "buffer" });
+  y = await get(`/company/mis/visit-drs-dump?employeeCode=E1&month=${nowMonth}`); assert.equal(y.status, 200);
+  let wbx = wbOf(y.buf!); assert.deepEqual(wbx.SheetNames, ["tab1"]); const vrows = XL.utils.sheet_to_json<any[]>(wbx.Sheets["tab1"], { header: 1 }); assert.equal(vrows[0].length, 26); assert.equal(vrows[0][6], "MR Visit Count");
+  assert.equal(wbx.Sheets["tab1"]["!merges"], undefined);
+  y = await get(`/company/mis/ss-dump?employeeCode=E1&month=${nowMonth}`); wbx = wbOf(y.buf!); assert.deepEqual(wbx.SheetNames, ["SS"]); assert.equal(wbx.Sheets["SS"]["A1"].v, "SS Dump (  SANDEEP R SHENOY - ABM - ERNAKULAM )");
+  assert.equal(XL.utils.encode_range(wbx.Sheets["SS"]["!merges"]![0]), "A1:L1");
+  y = await get(`/company/mis/chemist-dump?employeeCode=E1`); wbx = wbOf(y.buf!); assert.deepEqual(wbx.SheetNames, ["Chemist"]); assert.equal(XL.utils.encode_range(wbx.Sheets["Chemist"]["!merges"]![0]), "A1:K1");
+  assert.equal(wbx.Sheets["Chemist"]["A1"].v, "Chemist Dump (  SANDEEP R SHENOY - ABM - ERNAKULAM )"); assert.equal(wbx.Sheets["Chemist"]["F3"].v, "City Chemist");
+  y = await get(`/company/mis/transit-bills-dump?month=${nowMonth}`); wbx = wbOf(y.buf!); assert.deepEqual(wbx.SheetNames, ["Transit"]); assert.equal(wbx.Sheets["Transit"]["A1"].v, "Transit Bills (  Oct - 2026 )"); assert.equal(XL.utils.encode_range(wbx.Sheets["Transit"]["!merges"]![0]), "A1:H1");
+  y = await get(`/company/mis/stockist-dump?division=ALL`); wbx = wbOf(y.buf!); assert.deepEqual(wbx.SheetNames, ["Stockist"]); assert.equal(wbx.Sheets["Stockist"]["A1"].v, "Stockist Dump (  ALL )"); assert.equal(XL.utils.encode_range(wbx.Sheets["Stockist"]["!merges"]![0]), "A1:H1");
+  // resign flow -> Resigned User Status + Join/Left
+  assert.equal((await call("POST", "/company/employees/E3/resign", "admin", { leftDate: "bad" })).status, 400);
+  assert.equal((await call("POST", "/company/employees/E3/resign", "admin", { leftDate: "2026-10-02" })).status, 200);
+  assert.equal((await call("POST", "/company/employees/NOPE/resign", "admin", { leftDate: "2026-10-02" })).status, 404);
+  y = await get(`/company/mis/resigned-users?fromMonth=2026-09&toMonth=2026-10`); assert.equal(y.status, 200); assert.equal(y.json.data.rows.length, 1); assert.equal(y.json.data.rows[0].employeeCode, "E3");
+  y = await get(`/company/mis/join-left?fromMonth=2026-09&toMonth=2026-10`); assert.equal(y.status, 200); assert.equal(y.json.data.left[0].dateOfLeft, "02/10/2026"); assert.ok(y.json.data.left[0].deactiveDate);
+  assert.equal((await get(`/company/mis/join-left?fromMonth=2026-10&toMonth=2026-09`)).status, 400);
+  y = await get(`/company/mis/tp-deviation?employeeCode=E1&month=${nowMonth}`); assert.equal(y.status, 200); assert.ok(Array.isArray(y.json.data.rows));
+  assert.equal((await get(`/company/mis/tp-deviation?month=${nowMonth}`)).status, 400);
 }
 console.log("R42 ROUTES OK");
 server.close(); process.exit(0);

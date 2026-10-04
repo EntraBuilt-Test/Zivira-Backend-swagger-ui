@@ -36,7 +36,14 @@ const employeeSchema = new Schema(
     l1Division: { type: String, trim: true, default: null },
     l1Role: { type: String, trim: true, default: null },
     drivingLicense: { type: String, trim: true, default: null },
-    status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
+    status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true },
+    // Round 46 -- resignation / separation tracking for Resigned User Status
+    // and Join/Left Details. leftDate = last working/separation date;
+    // deactivatedAt = when the ID was switched off (set automatically on the
+    // ACTIVE -> INACTIVE transition). sfCode = legacy "Saneforce code".
+    leftDate: { type: Date, default: null },
+    deactivatedAt: { type: Date, default: null },
+    sfCode: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );

@@ -7,6 +7,7 @@
 //   * Doctor.campaign: from the Doctor - Campaign Map master
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
+import { TenantModel } from "../models/tenant.model.js";
 import { CompanyConfigModel } from "../models/company-config.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { ensureWorkTypeCodes } from "../utils/work-type-codes.js";
@@ -54,6 +55,16 @@ export async function upgradeTenant(tenantSlug: string) {
     const Model = getMasterModel("doctorTypeMaster");
     for (const name of ["Core drs", "Academica", "BILFL", "Clinic Utilitie", "Just for You"]) {
       await Model.updateOne({ tenantSlug, doctorTypeName: name }, { $setOnInsert: { status: "Active" } }, { upsert: true });
+    }
+  } catch { /* master not configured */ }
+  // Round 46 -- company-division short code for Join/Left Details (idempotent;
+  // never overwrites an edited code). Only seeded for the Zivira company.
+  try {
+    const tenant = (await TenantModel.findOne({ slug: tenantSlug }).lean()) as any;
+    if (tenant && /zivira/i.test(String(tenant.name))) {
+      const Division = getMasterModel("divisionMaster");
+      await Division.updateOne({ tenantSlug, divisionName: tenant.name }, { $setOnInsert: { divisionCode: "ZV", status: "Active" } }, { upsert: true });
+      await Division.updateOne({ tenantSlug, divisionName: tenant.name, shortCode: { $exists: false } }, { $set: { shortCode: "ZV" } });
     }
   } catch { /* master not configured */ }
   return out;

@@ -44,6 +44,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
 import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
 import XLSX from "xlsx";
+import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
 import { visitDetailOptions, computeCatClsVisit, computeDateWise, VISIT_MODES, type VisitMode } from "../utils/visit-details-reports.js";
 import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat, computeHqVisits } from "../utils/pob-rx-reports.js";
@@ -135,7 +136,10 @@ const employeeSchema = z.object({
   // Employee form. Declared here (not just on the model) for the same
   // reason as the email/joinDate fix above: an undeclared key gets
   // silently stripped by zod's .parse() before it reaches Mongo.
-  personalEmail: z.string().email().optional().nullable()
+  personalEmail: z.string().email().optional().nullable(),
+  // Round 46 -- separation tracking + legacy Saneforce code.
+  leftDate: z.string().optional().nullable(),
+  sfCode: z.string().trim().optional().nullable()
 });
 
 const doctorSchema = z.object({
@@ -160,7 +164,24 @@ const doctorSchema = z.object({
   doctorTypes: z.array(z.string().trim().min(1)).optional(),
   // Round 45 -- campaign (a campaignMaster name) and promoted brands, editable on the Listed Doctor form.
   campaign: z.string().trim().nullable().optional(),
-  promotedBrands: z.array(z.string().trim().min(1)).optional()
+  promotedBrands: z.array(z.string().trim().min(1)).optional(),
+  // Round 46 -- Listeddr dump business-profile fields + P0..P5 priority products.
+  drPotential: z.string().trim().nullable().optional(),
+  businessValue: z.string().trim().nullable().optional(),
+  expBusinessValue: z.string().trim().nullable().optional(),
+  currentBusiness: z.string().trim().nullable().optional(),
+  communication: z.string().trim().nullable().optional(),
+  workingPlace: z.string().trim().nullable().optional(),
+  visitingDays: z.string().trim().nullable().optional(),
+  iuiCycle: z.string().trim().nullable().optional(),
+  avgPatientsPerDay: z.string().trim().nullable().optional(),
+  classOfPatients: z.string().trim().nullable().optional(),
+  timeOfMeeting: z.string().trim().nullable().optional(),
+  consultationFees: z.string().trim().nullable().optional(),
+  hospitalAddress: z.string().trim().nullable().optional(),
+  telephone: z.string().trim().nullable().optional(),
+  priorityProducts: z.array(z.string().trim()).max(6).optional(),
+  mappedProducts: z.array(z.string().trim().min(1)).optional()
 });
 
 const productSchema = z.object({
@@ -256,13 +277,37 @@ companyRouter.patch(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = employeeSchema.partial().parse(req.body);
+    const patch: Record<string, unknown> = { ...body };
+    if (body.leftDate !== undefined) patch.leftDate = body.leftDate ? new Date(body.leftDate) : null;
+    if (body.status === "INACTIVE") {
+      const cur = await EmployeeModel.findOne({ tenantSlug, employeeCode: req.params.employeeCode }).select("status deactivatedAt").lean() as any;
+      if (cur && cur.status !== "INACTIVE" && !cur.deactivatedAt) patch.deactivatedAt = new Date();
+    } else if (body.status === "ACTIVE") { patch.deactivatedAt = null; patch.leftDate = null; }
     const employee = await EmployeeModel.findOneAndUpdate(
       { tenantSlug, employeeCode: req.params.employeeCode },
-      { $set: body },
+      { $set: patch },
       { new: true }
     );
     if (!employee) throw new HttpError(404, "Employee not found");
     await audit("EMPLOYEE_UPDATED", "Employee", String(employee._id), { tenantSlug, employeeCode: employee.employeeCode });
+    res.json({ data: serializeDocument(employee) });
+  })
+);
+
+// Round 46 -- "Mark Resigned": records the left date and deactivates the ID
+// (deactivatedAt = now) so Resigned User Status / Join-Left Details are real.
+companyRouter.post(
+  "/employees/:employeeCode/resign",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = z.object({ leftDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(req.body);
+    const employee = await EmployeeModel.findOneAndUpdate(
+      { tenantSlug, employeeCode: req.params.employeeCode },
+      { $set: { leftDate: new Date(`${body.leftDate}T00:00:00Z`), status: "INACTIVE", deactivatedAt: new Date() } },
+      { new: true }
+    );
+    if (!employee) throw new HttpError(404, "Employee not found");
+    await audit("EMPLOYEE_RESIGNED", "Employee", String(employee._id), { tenantSlug, employeeCode: employee.employeeCode, leftDate: body.leftDate });
     res.json({ data: serializeDocument(employee) });
   })
 );
@@ -2629,6 +2674,11 @@ const dealerValidation = z.object({
   location: z.string().optional(),
   pincode: z.string().optional(),
   address: z.string().optional(),
+  // Round 46 -- Chemist Dump / RCPA Dump columns.
+  chemistClass: z.string().trim().optional().nullable(),
+  category: z.string().trim().optional().nullable(),
+  clusterName: z.string().trim().optional().nullable(),
+  commonRefNo: z.string().trim().optional().nullable(),
   status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE")
 });
 
@@ -5650,6 +5700,100 @@ companyRouter.get("/mis/slide-analysis", asyncHandler(async (req, res) => {
   const from = MON(req.query.fromMonth, "fromMonth"), to = MON(req.query.toMonth || req.query.fromMonth, "toMonth");
   if (from > to) throw new HttpError(400, "From must not be after To");
   const result = await computeSlideAnalysis(req.auth!.tenantSlug!, codeOf(req) || "admin", from, to, basedOn, kind, String(req.query.filterValue || ""));
+  if (!result) throw new HttpError(404, "Field force not found");
+  res.json({ data: result });
+}));
+
+// ═══ Round 46 -- dumps and result screens ═══════════════════════════════
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const sendXlsx = (res: any, name: string, buf: Buffer) => { res.setHeader("Content-Type", XLSX_MIME); res.setHeader("Content-Disposition", `attachment; filename="${name}"`); res.send(buf); };
+async function forceRoot(req: any, allowAdmin: boolean) {
+  const code = codeOf(req);
+  if (!code) throw new HttpError(400, "Select a field force");
+  if (code === "admin") { if (!allowAdmin) throw new HttpError(400, "Select a field force"); return { code, root: null as any }; }
+  return { code, root: await requireEmployeeByCode(req.auth!.tenantSlug!, code) };
+}
+
+companyRouter.get("/mis/rcpa-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const { code } = await forceRoot(req, false);
+  const rows = await buildRcpaRows(req.auth!.tenantSlug!, code, month);
+  if (String(req.query.format || "xls") === "csv") {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="RCPA_Dump_${month}.csv"`);
+    res.send(rcpaCsv(rows)); return;
+  }
+  res.setHeader("Content-Type", "application/vnd.ms-excel");
+  res.setHeader("Content-Disposition", `attachment; filename="RCPA_Dump_${month}.xls"`);
+  res.send(rcpaHtmlXls(rows));
+}));
+
+companyRouter.get("/mis/sku-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const { code } = await forceRoot(req, true);
+  const rows = await buildSkuRows(req.auth!.tenantSlug!, code, month);
+  res.setHeader("Content-Type", "application/vnd.ms-excel");
+  res.setHeader("Content-Disposition", `attachment; filename="SKU_Wise_Detailing_${month}.xls"`);
+  res.send(skuTsv(rows));
+}));
+
+companyRouter.get("/mis/visit-drs-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const { code } = await forceRoot(req, false);
+  const rows = await buildVisitDrsRows(req.auth!.tenantSlug!, code, month);
+  sendXlsx(res, `Listeddr_Visit_${month}.xlsx`, await legacyXlsx({ sheet: "tab1", headers: VISIT_DRS_HEADERS, rows, widths: { 1: 6.13, 2: 10.55, 3: 16.55, 4: 5.84, 5: 7.13, 6: 7.41, 7: 15.98, 8: 14.84, 9: 15.55, 10: 14.41, 11: 17.13, 12: 15.98, 13: 17.27, 14: 16.13, 15: 16.98, 16: 15.84, 17: 17.13, 18: 15.98, 19: 17.41, 20: 16.27, 21: 19.41, 22: 18.27, 23: 16.13, 24: 14.98, 25: 15.84, 26: 14.7 } }));
+}));
+
+companyRouter.get("/mis/ss-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const { code, root } = await forceRoot(req, false);
+  const rows = await buildSsRows(req.auth!.tenantSlug!, code, month);
+  sendXlsx(res, `SS_Dump_${month}.xlsx`, await legacyXlsx({ sheet: "SS", title: `SS Dump (  ${forceLabel(root)} )`, mergeTo: SS_HEADERS.length, headers: SS_HEADERS, rows, widths: { 1: 24, 2: 16, 3: 13, 4: 12, 5: 36, 6: 16, 7: 28, 8: 16, 9: 10, 10: 12, 11: 12, 12: 10 } }));
+}));
+
+companyRouter.get("/mis/listeddr-dump", asyncHandler(async (req, res) => {
+  const { code } = await forceRoot(req, false);
+  const rows = await buildListeddrRows(req.auth!.tenantSlug!, code);
+  if (String(req.query.format || "csv") === "xlsx") {
+    sendXlsx(res, "Listeddr_Dump.xlsx", await legacyXlsx({ sheet: "Listeddr", headers: LISTEDDR_HEADERS, rows })); return;
+  }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="Dump.csv"');
+  res.send(listeddrCsv(rows));
+}));
+
+companyRouter.get("/mis/chemist-dump", asyncHandler(async (req, res) => {
+  const { code } = await forceRoot(req, false);
+  const { title, rows } = await buildChemistRows(req.auth!.tenantSlug!, code);
+  sendXlsx(res, "Chemist_Dump.xlsx", await legacyXlsx({ sheet: "Chemist", title, mergeTo: 11, headers: CHEMIST_HEADERS, rows, widths: CHEMIST_WIDTHS }));
+}));
+
+companyRouter.get("/mis/transit-bills-dump", asyncHandler(async (req, res) => {
+  const month = MON(req.query.month);
+  const { title, rows } = await buildTransitRows(req.auth!.tenantSlug!, month);
+  sendXlsx(res, `Transit_Bills_${month}.xlsx`, await legacyXlsx({ sheet: "Transit", title, mergeTo: 8, headers: TRANSIT_HEADERS, rows, widths: TRANSIT_WIDTHS }));
+}));
+
+companyRouter.get("/mis/stockist-dump", asyncHandler(async (req, res) => {
+  const { title, rows } = await buildStockistRows(req.auth!.tenantSlug!, String(req.query.division || ""));
+  sendXlsx(res, "Stockist_Dump.xlsx", await legacyXlsx({ sheet: "Stockist", title, mergeTo: 8, headers: STOCKIST_HEADERS, rows, widths: STOCKIST_WIDTHS }));
+}));
+
+companyRouter.get("/mis/resigned-users", asyncHandler(async (req, res) => {
+  const from = MON(req.query.fromMonth, "fromMonth"), to = MON(req.query.toMonth || req.query.fromMonth, "toMonth");
+  if (from > to) throw new HttpError(400, "From must not be after To");
+  res.json({ data: await computeResignedUsers(req.auth!.tenantSlug!, from, to) });
+}));
+
+companyRouter.get("/mis/join-left", asyncHandler(async (req, res) => {
+  const from = MON(req.query.fromMonth, "fromMonth"), to = MON(req.query.toMonth || req.query.fromMonth, "toMonth");
+  if (from > to) throw new HttpError(400, "From must not be after To");
+  res.json({ data: await computeJoinLeft(req.auth!.tenantSlug!, from, to) });
+}));
+
+companyRouter.get("/mis/tp-deviation", asyncHandler(async (req, res) => {
+  const code = codeOf(req); if (!code) throw new HttpError(400, "Select a field force");
+  const result = await computeTpDeviation(req.auth!.tenantSlug!, code, MON(req.query.month));
   if (!result) throw new HttpError(404, "Field force not found");
   res.json({ data: result });
 }));

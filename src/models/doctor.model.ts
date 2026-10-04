@@ -54,6 +54,27 @@ const doctorSchema = new Schema(
     // Round 45 -- brands this doctor is being promoted for (Custom Report "Promoted DRs").
     promotedBrands: { type: [String], default: [] },
     // Round 41 item 4 -- supportive chemists for this doctor.
+    // Round 46 -- Listeddr dump business-profile fields (all optional, editable
+    // on the Listed Doctor edit form).
+    drPotential: { type: String, trim: true, default: null },
+    businessValue: { type: String, trim: true, default: null },
+    expBusinessValue: { type: String, trim: true, default: null },
+    currentBusiness: { type: String, trim: true, default: null },
+    communication: { type: String, trim: true, default: null },
+    workingPlace: { type: String, trim: true, default: null },
+    visitingDays: { type: String, trim: true, default: null },
+    iuiCycle: { type: String, trim: true, default: null },
+    avgPatientsPerDay: { type: String, trim: true, default: null },
+    classOfPatients: { type: String, trim: true, default: null },
+    timeOfMeeting: { type: String, trim: true, default: null },
+    consultationFees: { type: String, trim: true, default: null },
+    hospitalAddress: { type: String, trim: true, default: null },
+    telephone: { type: String, trim: true, default: null },
+    // P0..P5 priority products (index = priority) and mapped products.
+    priorityProducts: { type: [String], default: [] },
+    mappedProducts: { type: [String], default: [] },
+    // Field geo-tag captures (the latest is the doctor's mapped location).
+    geoTags: { type: [new Schema({ lat: Number, lng: Number, address: { type: String, default: "" }, taggedAt: { type: Date, default: Date.now }, employeeCode: { type: String, default: "" } }, { _id: false })], default: [] },
     supportiveChemists: { type: [new Schema({ dealerId: { type: String, required: true }, dealerName: { type: String, default: "" } }, { _id: false })], default: [] }
   },
   { timestamps: true }

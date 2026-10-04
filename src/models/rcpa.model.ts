@@ -18,7 +18,11 @@ const rcpaSchema = new Schema(
     ourProduct: { type: String, required: true, trim: true },
     ourQty: { type: Number, required: true, min: 0 },
     competitorProduct: { type: String, trim: true, default: "" },
-    competitorQty: { type: Number, default: 0, min: 0 }
+    competitorQty: { type: Number, default: 0, min: 0 },
+    // Round 46 -- RCPA Dump columns: PTR of our product, competitor company and PTR.
+    ourPtr: { type: Number, default: null, min: 0 },
+    competitorName: { type: String, trim: true, default: "" },
+    competitorPtr: { type: Number, default: null, min: 0 }
   },
   { timestamps: true }
 );

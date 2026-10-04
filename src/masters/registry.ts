@@ -219,6 +219,7 @@ export const ZIVIRA_MENU_PATH_OPTIONS: string[] = [
   "Target Master (division-dashboard/division-navigation-tabs/division-master/sales/target-master)",
   "Primary Sales (division-dashboard/division-navigation-tabs/division-master/sales/primary-sales)",
   "Secondary Sales (division-dashboard/division-navigation-tabs/division-master/sales/secondary-sales)",
+  "Transit Bills (division-dashboard/division-navigation-tabs/division-master/sales/transit-bills-entry)",
   "Claims Master (division-dashboard/division-navigation-tabs/division-master/sales/claims-master)",
   "IMS (division-dashboard/division-navigation-tabs/division-master/sales/ims)",
   "Activities (division-dashboard/division-navigation-tabs/activities)",
@@ -357,6 +358,8 @@ export const ZIVIRA_MENU_PATH_OPTIONS: string[] = [
   "Listed Stockiest (division-dashboard/division-navigation-tabs/mis-reports/dump/listed-stockiest)",
   "Dump II (division-dashboard/division-navigation-tabs/mis-reports/dump-ii)",
   "RCPA (division-dashboard/division-navigation-tabs/mis-reports/dump-ii/rcpa)",
+  "Product Exposure Analysis [SKU wise detailing secs] (division-dashboard/division-navigation-tabs/mis-reports/dump-ii/product-exposure-analysis-sku)",
+  "TP - Deviation For Baselevel (division-dashboard/division-navigation-tabs/mis-reports/tp-deviation-baselevel)",
   "Doctor (division-dashboard/division-navigation-tabs/mis-reports/doctor)",
   "Digital Detailing (division-dashboard/division-navigation-tabs/mis-reports/digital-detailing)",
   "Visit Wise (division-dashboard/division-navigation-tabs/mis-reports/digital-detailing/visit-wise)",
@@ -502,8 +505,10 @@ export const MASTERS: MasterConfig[] = [
     keyFields: ["divisionCode"],
     fields: [
       { key: "divisionCode", label: "Division Code" },
-      { key: "divisionName", label: "Division Name", options: ["Astra", "Aura", "Zivira"] },
+      { key: "divisionName", label: "Division Name", options: ["Astra", "Aura", "Zivira", "Zivira Labs Pvt Ltd"] },
       { key: "divisionShortName", label: "Division Short Name", options: ["AST", "AUR", "ZIV"] },
+      // Round 46 -- company-division short code printed in Join/Left Details (e.g. ZV).
+      { key: "shortCode", label: "Short Code" },
       { key: "description", label: "Description" },
       { key: "status", label: "Status", options: ACTIVE_INACTIVE }
     ]
@@ -626,6 +631,8 @@ export const MASTERS: MasterConfig[] = [
       { key: "sku", label: "SKU" },
       { key: "division", label: "Division", sourceMaster: "divisionMaster", sourceField: "divisionName" },
       { key: "uom", label: "UOM", options: ["Tube", "Strip", "Bottle", "Vial", "Box"] },
+      // Round 46 -- PTR (price to retailer) shown in the RCPA Dump.
+      { key: "ptr", label: "PTR (Rs.)", type: "number" },
       { key: "status", label: "Status", options: ACTIVE_INACTIVE }
     ]
   },
@@ -1583,6 +1590,9 @@ export const MASTERS: MasterConfig[] = [
       { key: "month", label: "Month" },
       { key: "stockist", label: "Stockist", sourceMaster: "stockistMaster", sourceField: "stockistName" },
       { key: "chemist", label: "Chemist", sourceMaster: "dealers", sourceField: "dealerName" },
+      // Round 46 -- SS Dump columns: the field force the sale is credited to and the bill date.
+      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
+      { key: "billDate", label: "Bill Date", type: "date" },
       { key: "salesUnit", label: "Sales Unit", type: "number" },
       { key: "salesValue", label: "Sales Value", type: "number" },
       { key: "freeUnit", label: "Free Unit", type: "number" },
@@ -1592,6 +1602,24 @@ export const MASTERS: MasterConfig[] = [
       // Net Sale Unit/Value = Sales − Return (server-computed on save).
       { key: "netSaleUnit", label: "Net Sale Unit", type: "number" },
       { key: "netSaleValue", label: "Net Sale Value", type: "number" },
+      { key: "status", label: "Status", options: ACTIVE_INACTIVE }
+    ]
+  },
+  {
+    // Round 46 -- stockist bills in transit (Dump > Transit Bills). Entered or
+    // bulk-imported through the generic master screen (Sales > Transit Bills).
+    key: "transitBills",
+    title: "Transit Bills",
+    keyFields: ["billNo", "productName"],
+    fields: [
+      { key: "billNo", label: "Bill No" },
+      { key: "billDate", label: "Bill Date", type: "date" },
+      { key: "stockistName", label: "Stockist", sourceMaster: "stockistMaster", sourceField: "stockistName" },
+      { key: "stockistErpCode", label: "Stockist ERP Code" },
+      { key: "productErpCode", label: "Product ERP Code" },
+      { key: "productName", label: "Product", sourceMaster: "productMaster", sourceField: "productName" },
+      { key: "saleQty", label: "Sale Qty", type: "number" },
+      { key: "saleValue", label: "Sale Value", type: "number" },
       { key: "status", label: "Status", options: ACTIVE_INACTIVE }
     ]
   },

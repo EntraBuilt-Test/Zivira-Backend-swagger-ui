@@ -368,7 +368,7 @@ export async function computeDrsAnalysis(tenantSlug: string, code: string, fromM
     const perMonth: Record<string, { total: number; met: number; edet: number; pct: number }> = {};
     for (const m of months) {
       const met = new Set(dcrs.filter((d) => d.employeeCode === e.employeeCode && d.month === m && d.doctorId).map((d) => String(d.doctorId))).size;
-      const edet = new Set(views.filter((v) => v.employeeCode === e.employeeCode && v.month === m).map((v) => String(v.doctorId))).size;
+      const edet = new Set(views.filter((v) => v.employeeCode === e.employeeCode && v.month === m && v.doctorId).map((v) => String(v.doctorId))).size;
       perMonth[m] = { total, met, edet, pct: total ? round2((edet / total) * 100) : 0 };
     }
     return { sno: i + 1, employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, perMonth };

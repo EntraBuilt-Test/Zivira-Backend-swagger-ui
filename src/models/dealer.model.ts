@@ -17,6 +17,11 @@ const dealerSchema = new Schema(
     location: { type: String, trim: true, default: null },
     pincode: { type: String, trim: true, default: null },
     address: { type: String, trim: true, default: null },
+    // Round 46 -- Chemist Dump / RCPA Dump columns.
+    chemistClass: { type: String, trim: true, default: null },
+    category: { type: String, trim: true, default: null },
+    clusterName: { type: String, trim: true, default: null },
+    commonRefNo: { type: String, trim: true, default: null },
     status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
   },
   { timestamps: true }
