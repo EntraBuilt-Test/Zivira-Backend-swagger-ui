@@ -42,6 +42,8 @@ import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
+import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
+import XLSX from "xlsx";
 import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
 import type { OrgEmployee } from "../utils/org-hierarchy.js";
 import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager, computeFieldworkManagerRow, computeManagerWiseCoverageRow, computeSpecialityVisitWise, computeCategoryVisitWise } from "../utils/manager-analysis-compute.js";
@@ -5005,5 +5007,144 @@ companyRouter.get(
     const team = await selfAndTeam(tenantSlug, employeeCode);
     const result = await computePobPeriodic(tenantSlug, team, from, to, products);
     res.json({ data: { ...result, from, to, fieldForceName: selected.name, designation: selected.designation, hq: selected.territory } });
+  })
+);
+
+// ═══ Round 40 -- Work Hygiene, Class Wise View, DCR Analysis Dump, Missed
+// Call, Single Doctor, Rep Vs Manager, Review Report, Assessment Report.
+// All computed in src/utils/mis-reports-2-compute.ts from real documents.
+companyRouter.get(
+  "/mis/work-hygiene",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    const result = await computeWorkHygiene(tenantSlug, emp, month);
+    res.json({ data: { ...result, fieldForceName: emp.name, designation: emp.designation, hq: emp.territory } });
+  })
+);
+
+companyRouter.get(
+  "/mis/class-wise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    const result = await computeClassWiseView(tenantSlug, emp, monthRange(fromMonth, toMonth));
+    res.json({ data: { ...result, fieldForceName: emp.name, designation: emp.designation, hq: emp.territory } });
+  })
+);
+
+// File download (CSV / XLSX) -- not an envelope response.
+companyRouter.get(
+  "/mis/dcr-dump",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const rawCode = String(req.query.employeeCode || "");
+    const rootCode = rawCode && rawCode !== "admin" ? rawCode : "";
+    if (rootCode) await requireEmployeeByCode(tenantSlug, rootCode);
+    const days = String(req.query.days || "").split(",").map((d) => parseInt(d, 10)).filter((d) => d >= 1 && d <= 31);
+    const includeVacant = String(req.query.vacant || "") === "true";
+    const format = String(req.query.format || "csv");
+    const rows = await buildDcrDump(tenantSlug, rootCode, month, days, includeVacant);
+    const fileBase = `DCR_Analysis_Dump_${month}`;
+    if (format === "xlsx") {
+      const aoa: string[][] = [DUMP_HEADERS.slice(0, -1), ...rows.map((r) => r.slice(0, -1))];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "DCR Analysis Dump");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${fileBase}.xlsx"`);
+      res.send(buf);
+      return;
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileBase}.csv"`);
+    res.send(dumpToCsv(rows));
+  })
+);
+
+companyRouter.get(
+  "/mis/missed-call",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const mode = String(req.query.mode || "Listed Doctor");
+    const rawCode = String(req.query.employeeCode || "");
+    const rootCode = rawCode && rawCode !== "admin" ? rawCode : "";
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
+    if (mode === "Call Monitor(Detailed)") {
+      const emp = await requireEmployeeByCode(tenantSlug, rootCode);
+      res.json({ data: { mode, ...(await computeMissedCallDetailed(tenantSlug, emp, fromMonth)) } });
+      return;
+    }
+    const emp = rootCode ? await requireEmployeeByCode(tenantSlug, rootCode) : null;
+    const result = await computeMissedCallListed(tenantSlug, rootCode, monthRange(fromMonth, toMonth));
+    res.json({ data: { mode: "Listed Doctor", ...result, fieldForceName: emp ? emp.name : "admin" } });
+  })
+);
+
+companyRouter.get(
+  "/mis/force-doctors",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    res.json({ data: await listDoctorsForForce(tenantSlug, emp) });
+  })
+);
+
+companyRouter.get(
+  "/mis/single-doctor",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    const doctorId = String(req.query.doctorId || "");
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
+    if (!mongoose.isValidObjectId(doctorId)) throw new HttpError(400, "Select a doctor");
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    const result = await computeSingleDoctor(tenantSlug, emp, doctorId, monthRange(fromMonth, toMonth));
+    if (!result) throw new HttpError(404, "Doctor not found");
+    res.json({ data: result });
+  })
+);
+
+companyRouter.get(
+  "/mis/rep-vs-manager",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    res.json({ data: await computeRepVsManager(tenantSlug, emp, month) });
+  })
+);
+
+companyRouter.get(
+  "/mis/review-report",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const month = String(req.query.month || "");
+    if (!MONTH_RE.test(month)) throw new HttpError(400, "month must be YYYY-MM");
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    res.json({ data: await computeReviewReport(tenantSlug, emp, month) });
+  })
+);
+
+companyRouter.get(
+  "/mis/assessment",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth)) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM");
+    const emp = await requireEmployeeByCode(tenantSlug, String(req.query.employeeCode || ""));
+    res.json({ data: await computeAssessment(tenantSlug, emp, monthRange(fromMonth, toMonth)) });
   })
 );

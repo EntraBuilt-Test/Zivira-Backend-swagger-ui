@@ -2,7 +2,7 @@
   "name": "zivira-admin-swagger-backend",
   "private": true,
   "version": "1.0.0",
-  "description": "Zivira Labs backend API (admin, manager, field, HR/ESS, superadmin) for the Zivira Admin portal — ported from Zivira-Backend-main so this Render service (previously the Swagger-UI demo API) now runs the real implementation.",
+  "description": "Zivira Labs backend API (admin, manager, field, HR/ESS, superadmin) for the Zivira Admin portal \u2014 ported from Zivira-Backend-main so this Render service (previously the Swagger-UI demo API) now runs the real implementation.",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
@@ -26,6 +26,7 @@
     "multer": "^2.4.0",
     "nodemailer": "^6.9.16",
     "swagger-ui-express": "^5.0.1",
+    "xlsx": "^0.18.5",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -38,8 +39,7 @@
     "@types/nodemailer": "^6.4.17",
     "@types/swagger-ui-express": "^4.1.7",
     "tsx": "^4.19.2",
-    "typescript": "^5.8.3",
-    "xlsx": "^0.18.5"
+    "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">=20"

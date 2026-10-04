@@ -70,7 +70,7 @@ function rowValue(row: any, rates: Map<string, number>): number {
   const rate = rates.get(String(row.productName || "").trim().toLowerCase());
   return rate != null ? (row.qty || 0) * rate : 0;
 }
-function pobValue(rows: any[] | undefined, rates: Map<string, number>): number {
+export function pobValue(rows: any[] | undefined, rates: Map<string, number>): number {
   return (rows || []).reduce((s, r) => s + rowValue(r, rates), 0);
 }
 
