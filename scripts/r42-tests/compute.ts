@@ -30,6 +30,7 @@ const coll = (m: any) => store[m.collection.name] || (store[m.collection.name] =
 };
 (mongoose.Model as any).distinct = function (k: string, f: any = {}) { return Promise.resolve([...new Set(coll(this).filter(sift(f)).map((d) => d[k]))]); };
 
+import assert from "node:assert";
 const T = "demo";
 const emp = (n: number, name: string, code: string, desig: string, role: string, mgr: string | undefined, hq: string, state: string) =>
   ({ _id: asId(n), tenantSlug: T, name, employeeCode: code, designation: desig, role, reportingManager: mgr, territory: hq, state, status: "ACTIVE", joinDate: new Date("2024-03-01") });
@@ -76,7 +77,6 @@ const masters: Record<string, any[]> = {
 for (const [k, rows] of Object.entries(masters)) { const model = mm.getMasterModel(k); store[model.collection.name] = rows; }
 const c = await import("../../src/utils/mis-reports-2-compute.js");
 const E1 = (await mongoose.model("Employee").findOne({ employeeCode: "E1" }).lean()) as any;
-const assert = (await import("node:assert")).default;
 const fs = await import("node:fs");
 const R = await import("../../src/utils/pob-rx-reports.js");
 const month = "2026-10";
@@ -128,6 +128,30 @@ const h1 = await R.computeHeat(T, "drs", "E1", 4, new Date("2026-10-04T00:00:00Z
 console.log("HEAT drs", JSON.stringify(h1!.rows.map((r) => [r.name, r.cnt, r.isSelected])), h1!.from, h1!.to);
 const h2 = await R.computeHeat(T, "products", "E1", 2, new Date("2026-10-04T00:00:00Z"));
 console.log("HEAT products", JSON.stringify(h2!.rows.map((r) => [r.name, r.cnt])));
-const h3 = await R.computeHeat(T, "hqs", "E1", 1, new Date("2026-10-04T00:00:00Z"));
-console.log("HEAT hqs", JSON.stringify(h3!.rows.map((r) => [r.name, r.cnt])));
+// Round 43 -- Not At All Visit HQs. Chain: E2/E3 (BE) -> E1 (ABM) -> E9 (BH). E8 is a ZBM under no one.
+store["employees"].push(emp(9, "BHAVYA H", "E9", "BH", "BH", undefined, "KOCHI", "Kerala"));
+store["employees"].find((e) => e.employeeCode === "E1").reportingManager = "E9";
+store["dcrs"].push(dcr(21, "E2", "2026-10-02", 1, "EVENING", { jointWork: { accompanyingManager: "SANDEEP R SHENOY" } }));
+const hv = await R.computeHqVisits(T, "E1", 1, new Date("2026-10-04T00:00:00Z"));
+console.log("HQV", JSON.stringify(hv!.rows.map((r) => [r.name, r.hq, r.cells])));
+const c2 = hv!.rows.find((r) => r.employeeCode === "E2")!.cells, c3 = hv!.rows.find((r) => r.employeeCode === "E3")!.cells;
+assert.equal(hv!.designations.length, 14);
+assert.equal(hv!.rows.length, 2);                       // BEs only, the selected ABM is not a row
+assert.equal(c2.ABM, "green");                          // E2 named the ABM as accompanying manager on 2026-10-01
+assert.equal(c2.BH, "red");                             // BH is in the chain, never visited
+assert.equal(c2.BM, "yellow");                          // no BM in the chain
+assert.equal(c2.SM, "yellow");
+assert.equal(c3.ABM, "red");                            // E3 has no joint work and the ABM worked no Bangalore territory
+assert.equal(c3.BH, "red");
+// the manager's OWN call in the BE's HQ turns the cell green (Dr D is territory-less, so give the ABM a Dr in BANGALORE)
+store["doctors"].push({ ...doc(9, "Dr Z", "CP", "A", "D9", "E1"), territory: "BANGALORE" });
+store["dcrs"].push(dcr(9, "E1", "2026-10-03", 9, "MORNING"));
+const hv2 = await R.computeHqVisits(T, "E1", 1, new Date("2026-10-04T00:00:00Z"));
+assert.equal(hv2!.rows.find((r) => r.employeeCode === "E3")!.cells.ABM, "green");
+// window: September joint work is outside a 1-month window, inside a 2-month one
+store["dcrs"].push(dcr(10, "E3", "2026-09-05", 4, "MORNING", { jointWork: { accompanyingManager: "BHAVYA H" } }));
+assert.equal(hv2!.rows.find((r) => r.employeeCode === "E3")!.cells.BH, "red");
+const hv3 = await R.computeHqVisits(T, "E1", 2, new Date("2026-10-04T00:00:00Z"));
+assert.equal(hv3!.rows.find((r) => r.employeeCode === "E3")!.cells.BH, "green");
+console.log("HQV asserts ok");
 process.exit(0);

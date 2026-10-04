@@ -174,7 +174,8 @@ const XL = (await import("xlsx")).default; const wbk = XL.read(r.buf!, { type: "
 const aoa = XL.utils.sheet_to_json<any[]>(wbk.Sheets["Dr_Che_POB"], { header: 1 }) as any[][];
 assert.equal(aoa[1].length, 72); assert.equal(aoa[2][5], "CITY MEDICALS"); assert.equal(aoa[2][7], "DX");
 console.log("DUMP via route ok:", aoa.length, "rows; product filter kept only DEXNOVA ->", aoa.length - 2, "data row(s)");
-for (const k of ["drs", "products", "hqs"]) { r = await get(`/company/mis/heat/${k}?employeeCode=E1&months=4`); assert.equal(r.status, 200); assert.equal(r.json.data.rows.at(-1).isSelected, true); assert.equal(r.json.data.rows[0].isSelected, false); }
+for (const k of ["drs", "products"]) { r = await get(`/company/mis/heat/${k}?employeeCode=E1&months=4`); assert.equal(r.status, 200); assert.equal(r.json.data.rows.at(-1).isSelected, true); assert.equal(r.json.data.rows[0].isSelected, false); }
+r = await get(`/company/mis/heat/hqs?employeeCode=E1&months=4`); assert.equal(r.status, 200); assert.equal(r.json.data.designations.length, 14); assert.ok(r.json.data.rows.every((x: any) => !x.isSelected));
 assert.equal((await get(`/company/mis/heat/drs?employeeCode=E1&months=9`)).status, 400);
 assert.equal((await get(`/company/mis/heat/drs?months=3`)).status, 400);
 console.log("R42 ROUTES OK");

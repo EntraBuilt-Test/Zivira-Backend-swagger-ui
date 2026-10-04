@@ -18,7 +18,7 @@ import { DealerModel } from "../models/dealer.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { FieldVisitLogModel } from "../models/field-visit-log.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
-import { findVacantManagerCodes, isManagerRole, type OrgEmployee } from "./org-hierarchy.js";
+import { findVacantManagerCodes, isManagerRole, getUpwardChain, type OrgEmployee } from "./org-hierarchy.js";
 import { orgOrdered } from "./mis-reports-2-compute.js";
 import { loadCoreMap, tierOfDoctor } from "./doctor-tier.js";
 
@@ -330,7 +330,7 @@ export async function dumpToXlsx(d: Awaited<ReturnType<typeof buildPobDump>>): P
 }
 
 // ═══ Items 5-7 -- Heat Analysis ═══════════════════════════════════════════
-export type HeatKind = "drs" | "products" | "hqs";
+export type HeatKind = "drs" | "products";
 export async function computeHeat(tenantSlug: string, kind: HeatKind, code: string, nMonths: number, now: Date = new Date()) {
   const root = (await EmployeeModel.findOne({ tenantSlug, employeeCode: code }).lean()) as unknown as OrgEmployee | null;
   if (!root) return null;
@@ -364,28 +364,74 @@ export async function computeHeat(tenantSlug: string, kind: HeatKind, code: stri
       const done = promoted.get(e.employeeCode) || new Set<string>();
       counts.set(e.employeeCode, list.filter((p) => !done.has(key(p.name))).length);
     }
-  } else {
-    // HQs: each force's territories = territories of its listed doctors + patches of its chemists + its own HQ.
-    const [doctors, dealers, dcrs, calls, logs] = await Promise.all([
-      DoctorModel.find({ tenantSlug, mappedEmployeeCode: { $in: codes }, status: "ACTIVE" }).select("mappedEmployeeCode territory").lean() as Promise<any[]>,
-      DealerModel.find({ tenantSlug, employeeCode: { $in: codes } }).select("employeeCode patchName").lean() as Promise<any[]>,
-      DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: { $gte: from, $lte: to } }).populate("doctorId").lean() as Promise<any[]>,
-      ChemistCallModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: { $gte: from, $lte: to } }).select("employeeCode chemistId").lean() as Promise<any[]>,
-      FieldVisitLogModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDateOnly: { $gte: from, $lte: to } }).select("employeeCode").lean() as Promise<any[]>
-    ]);
-    const dealerPatch = new Map(dealers.map((d) => [String(d._id), key(d.patchName)]));
-    for (const e of scope) {
-      const territories = new Set<string>([key(e.territory)]);
-      for (const d of doctors) if (d.mappedEmployeeCode === e.employeeCode && d.territory) territories.add(key(d.territory));
-      for (const d of dealers) if (d.employeeCode === e.employeeCode && d.patchName) territories.add(key(d.patchName));
-      const seen = new Set<string>();
-      for (const d of dcrs) if (d.employeeCode === e.employeeCode && d.doctorId?.territory) seen.add(key(d.doctorId.territory));
-      for (const c of calls) if (c.employeeCode === e.employeeCode && dealerPatch.get(String(c.chemistId))) seen.add(dealerPatch.get(String(c.chemistId))!);
-      // A day logged in the field at all counts the employee's own HQ as visited when a visit log exists.
-      if ((logs as any[]).some((l) => l.employeeCode === e.employeeCode)) seen.add(key(e.territory));
-      counts.set(e.employeeCode, [...territories].filter((t) => t && !seen.has(t)).length);
-    }
   }
   const rows = scope.map((e, i) => ({ sno: i + 1, employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, cnt: counts.get(e.employeeCode) || 0, isSelected: e.employeeCode === root.employeeCode }));
   return { kind, months: nMonths, from, to, employee: { employeeCode: root.employeeCode, name: root.name, designation: root.designation, hq: root.territory }, rows };
+}
+
+// ── Round 43 -- Not At All Visit HQs (legacy Not_At_All_Visit_HQs.aspx) ──────
+// Rows = the base-level employees under the selected manager. One narrow column
+// per manager designation in the fixed legacy order. Cell colour:
+//   green  = a manager of that designation in the employee's upward reporting
+//            chain visited the employee's HQ at least once in the window
+//   red    = such a manager is in the chain but did not visit the HQ
+//   yellow = "Not Reporting": no manager of that designation is in the chain
+// "Visited the HQ" = (a) the employee's own DCR / chemist call in the window
+// names the manager as jointWork.accompanyingManager (name or code), or (b) the
+// manager's own DCR doctor territory / chemist patch equals the employee's HQ.
+export const HQ_VISIT_DESIGNATIONS = ["BM", "BH", "BDE", "RBM", "Sr.RBM", "ABM", "ZBM", "BDM", "BRM", "NBM", "Sr ABM", "HM", "MH", "SM"];
+export type HqVisitColor = "green" | "red" | "yellow";
+const dkey = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+export async function computeHqVisits(tenantSlug: string, code: string, nMonths: number, now: Date = new Date()) {
+  const root = (await EmployeeModel.findOne({ tenantSlug, employeeCode: code }).lean()) as unknown as OrgEmployee | null;
+  if (!root) return null;
+  const ordered = (await orgOrdered(tenantSlug, root.employeeCode, true)) as (OrgEmployee & { depth: number })[];
+  const bes = ordered.filter((e) => e.employeeCode !== root.employeeCode && !isManagerRole(e.role));
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (nMonths - 1), 1));
+  const from = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  const to = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+
+  const chains = new Map<string, OrgEmployee[]>();
+  for (const e of bes) chains.set(e.employeeCode, await getUpwardChain(tenantSlug, e.employeeCode));
+  const managerCodes = [...new Set([...chains.values()].flatMap((c) => c.map((m) => m.employeeCode)))];
+  const beCodes = bes.map((e) => e.employeeCode);
+
+  const [beDcrs, mgrDcrs, mgrCalls, dealers] = await Promise.all([
+    DcrModel.find({ tenantSlug, employeeCode: { $in: beCodes }, visitDateOnly: { $gte: from, $lte: to } }).select("employeeCode jointWork").lean() as Promise<any[]>,
+    DcrModel.find({ tenantSlug, employeeCode: { $in: managerCodes }, visitDateOnly: { $gte: from, $lte: to } }).populate("doctorId").lean() as Promise<any[]>,
+    ChemistCallModel.find({ tenantSlug, employeeCode: { $in: managerCodes }, visitDateOnly: { $gte: from, $lte: to } }).select("employeeCode chemistId").lean() as Promise<any[]>,
+    DealerModel.find({ tenantSlug }).select("patchName").lean() as Promise<any[]>
+  ]);
+  const patchOf = new Map(dealers.map((d) => [String(d._id), dkey(d.patchName)]));
+  // manager code -> territories the manager worked in the window
+  const worked = new Map<string, Set<string>>();
+  const add = (m: string, t: string) => { if (!t) return; const s = worked.get(m) || new Set<string>(); s.add(t); worked.set(m, s); };
+  for (const d of mgrDcrs) add(d.employeeCode, dkey(d.doctorId?.territory));
+  for (const c of mgrCalls) add(c.employeeCode, patchOf.get(String(c.chemistId)) || "");
+  // employee code -> accompanying manager tokens named on its own calls
+  const joint = new Map<string, Set<string>>();
+  for (const d of beDcrs) {
+    const am = dkey(d.jointWork?.accompanyingManager);
+    if (!am) continue;
+    const s = joint.get(d.employeeCode) || new Set<string>();
+    s.add(am); joint.set(d.employeeCode, s);
+  }
+
+  const rows = bes.map((e, i) => {
+    const chain = chains.get(e.employeeCode) || [];
+    const hq = dkey(e.territory);
+    const cells: Record<string, HqVisitColor> = {};
+    for (const des of HQ_VISIT_DESIGNATIONS) {
+      const mgrs = chain.filter((m) => dkey(m.designation) === dkey(des));
+      if (!mgrs.length) { cells[des] = "yellow"; continue; }
+      const seen = mgrs.some((m) => {
+        const j = joint.get(e.employeeCode);
+        return (j && (j.has(dkey(m.name)) || j.has(dkey(m.employeeCode)))) || (hq && worked.get(m.employeeCode)?.has(hq));
+      });
+      cells[des] = seen ? "green" : "red";
+    }
+    return { sno: i + 1, employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, cells };
+  });
+  return { months: nMonths, from, to, designations: HQ_VISIT_DESIGNATIONS, employee: { employeeCode: root.employeeCode, name: root.name, designation: root.designation, hq: root.territory }, rows };
 }

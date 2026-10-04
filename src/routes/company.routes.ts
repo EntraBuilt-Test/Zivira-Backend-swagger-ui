@@ -44,7 +44,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
 import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
 import XLSX from "xlsx";
-import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat } from "../utils/pob-rx-reports.js";
+import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat, computeHqVisits } from "../utils/pob-rx-reports.js";
 import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
 import type { OrgEmployee } from "../utils/org-hierarchy.js";
 import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager, computeFieldworkManagerRow, computeManagerWiseCoverageRow, computeSpecialityVisitWise, computeCategoryVisitWise } from "../utils/manager-analysis-compute.js";
@@ -5522,7 +5522,7 @@ companyRouter.get(
     if (!code) throw new HttpError(400, "Select a field force");
     const months = parseInt(String(req.query.months || ""), 10);
     if (!(months >= 1 && months <= 6)) throw new HttpError(400, "months must be 1 to 6");
-    const result = await computeHeat(tenantSlug, kind, code, months);
+    const result = kind === "hqs" ? await computeHqVisits(tenantSlug, code, months) : await computeHeat(tenantSlug, kind, code, months);
     if (!result) throw new HttpError(404, "Field force not found");
     res.json({ data: result });
   })
