@@ -51,6 +51,8 @@ const doctorSchema = new Schema(
     campaign: { type: String, trim: true, default: null, index: true },
     // Round 44 -- names from the Doctor Type master (doctorTypeMaster).
     doctorTypes: { type: [String], default: [] },
+    // Round 45 -- brands this doctor is being promoted for (Custom Report "Promoted DRs").
+    promotedBrands: { type: [String], default: [] },
     // Round 41 item 4 -- supportive chemists for this doctor.
     supportiveChemists: { type: [new Schema({ dealerId: { type: String, required: true }, dealerName: { type: String, default: "" } }, { _id: false })], default: [] }
   },

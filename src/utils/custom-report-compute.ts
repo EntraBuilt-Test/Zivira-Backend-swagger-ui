@@ -35,8 +35,8 @@ import { computeDelayStats, computeExpenseSplit, computeSpend, computeOtherVisit
 // unlisted/stockist/hospital visits, RCPA/CRM, DCR locks, expense split and
 // leave eligibility now have real backing and are computed in the "Round 41
 // extras" block near the bottom of computeCustomReportMetrics (which
-// overrides the older zero placeholders above it). Only EX/OS fare (kms) and
-// Fixed Expenses remain without any data source.
+// overrides the older zero placeholders above it). Round 45 added EX/OS fare
+// kms, Fixed Expenses and Promoted DRs; every metric now has a data source.
 
 function daysInMonth(month: string): number {
   const [year, mon] = month.split("-").map((v) => parseInt(v, 10));
@@ -306,6 +306,12 @@ export async function computeCustomReportMetrics(
   const rcpaYield = rcpaRows.reduce((sum: number, r: any) => sum + r.ourQty * rateOf(r.ourProduct), 0);
   const ent = (entitlementRows as any[])[0] || {};
   const repeated = visit2Drs + visit3Drs + visitMoreThan3Drs;
+  let fixedExpenses = 0;
+  try {
+    const fixedRows = (await getMasterModel("fixedExpenseMaster").find({ tenantSlug, designation: emp.designation }).lean()) as any[];
+    fixedExpenses = +fixedRows.filter((r) => r.status !== "Inactive").reduce((s, r) => s + (Number(r.amountRs) || 0), 0).toFixed(2);
+  } catch { /* master not configured */ }
+  const promotedDrsSelect = await DoctorModel.countDocuments({ tenantSlug, mappedEmployeeCode: employeeCode, status: "ACTIVE", "promotedBrands.0": { $exists: true } });
   const extra: Record<string, number> = {
     ...tierMetrics,
     unlistedDrsMet: others.unlisted.met, unlistedDrsSeen: unlistedSeen,
@@ -327,6 +333,7 @@ export async function computeCustomReportMetrics(
     missedCompletedDays: delay.delayedDates.filter((d) => d.kind === "late-submitted").length,
     delayedDays: delay.delayedDates.length, delayedTotalDays: delay.total,
     hqAmountRs: expenseSplit.hq, exAmountRs: expenseSplit.ex, osAmountRs: expenseSplit.os,
+    exFareKms: expenseSplit.exKms, osFareKms: expenseSplit.osKms, fixedExpenses, promotedDrsSelect,
     sampleSpentRs: spend.sample, inputSpentRs: spend.input, drServiceSpentRs: spend.drService,
     chemistPobCount: (chemistCalls as any[]).filter((c) => hasPob(c)).length,
     chemistPobValue: +(chemistCalls as any[]).reduce((sum, c) => sum + docPobValue(c, rates), 0).toFixed(2),

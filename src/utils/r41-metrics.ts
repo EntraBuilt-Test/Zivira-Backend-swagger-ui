@@ -96,7 +96,10 @@ export async function computeExpenseSplit(tenantSlug: string, employeeCode: stri
     os: sum((c) => c.territoryType === "OS"),
     misc: sum((c) => c.category === "Other"),
     total: sum(() => true),
-    unclassified: sum((c) => !c.territoryType)
+    unclassified: sum((c) => !c.territoryType),
+    // Round 45 -- kilometres claimed on EX / OS claims
+    exKms: round2(claims.filter((c) => c.territoryType === "EX").reduce((s, c) => s + (c.distanceKms || 0), 0)),
+    osKms: round2(claims.filter((c) => c.territoryType === "OS").reduce((s, c) => s + (c.distanceKms || 0), 0))
   };
 }
 

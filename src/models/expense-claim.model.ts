@@ -33,6 +33,9 @@ const expenseClaimSchema = new Schema(
     // panel. Captured by the field app going forward; old claims are unset
     // and count only toward Total / Misc (never guessed into a split).
     territoryType: { type: String, enum: ["HQ", "EX", "OS"], default: null },
+    // Round 45 -- kilometres travelled for an EX / OS claim (feeds the Custom Report
+    // "EX Fare (in kms)" / "OS Fare (in kms)"). Older claims are unset, never guessed.
+    distanceKms: { type: Number, default: null, min: 0 },
     status: {
       type: String,
       enum: ["SUBMITTED", "APPROVED", "REJECTED"],

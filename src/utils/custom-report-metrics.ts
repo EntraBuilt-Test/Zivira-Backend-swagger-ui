@@ -266,5 +266,7 @@ export const COMPUTED_METRIC_KEYS = new Set([
   "rcpaDrsCount", "totalPotentialRs", "yieldRs",
   "missedPostedDays", "missedReleaseDays", "missedCompletedDays",
   "hqAmountRs", "exAmountRs", "osAmountRs", "growth",
+  // Round 45 -- fare kms (ExpenseClaim.distanceKms), fixed expense master, promoted doctors
+  "exFareKms", "osFareKms", "fixedExpenses", "promotedDrsSelect",
   "clEligibility", "plEligibility", "slEligibility", "lopEligibility"
 ]);

@@ -171,5 +171,24 @@ const dar = da.rows.find((r) => r.employeeCode === "E0427")!;
 assert.deepEqual(dar.perMonth["2026-10"], { total: 4, met: 4, edet: 2, pct: 50 }); assert.deepEqual(dar.perMonth["2026-09"], { total: 4, met: 0, edet: 0, pct: 0 });
 assert.deepEqual(da.rows.map((r) => r.name), ["AMITH K", "DARSHAN B", "THARUN C"]);
 assert.deepEqual(da.rows[0].perMonth["2026-09"], { total: 1, met: 0, edet: 1, pct: 100 });
+
+// ── Gap closure (b)/(c): fare kms, fixed expenses, promoted doctors, FWD Exp
+const R41 = await import("../../src/utils/r41-metrics.js");
+const CA = await import("../../src/utils/coverage-analysis.js");
+store["expenseclaims"] = [
+  { tenantSlug: T, employeeCode: "E0427", month: "2026-10", category: "Travel", expenseDate: "2026-10-01", amountRs: 300, territoryType: "EX", distanceKms: 42.5, status: "APPROVED" },
+  { tenantSlug: T, employeeCode: "E0427", month: "2026-10", category: "Travel", expenseDate: "2026-10-03", amountRs: 500, territoryType: "OS", distanceKms: 120, status: "SUBMITTED" },
+  { tenantSlug: T, employeeCode: "E0427", month: "2026-10", category: "Food", expenseDate: "2026-10-03", amountRs: 100, territoryType: "EX", distanceKms: 10, status: "SUBMITTED" },
+  { tenantSlug: T, employeeCode: "E0427", month: "2026-10", category: "Travel", expenseDate: "2026-10-05", amountRs: 900, territoryType: "EX", distanceKms: 999, status: "REJECTED" },
+  { tenantSlug: T, employeeCode: "E0427", month: "2026-10", category: "Other", expenseDate: "2026-10-20", amountRs: 50, status: "SUBMITTED" }          // older claim, no split / no km
+];
+const esp = await R41.computeExpenseSplit(T, "E0427", "2026-10");
+assert.equal(esp.exKms, 52.5); assert.equal(esp.osKms, 120);                                       // rejected claim excluded, unset km ignored
+assert.equal(esp.ex, 400); assert.equal(esp.os, 500);
+for (const d of store["dcrs"]) d.status = "SUBMITTED";
+const cov = await CA.computeCoverageAnalysis2(T, { month: 10, year: 2026, employeeCode: "E0427" });
+// E0427 worked Oct 1, 3, 4, 5 (calls added above); claims on Oct 1, 3 (rejected Oct 5 and no-call Oct 20 don't count)
+assert.equal(cov[0].noOfFwd, 4); assert.equal(cov[0].noOfFwdExp, 2);
+const covNone = await CA.computeCoverageAnalysis2(T, { month: 10, year: 2026, employeeCode: "E0300" }); assert.equal(covNone[0].noOfFwdExp, 0);
 console.log("R45 COMPUTE OK");
 process.exit(0);

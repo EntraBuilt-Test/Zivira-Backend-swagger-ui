@@ -11,6 +11,7 @@
 import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { DcrModel } from "../models/dcr.model.js";
+import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { loadRateMap, docPobValue } from "./mis-reports-compute.js";
 
 export type CoverageAnalysisRow = {
@@ -59,6 +60,11 @@ export async function computeCoverageAnalysis2(
     month: monthStr,
     status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED", "AUTO_APPROVED"] }
   }).lean();
+
+  // Round 45 -- field-work days with an expense claim filed (non-rejected) that day.
+  const claimRows = (await ExpenseClaimModel.find({ tenantSlug, month: monthStr, status: { $ne: "REJECTED" } }).select("employeeCode expenseDate").lean()) as any[];
+  const claimDays = new Map<string, Set<string>>();
+  for (const c of claimRows) { const s = claimDays.get(c.employeeCode) || new Set<string>(); s.add(c.expenseDate); claimDays.set(c.employeeCode, s); }
 
   type Bucket = { calls: number; days: Set<string>; doctors: Set<string>; amount: number };
   const rates = await loadRateMap(tenantSlug);
@@ -118,7 +124,7 @@ export async function computeCoverageAnalysis2(
       firstLevelManager,
       secondLevelManager,
       noOfFwd: fwdDays.get(emp.employeeCode)?.size || 0, // Round 41 -- real distinct field-work days
-      noOfFwdExp: 0,
+      noOfFwdExp: [...(fwdDays.get(emp.employeeCode) || [])].filter((d) => claimDays.get(emp.employeeCode)?.has(d)).length,
       ttlDrs: (mappedByType.get("HQ")?.size || 0) + (mappedByType.get("EX")?.size || 0) + (mappedByType.get("OS")?.size || 0),
       territoryTypes
     };

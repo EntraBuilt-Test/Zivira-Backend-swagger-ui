@@ -887,7 +887,8 @@ const expenseClaimSubmitSchema = z.object({
   amountRs: z.number().min(0.01, "Amount must be greater than 0"),
   description: z.string().optional(),
   // Round 41 item 5 -- HQ / EX / OS split for the Review Report Expense panel.
-  territoryType: z.enum(["HQ", "EX", "OS"]).optional()
+  territoryType: z.enum(["HQ", "EX", "OS"]).optional(),
+  distanceKms: z.number().min(0).max(5000).optional()
 });
 
 fieldRouter.get("/expense-claims", asyncHandler(async (req, res) => {
@@ -941,6 +942,7 @@ fieldRouter.post("/expense-claims", asyncHandler(async (req, res) => {
       amountRs: body.amountRs,
       description: body.description,
       territoryType: body.territoryType ?? null,
+      distanceKms: body.distanceKms ?? null,
       status: "SUBMITTED"
     })
   );

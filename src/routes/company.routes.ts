@@ -157,7 +157,10 @@ const doctorSchema = z.object({
   qualification: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
   // Round 44 -- names from the Doctor Type master (a doctor can hold several).
-  doctorTypes: z.array(z.string().trim().min(1)).optional()
+  doctorTypes: z.array(z.string().trim().min(1)).optional(),
+  // Round 45 -- campaign (a campaignMaster name) and promoted brands, editable on the Listed Doctor form.
+  campaign: z.string().trim().nullable().optional(),
+  promotedBrands: z.array(z.string().trim().min(1)).optional()
 });
 
 const productSchema = z.object({

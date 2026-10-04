@@ -1261,6 +1261,20 @@ export const MASTERS: MasterConfig[] = [
     ]
   },
   {
+    // Round 45 -- monthly fixed expense per designation (e.g. mobile allowance);
+    // the Custom Report "Fixed Expenses" metric is the sum of the active rows
+    // for the employee's designation.
+    key: "fixedExpenseMaster",
+    title: "Fixed Expense",
+    keyFields: ["designation", "expenseName"],
+    fields: [
+      { key: "designation", label: "Designation" },
+      { key: "expenseName", label: "Expense Name" },
+      { key: "amountRs", label: "Amount per Month (Rs.)", type: "number" },
+      { key: "status", label: "Status", options: ACTIVE_INACTIVE }
+    ]
+  },
+  {
     // Round 44 -- Doctor Type list (Core drs, Academica, ...). Doctors carry
     // doctor.doctorTypes[] with these names; seeded per tenant on boot.
     key: "doctorTypeMaster",
