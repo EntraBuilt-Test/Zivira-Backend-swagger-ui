@@ -44,6 +44,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
 import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
 import XLSX from "xlsx";
+import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat } from "../utils/pob-rx-reports.js";
 import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
 import type { OrgEmployee } from "../utils/org-hierarchy.js";
 import { monthRange, computeDayCallsSummaryRange, computeHqExOsRow, computeDetailRow, computeCoverageAnalysis1, computeJointWorkForEmployee, computeJointWorkWithManager, computeFieldworkManagerRow, computeManagerWiseCoverageRow, computeSpecialityVisitWise, computeCategoryVisitWise } from "../utils/manager-analysis-compute.js";
@@ -5441,5 +5442,88 @@ companyRouter.put(
     if (!doctor) throw new HttpError(404, "Doctor not found");
     await audit("DOCTOR_TIER_SET", "Doctor", String(doctor._id), { tenantSlug, tier });
     res.json({ data: serializeDocument(doctor) });
+  })
+);
+
+// ═══ Round 42 -- POB/Rx screens and Heat Analysis (see utils/pob-rx-reports.ts) ═══
+function monthOrThrow(v: unknown, name: string): string {
+  const s = String(v || "");
+  if (!MONTH_RE.test(s)) throw new HttpError(400, `${name} must be YYYY-MM`);
+  return s;
+}
+async function assertScopeCode(tenantSlug: string, code: string) {
+  if (code && code !== "admin") await requireEmployeeByCode(tenantSlug, code);
+}
+
+companyRouter.get(
+  "/mis/pobrx/product-wise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.query.employeeCode || "admin");
+    const from = monthOrThrow(req.query.fromMonth, "fromMonth");
+    const to = monthOrThrow(req.query.toMonth || from, "toMonth");
+    await assertScopeCode(tenantSlug, code);
+    res.json({ data: await computeProductWise(tenantSlug, code, from, to, String(req.query.mode || "Doctors")) });
+  })
+);
+
+companyRouter.get(
+  "/mis/pobrx/fieldforce-wise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.query.employeeCode || "admin");
+    const from = monthOrThrow(req.query.fromMonth, "fromMonth");
+    const to = monthOrThrow(req.query.toMonth || from, "toMonth");
+    await assertScopeCode(tenantSlug, code);
+    res.json({ data: await computeFieldforceWise(tenantSlug, code, from, to, String(req.query.mode || "Doctors")) });
+  })
+);
+
+companyRouter.get(
+  "/mis/pobrx/day-wise",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.query.employeeCode || "admin");
+    const month = monthOrThrow(req.query.month, "month");
+    await assertScopeCode(tenantSlug, code);
+    const mode = String(req.query.mode || "Datewise");
+    const products = parseProducts(req.query.products);
+    if (mode === "Productwise" && products.length === 0) throw new HttpError(400, "Select at least one product");
+    if (products.length > 200) throw new HttpError(400, "Select a maximum of 200 products");
+    res.json({ data: await computeDayWise(tenantSlug, code, month, String(req.query.withoutVacant ?? "true") !== "false", mode, products) });
+  })
+);
+
+companyRouter.get(
+  "/mis/pobrx/dump",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.query.employeeCode || "admin");
+    const month = monthOrThrow(req.query.month, "month");
+    await assertScopeCode(tenantSlug, code);
+    const mode = String(req.query.mode || "");
+    if (mode !== "Doctors" && mode !== "Chemists") throw new HttpError(400, "Select a mode (Doctors or Chemists)");
+    const option = String(req.query.option || "Dr Wise");
+    const dump = await buildPobDump(tenantSlug, code, month, mode, parseProducts(req.query.products), String(req.query.checkVacant) === "true", option);
+    const buf = await dumpToXlsx(dump);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="Dr_Che_POB_${month}.xlsx"`);
+    res.send(buf);
+  })
+);
+
+companyRouter.get(
+  "/mis/heat/:kind",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const kind = req.params.kind;
+    if (kind !== "drs" && kind !== "products" && kind !== "hqs") throw new HttpError(404, "Unknown heat report");
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const months = parseInt(String(req.query.months || ""), 10);
+    if (!(months >= 1 && months <= 6)) throw new HttpError(400, "months must be 1 to 6");
+    const result = await computeHeat(tenantSlug, kind, code, months);
+    if (!result) throw new HttpError(404, "Field force not found");
+    res.json({ data: result });
   })
 );
