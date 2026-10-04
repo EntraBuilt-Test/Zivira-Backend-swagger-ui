@@ -69,6 +69,10 @@ export type Employee = {
 };
 
 export type Doctor = {
+  // Round 41 -- 4-tier category, campaign and supportive chemists
+  doctorCategory?: "NIL" | "CORE" | "N CORE" | "S CORE";
+  campaign?: string | null;
+  supportiveChemists?: { dealerId: string; dealerName: string }[];
   id: string;
   tenantSlug: string;
   name: string;
