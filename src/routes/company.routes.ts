@@ -2695,6 +2695,12 @@ companyRouter.post("/dealers", asyncHandler(async (req, res) => {
     const dupe = await DealerModel.findOne({ tenantSlug, sourceSNo });
     if (dupe) throw new HttpError(409, "A chemist with this code already exists");
   }
+  // Round 46 -- the chemist form only sends the field force NAME; resolve the code so
+  // Chemist Dump / RCPA Dump / coverage reports (all keyed on employeeCode) include it.
+  if (!body.employeeCode && body.employeeName) {
+    const owner = await EmployeeModel.findOne({ tenantSlug, name: body.employeeName }).select("employeeCode").lean() as any;
+    if (owner) body.employeeCode = owner.employeeCode;
+  }
   const dealer = await DealerModel.create({ ...body, sourceSNo, tenantSlug });
   await audit("DEALER_CREATED", "Dealer", String(dealer._id), { tenantSlug });
   res.status(201).json({ data: serializeDocument(dealer) });
@@ -2705,6 +2711,10 @@ companyRouter.put("/dealers/:id", asyncHandler(async (req, res) => {
   const body = dealerValidation.partial().parse(req.body);
   const update: Record<string, unknown> = { ...body };
   if (body.sourceSNo !== undefined) update.sourceSNo = Number(body.sourceSNo);
+  if (!body.employeeCode && body.employeeName) {
+    const owner = await EmployeeModel.findOne({ tenantSlug, name: body.employeeName }).select("employeeCode").lean() as any;
+    if (owner) update.employeeCode = owner.employeeCode;
+  }
   const dealer = await DealerModel.findOneAndUpdate({ _id: req.params.id, tenantSlug }, update, { new: true });
   if (!dealer) throw new HttpError(404, "Chemist not found");
   await audit("DEALER_UPDATED", "Dealer", String(dealer._id), { tenantSlug });

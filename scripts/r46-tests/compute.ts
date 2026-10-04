@@ -219,7 +219,7 @@ const rowVals = (ws: ExcelJS.Worksheet, r: number) => { const v = ws.getRow(r).v
   // ── 9/10. Resigned + Join/Left ────────────────────────────────────────
   const rs = await computeResignedUsers(T, "2026-09", "2026-10");
   assert.equal(rs.rows.length, 1);
-  assert.deepEqual(rs.rows[0], { sno: 1, employeeCode: "E0334", name: "LALIT RANJAN BHATTACHARYA", designation: "BE", hq: "BHUBANESWAR", dcrStart: "02/06/2025", dcrEnd: "02/09/2026" });
+  assert.deepEqual(rs.rows[0], { sno: 1, employeeCode: "E0334", name: "LALIT RANJAN BHATTACHARYA", designation: "BE", hq: "BHUBANESWAR", dcrStart: "02/06/2025", dcrEnd: "02/09/2026", viewMonth: "2026-09" });
   assert.equal((await computeResignedUsers(T, "2026-10", "2026-10")).rows.length, 0);
   const jl = await computeJoinLeft(T, "2026-09", "2026-10");
   assert.deepEqual(jl.joined, [{ sno: 1, employeeCode: "E0430", name: "SUMAN DEKA", hq: "GUWAHATI", designation: "BE", doj: "07/09/2026", dcrStart: "07/09/2026", createdId: "09/09/2026", division: "ZV" }]);

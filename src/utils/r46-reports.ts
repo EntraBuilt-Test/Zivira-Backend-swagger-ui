@@ -385,7 +385,7 @@ export async function computeResignedUsers(tenantSlug: string, fromMonth: string
   emps.sort((a, b) => lc(a.name).localeCompare(lc(b.name)));
   return {
     from: fromMonth, to: toMonth,
-    rows: emps.map((e, i) => ({ sno: i + 1, employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, dcrStart: dmy(span.get(e.employeeCode)?.first || ""), dcrEnd: dmy(span.get(e.employeeCode)?.last || "") }))
+    rows: emps.map((e, i) => ({ sno: i + 1, employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, dcrStart: dmy(span.get(e.employeeCode)?.first || ""), dcrEnd: dmy(span.get(e.employeeCode)?.last || ""), viewMonth: (span.get(e.employeeCode)?.last || ymdOf(e.leftDate) || ymdOf(e.deactivatedAt)).slice(0, 7) }))
   };
 }
 
