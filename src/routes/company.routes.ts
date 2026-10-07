@@ -49,6 +49,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import * as R54 from "../utils/r54-reports.js";
 import * as R53 from "../utils/r53-reports.js";
 import * as R52 from "../utils/r52-reports.js";
 import * as R51 from "../utils/r51-reports.js";
@@ -5746,6 +5747,14 @@ companyRouter.get("/mis/leave-status-active", asyncHandler(async (req, res) => {
 companyRouter.get("/mis/leave-status-periodically", asyncHandler(async (req, res) => { const r = r53Dates(req); r51Send(res, await R53.computeLeavePeriodically(req.auth!.tenantSlug!, r51Code(req), r.from, r.to, String(req.query.detailed) === "1")); }));
 companyRouter.get("/mis/mail-status", asyncHandler(async (req, res) => { const r = r53Dates(req); res.json({ data: await R53.computeMailStatus(req.auth!.tenantSlug!, r.from, r.to) }); }));
 companyRouter.get("/mis/tp-deviation-baselevel", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R53.computeTpDeviationLegacy(req.auth!.tenantSlug!, r51Code(req), r.fromMonth)); }));
+companyRouter.get("/mis/tp-deviation-managers", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R54.computeTpDeviationManagers(req.auth!.tenantSlug!, String(req.query.sfCode || "admin"), r.fromMonth)); }));
+companyRouter.get("/mis/tp-deviation-at-glance/drill", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R54.tpDeviationDrill(req.auth!.tenantSlug!, r51Code(req), r.fromMonth)); }));
+companyRouter.get("/mis/tp-deviation-at-glance", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R54.computeTpDeviationAtGlance(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/doctors-add-deactivation/drill", asyncHandler(async (req, res) => {
+  const month = String(req.query.month || ""); if (!MONTH_RE.test(month)) throw new HttpError(400, "month (YYYY-MM) is required");
+  res.json({ data: await R54.doctorsAddDeactDrill(req.auth!.tenantSlug!, r51Code(req), month, req.query.kind === "deactivated" ? "deactivated" : "added") });
+}));
+companyRouter.get("/mis/doctors-add-deactivation", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R54.computeDoctorsAddDeact(req.auth!.tenantSlug!, String(req.query.sfCode || "admin"), r.fromMonth, r.toMonth)); }));
 companyRouter.get(
   "/mis/modewise",
   asyncHandler(async (req, res) => {

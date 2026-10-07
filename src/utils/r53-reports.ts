@@ -210,26 +210,44 @@ export async function computeMailStatus(tenantSlug: string, from: string, to: st
 // ═══ 7) TP - Deviation (legacy layout) ══════════════════════════════════
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const plannedCat = (purpose: string) => (/leave/i.test(purpose) ? "Leave" : /meeting|transit|training|non/i.test(purpose) ? "Non Field Work" : "Field Work");
+export type TpDevRow = { date: string; day: string; asPerTp: string; asPerDcr: string };
+// Shared TP-vs-actual engine (Round 53 baselevel, Round 54 managers + at-a-glance). level 2 = managers.
+export async function tpDeviationRows(tenantSlug: string, emps: any[], month: string, level: 1 | 2 = 1): Promise<Map<string, TpDevRow[]>> {
+  const codes = emps.map((e) => e.employeeCode);
+  const out = new Map<string, TpDevRow[]>(codes.map((c) => [c, []]));
+  if (!codes.length) return out;
+  const plans = (await TourPlanModel.find({ tenantSlug, employeeCode: { $in: codes }, month, status: "APPROVED" }).lean()) as any[];
+  const dcrs = ((await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month }).lean()) as any[]).filter((d) => d.status !== "REJECTED" && d.status !== "DRAFT");
+  const ctx = await buildDayStatusContext(tenantSlug, month, codes, emps.map((e) => e.state));
+  ctx.tourPlanByEmployee = new Map();   // plans are compared separately; here only leave / holiday / weekly off matter
+  for (const e of emps) {
+    const code = e.employeeCode;
+    const planned = new Map<string, { area: string; town: string; purpose: string }>();
+    for (const p of plans.filter((x) => x.employeeCode === code)) for (const l of p.locations || []) planned.set(l.date, { area: l.area || "", town: l.town || "", purpose: l.purpose || "" });
+    const byDate = new Map<string, string>();
+    for (const d of dcrs.filter((x) => x.employeeCode === code)) { const cat = (d.workType && d.workType !== "Field Work") ? "Non Field Work" : "Field Work"; if (byDate.get(d.visitDateOnly) !== "Field Work") byDate.set(d.visitDateOnly, cat); }
+    const rows: TpDevRow[] = [];
+    for (let d = 1; d <= monthEnd(month); d++) {
+      const date = `${month}-${String(d).padStart(2, "0")}`;
+      const tp = planned.get(date); const dcr = byDate.get(date);
+      let actual = dcr; let actualRaw = dcr || "";
+      if (!actual) { const st = classifyDay(ctx, code, date); actualRaw = st.kind === "leave" ? "Leave" : st.kind === "holiday" ? "Holiday" : st.kind === "weeklyOff" ? "Weekly Off" : "No DCR"; actual = actualRaw; }
+      if (!tp && !dcr) continue;                                   // nothing planned and no DCR: not a deviation
+      const holiday = ctx.holidaysByDate.get(date);
+      // Managers: a plan entry that is just the holiday's title (e.g. "Gandhi Jayanti") is listed against the day's actual
+      // status ("Holiday"), as in the single legacy example; otherwise the same category comparison as base level.
+      const titleOnly = level === 2 && !!tp && !!holiday && (lc(tp.town) === lc(holiday) || lc(tp.purpose) === lc(holiday));
+      if (tp && !titleOnly && plannedCat(tp.purpose) === actual) continue;     // plan honoured
+      const text = tp ? (titleOnly ? holiday! : level === 2 ? [tp.town, tp.area].filter(Boolean).join(", ") + (tp.purpose && lc(tp.purpose) !== "field work" ? ` (${tp.purpose})` : "") : `${tp.town}, ${tp.area} (${tp.purpose || "Field Work"})`) : "";
+      rows.push({ date: dmy(date), day: DAYS[new Date(`${date}T00:00:00Z`).getUTCDay()], asPerTp: text, asPerDcr: actualRaw });
+    }
+    out.set(code, rows);
+  }
+  return out;
+}
 export async function computeTpDeviationLegacy(tenantSlug: string, code: string, month: string) {
   const e: any = await EmployeeModel.findOne({ tenantSlug, employeeCode: code }).lean(); if (!e) return null;
-  const plans = (await TourPlanModel.find({ tenantSlug, employeeCode: code, month, status: "APPROVED" }).lean()) as any[];
-  const planned = new Map<string, { area: string; town: string; purpose: string }>();
-  for (const p of plans) for (const l of p.locations || []) planned.set(l.date, { area: l.area || "", town: l.town || "", purpose: l.purpose || "" });
-  const dcrs = ((await DcrModel.find({ tenantSlug, employeeCode: code, month }).lean()) as any[]).filter((d) => d.status !== "REJECTED" && d.status !== "DRAFT");
-  const byDate = new Map<string, string>();
-  for (const d of dcrs) { const cat = (d.workType && d.workType !== "Field Work") ? "Non Field Work" : "Field Work"; if (byDate.get(d.visitDateOnly) !== "Field Work") byDate.set(d.visitDateOnly, cat); }
-  const ctx = await buildDayStatusContext(tenantSlug, month, [code], [e.state]);
-  ctx.tourPlanByEmployee = new Map();   // plans are compared separately; here only leave / holiday / weekly off matter
-  const rows: { date: string; day: string; asPerTp: string; asPerDcr: string }[] = [];
-  for (let d = 1; d <= monthEnd(month); d++) {
-    const date = `${month}-${String(d).padStart(2, "0")}`;
-    const tp = planned.get(date); const dcr = byDate.get(date);
-    let actual = dcr; let actualRaw = dcr || "";
-    if (!actual) { const st = classifyDay(ctx, code, date); actualRaw = st.kind === "leave" ? "Leave" : st.kind === "holiday" ? "Holiday" : st.kind === "weeklyOff" ? "Weekly Off" : "No DCR"; actual = st.kind === "leave" ? "Leave" : actualRaw; }
-    if (!tp && (!dcr)) continue;                                   // nothing planned and no DCR: not a deviation
-    if (tp && plannedCat(tp.purpose) === actual) continue;         // plan honoured
-    rows.push({ date: dmy(date), day: DAYS[new Date(`${date}T00:00:00Z`).getUTCDay()], asPerTp: tp ? `${tp.town}, ${tp.area} (${tp.purpose || "Field Work"})` : "", asPerDcr: actualRaw });
-  }
+  const rows = (await tpDeviationRows(tenantSlug, [e], month, 1)).get(code)!;
   return { month, employee: { employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory }, rows,
     notes: ["Planned = APPROVED tour plan day; actual = DCR work type, approved leave, holiday, weekly off or no DCR. Only differing days are listed (days with a DCR but no plan are included).", "Plan work type is read from the plan's purpose text: 'leave' -> Leave, meeting/transit/training/non -> Non Field Work, otherwise Field Work."] };
 }

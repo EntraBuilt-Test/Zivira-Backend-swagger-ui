@@ -360,6 +360,8 @@ export const ZIVIRA_MENU_PATH_OPTIONS: string[] = [
   "RCPA (division-dashboard/division-navigation-tabs/mis-reports/dump-ii/rcpa)",
   "Product Exposure Analysis [SKU wise detailing secs] (division-dashboard/division-navigation-tabs/mis-reports/dump-ii/product-exposure-analysis-sku)",
   "TP - Deviation For Baselevel (division-dashboard/division-navigation-tabs/mis-reports/tp-deviation-baselevel)",
+  "TP - Deviation For Managers (division-dashboard/division-navigation-tabs/mis-reports/tp-deviation-managers)",
+  "TP - Deviation At A Glance (division-dashboard/division-navigation-tabs/mis-reports/tp-deviation-at-glance)",
   "Doctor (division-dashboard/division-navigation-tabs/mis-reports/doctor)",
   "Digital Detailing (division-dashboard/division-navigation-tabs/mis-reports/digital-detailing)",
   "Visit Wise (division-dashboard/division-navigation-tabs/mis-reports/digital-detailing/visit-wise)",
