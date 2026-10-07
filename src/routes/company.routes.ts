@@ -46,6 +46,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import { computeDoctorwise, computeCallFeedbackwise, computeFixation, baseLevelOptions, DOCTORWISE_MODES, FIXATION_TYPES, type DoctorwiseMode, type FixationType } from "../utils/r48-reports.js";
 import { visitDetailOptions, computeCatClsVisit, computeDateWise, VISIT_MODES, type VisitMode } from "../utils/visit-details-reports.js";
 import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat, computeHqVisits } from "../utils/pob-rx-reports.js";
 import { computeDcrAnalysis, computeVisitAnalysis, computeSalesDetailsRows, computeSalesDetailsStatewise, computePobWise, computePobPeriodic, listPobProducts, selfAndTeam, type VisitAnalysisType } from "../utils/mis-reports-compute.js";
@@ -5633,6 +5634,66 @@ companyRouter.get(
     const week = req.query.week === undefined || req.query.week === "" ? undefined : parseInt(String(req.query.week), 10);
     const result = await computeDateWise(tenantSlug, code, month, week);
     if (!result) throw new HttpError(404, week === undefined ? "Field force not found" : "Field force or week not found");
+    res.json({ data: result });
+  })
+);
+
+// ── Round 48 -- Doctorwise (Periodically), Call Feedbackwise, Fixationwise (By Visit) ──
+companyRouter.get(
+  "/mis/doctorwise/baselevels",
+  asyncHandler(async (req, res) => {
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const rows = await baseLevelOptions(req.auth!.tenantSlug!, code);
+    if (!rows) throw new HttpError(404, "Field force not found");
+    res.json({ data: rows });
+  })
+);
+
+companyRouter.get(
+  "/mis/doctorwise/periodically",
+  asyncHandler(async (req, res) => {
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const mode = String(req.query.mode || "") as DoctorwiseMode;
+    if (!DOCTORWISE_MODES.includes(mode)) throw new HttpError(400, "Select a mode");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth) || fromMonth > toMonth) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM with From not after To");
+    const scope = String(req.query.scope || "Team") === "Individual" ? "Individual" : "Team";
+    const baseLevel = String(req.query.baseLevel || "") || undefined;
+    const result = await computeDoctorwise(req.auth!.tenantSlug!, { mode, employeeCode: code, scope, baseLevel, fromMonth, toMonth });
+    if (!result) throw new HttpError(404, "Field force not found");
+    res.json({ data: result });
+  })
+);
+
+companyRouter.get(
+  "/mis/call-feedbackwise",
+  asyncHandler(async (req, res) => {
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth) || fromMonth > toMonth) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM with From not after To");
+    const result = await computeCallFeedbackwise(req.auth!.tenantSlug!, code, fromMonth, toMonth);
+    if (!result) throw new HttpError(404, "Field force not found");
+    res.json({ data: result });
+  })
+);
+
+companyRouter.get(
+  "/mis/fixationwise",
+  asyncHandler(async (req, res) => {
+    const code = String(req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const type = String(req.query.type || "") as FixationType;
+    if (!FIXATION_TYPES.includes(type)) throw new HttpError(400, "Select a type");
+    const fromMonth = String(req.query.fromMonth || "");
+    const toMonth = String(req.query.toMonth || fromMonth);
+    if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth) || fromMonth > toMonth) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM with From not after To");
+    const result = await computeFixation(req.auth!.tenantSlug!, code, fromMonth, toMonth, type);
+    if (!result) throw new HttpError(404, "Field force not found");
     res.json({ data: result });
   })
 );
