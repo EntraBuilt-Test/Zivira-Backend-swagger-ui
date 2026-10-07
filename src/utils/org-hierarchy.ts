@@ -6,6 +6,7 @@
 // once here instead of duplicated per-endpoint.
 
 import { EmployeeModel } from "../models/employee.model.js";
+import { cached } from "./ttl-cache.js";
 
 export type OrgEmployee = {
   _id: unknown;
@@ -80,14 +81,20 @@ export async function resolveTeam(tenantSlug: string, employeeCode: string, allB
 // upward instead of down. Bounded to 8 levels, same recursion guard as
 // getAllDescendants.
 export async function getUpwardChain(tenantSlug: string, employeeCode: string): Promise<OrgEmployee[]> {
+  // Round 48 Part C -- was 1 findOne per level per rep (N+1 across every report that builds
+  // reporting columns). One short-lived per-tenant code->employee map now serves all lookups.
+  const map = await cached(`orgmap|${tenantSlug}`, async () => {
+    const all = (await EmployeeModel.find({ tenantSlug }).lean()) as unknown as OrgEmployee[];
+    return new Map(all.map((e) => [e.employeeCode, e]));
+  }, 10_000);
   const chain: OrgEmployee[] = [];
   const seen = new Set<string>([employeeCode]);
-  let current = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean() as unknown as OrgEmployee | null;
+  let current = map.get(employeeCode) ?? null;
   for (let depth = 0; depth < 8 && current?.reportingManager; depth++) {
     const mgrCode: string = current.reportingManager;
     if (seen.has(mgrCode)) break;
     seen.add(mgrCode);
-    const mgr = await EmployeeModel.findOne({ tenantSlug, employeeCode: mgrCode }).lean() as unknown as OrgEmployee | null;
+    const mgr = map.get(mgrCode) ?? null;
     if (!mgr) break;
     chain.push(mgr);
     current = mgr;

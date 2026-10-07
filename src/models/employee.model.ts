@@ -49,5 +49,8 @@ const employeeSchema = new Schema(
 );
 
 employeeSchema.index({ tenantSlug: 1, employeeCode: 1 }, { unique: true });
+// Round 48 Part C -- org-tree walks (reportingManager) and role/status filters.
+employeeSchema.index({ tenantSlug: 1, reportingManager: 1 });
+employeeSchema.index({ tenantSlug: 1, status: 1, role: 1 });
 
 export const EmployeeModel = mongoose.model("Employee", employeeSchema);

@@ -1,4 +1,5 @@
 import cors from "cors";
+import compression from "compression";
 import express from "express";
 import swaggerUi from "swagger-ui-express";
 import helmet from "helmet";
@@ -25,6 +26,8 @@ import { runDataCorrections } from "./seed/fix-data-corrections.js";
 const app = express();
 
 app.use(helmet());
+// Round 48 Part C -- gzip every JSON response over 1 KB (big report/list payloads shrink ~5-10x).
+app.use(compression({ threshold: 1024 }));
 app.use(cors({
   origin(origin, callback) {
     if (!origin || config.isCorsOriginAllowed(origin)) {
@@ -69,41 +72,50 @@ app.use((error: unknown, req: express.Request, res: express.Response, next: expr
 });
 app.use(errorHandler);
 
-await connectMongo();
+// Round 48 Part C -- the port now binds IMMEDIATELY (before Mongo connects), so a cold
+// start answers /api/health and begins accepting requests at once; Mongoose buffers the first
+// queries (bufferTimeoutMS) until the connection is up. Everything that touches the database
+// at boot (upgraders, corrections, jobs) runs only after the connection is open, never blocking
+// the bind. Connection attempts retry with a short back-off instead of crashing the process.
+import mongoose from "mongoose";
+mongoose.set("bufferTimeoutMS", 30000);
 
-// Round 39 item 1 -- LOGIN TOOK MINUTES (root cause). runDataCorrections()
-// (nine collection-wide idempotent fixes, see fix-data-corrections.ts) was
-// awaited BEFORE app.listen(). On Render's free tier every cold start
-// (after ~15 min idle) re-ran all nine scans against the live database
-// while the HTTP port was still unbound, so the first Sign In just hung
-// until that finished. The port now binds as soon as Mongo is connected,
-// and the corrections run in the background afterwards -- they are
-// idempotent and were never needed for a login to succeed. A failure is
-// still logged, never fatal.
 app.listen(config.port, () => {
   console.log(`Zivira API listening on http://localhost:${config.port}`);
 });
 
-setTimeout(() => {
-  runDataCorrections().catch((err) => {
-    console.error("Startup data corrections failed (server is already serving):", err);
-  });
-}, 5000);
+function startBackground() {
+  // Round 39 -- the nine idempotent data corrections, then the Round 41 upgrader (staggered).
+  setTimeout(() => {
+    runDataCorrections().catch((err) => console.error("Startup data corrections failed (server is already serving):", err));
+  }, 5000);
+  setTimeout(() => {
+    runRound41Upgrade().catch((err) => console.error("Round 41 upgrade failed (server is serving):", err));
+  }, 8000);
+  startDcrLockJob();
+  startAutoApproveJob();
+  startManagerDigestJob();
+}
 
-// Round 41 -- idempotent background upgrader + daily DCR lock sweep (both
-// after the port bind, never blocking it).
-setTimeout(() => {
-  runRound41Upgrade().catch((err) => console.error("Round 41 upgrade failed (server is serving):", err));
-}, 8000);
-startDcrLockJob();
-
-startAutoApproveJob();
-startManagerDigestJob();
+async function connectWithRetry() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await connectMongo();
+      console.log("MongoDB connected");
+      startBackground();
+      return;
+    } catch (err) {
+      console.error(`MongoDB connection attempt ${attempt} failed:`, err instanceof Error ? err.message : err);
+      await new Promise((r) => setTimeout(r, Math.min(15000, 2000 * attempt)));
+    }
+  }
+}
+void connectWithRetry();
 
 // Lightweight keep-warm: while the instance is awake, ping our own public
 // /api/health every 10 min so the free tier's 15-min idle spin-down is not
 // triggered by quiet periods between real requests. (Cannot wake a sleeping
-// instance -- an external uptime pinger hitting /api/health does that.)
+// instance -- the admin/manager/field apps also ping /api/health while open.)
 const selfUrl = process.env.RENDER_EXTERNAL_URL;
 if (process.env.NODE_ENV === "production" && selfUrl) {
   setInterval(() => {

@@ -81,6 +81,8 @@ const doctorSchema = new Schema(
 );
 
 doctorSchema.index({ tenantSlug: 1, name: 1, city: 1, specialty: 1 });
+// Round 48 Part C -- "doctors mapped to this employee" is the hottest doctor query.
+doctorSchema.index({ tenantSlug: 1, mappedEmployeeCode: 1, status: 1 });
 doctorSchema.index({ tenantSlug: 1, doctorCode: 1 }, { unique: true, partialFilterExpression: { doctorCode: { $exists: true } } });
 
 export const DoctorModel = mongoose.model("Doctor", doctorSchema);

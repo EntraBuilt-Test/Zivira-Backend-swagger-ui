@@ -5,6 +5,7 @@ import { asyncHandler } from "../http/async-handler.js";
 import { requireAuth, requireCompanyAdmin } from "../http/auth.js";
 import { mastersRouter } from "./masters.routes.js";
 import { uploadsRouter } from "./uploads.routes.js";
+import { cached, clearCache } from "../utils/ttl-cache.js";
 import { uploadToolsRouter } from "./upload-tools.routes.js";
 import { mailRouter } from "./mail.routes.js";
 import { mastersActionsRouter } from "./masters-actions.routes.js";
@@ -203,6 +204,8 @@ const productUpdateSchema = productSchema.partial();
 export const companyRouter = Router();
 
 companyRouter.use(requireAuth, requireCompanyAdmin);
+// Round 48 Part C -- any write clears the short-TTL list cache (see utils/ttl-cache.ts).
+companyRouter.use((req, _res, next) => { if (req.method !== "GET") clearCache(); next(); });
 companyRouter.use("/masters", mastersRouter);
 companyRouter.use("/masters", uploadsRouter);
 companyRouter.use("/upload-tools", uploadToolsRouter);
@@ -230,8 +233,8 @@ companyRouter.get(
         ProductModel.countDocuments({ tenantSlug, status: "ACTIVE" }),
         DcrModel.countDocuments({ tenantSlug, visitDate: { $gte: today }, status: { $in: ["SUBMITTED", "MANAGER_APPROVED", "APPROVED"] } }),
         AttendanceModel.countDocuments({ tenantSlug, attendanceDate: { $gte: today } }),
-        DoctorModel.find({ tenantSlug }).sort({ createdAt: -1 }).limit(5),
-        EmployeeModel.find({ tenantSlug }).sort({ createdAt: -1 }).limit(5)
+        DoctorModel.find({ tenantSlug }).sort({ createdAt: -1 }).limit(5).lean(),
+        EmployeeModel.find({ tenantSlug }).sort({ createdAt: -1 }).limit(5).lean()
       ]);
 
     res.json({
@@ -255,8 +258,12 @@ companyRouter.get(
     // app fetches; .lean() skips Mongoose document hydration (this list can
     // be hundreds of employees), a real, measurable speedup on top of the
     // frontend's new shared cache (api-client.ts).
-    const employees = await EmployeeModel.find(query).sort({ createdAt: -1 }).lean();
-    res.json({ data: employees.map(serializeDocument) });
+    // Round 48 Part C -- 20 s per-tenant cache (cleared on any write); this feeds every FieldForce dropdown.
+    const data = await cached(`employees|${String(req.auth!.tenantSlug)}|${String(query.division ?? "")}`, async () => {
+      const employees = await EmployeeModel.find(query).sort({ createdAt: -1 }).lean();
+      return employees.map(serializeDocument);
+    });
+    res.json({ data });
   })
 );
 

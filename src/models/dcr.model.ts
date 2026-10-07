@@ -169,6 +169,10 @@ dcrSchema.pre("save", function (next) {
 // uniqueness check. field.routes.ts is the source of truth for "rejected
 // visits don't count" — see the explicit status filter in every visit/drug/
 // gift aggregation (PRD Section 12.2 & 12.3 "Exact Solutions").
+// Round 48 Part C -- hot report paths: DCR by employee + month / date, and by month across a team.
+dcrSchema.index({ tenantSlug: 1, employeeCode: 1, month: 1 });
+dcrSchema.index({ tenantSlug: 1, employeeCode: 1, visitDateOnly: 1 });
+dcrSchema.index({ tenantSlug: 1, month: 1, status: 1 });
 dcrSchema.index(
   { tenantSlug: 1, employeeCode: 1, doctorId: 1, visitDateOnly: 1 },
   { unique: true, partialFilterExpression: { doctorId: { $exists: true } } }
