@@ -30,6 +30,8 @@
 
 import nodemailer from "nodemailer";
 import { NoticeModel } from "../models/notice.model.js";
+import { MailLogModel } from "../models/mail-log.model.js";
+import { EmployeeModel } from "../models/employee.model.js";
 
 // New request item 2 — the HR portal's public login URL, sent in the
 // personal-email onboarding link below. Overridable via env so a staging
@@ -55,8 +57,10 @@ function getGmailTransporter() {
 // Core email sender shared by every notify* helper below. Tries SendGrid,
 // then Resend, then Gmail SMTP last (see the comment block above for why),
 // then just logs.
-async function sendEmail(params: { to: string; toName?: string | null; subject: string; text: string }) {
+type DeliverResult = { ok: boolean; channel?: string; error?: string };
+async function deliverEmail(params: { to: string; toName?: string | null; subject: string; text: string }): Promise<DeliverResult> {
   const { to, toName, subject, text } = params;
+  let lastError = "";
   const fromName = process.env.EMAIL_FROM_NAME ?? "Zivira Labs";
 
   const sendGridKey = process.env.SENDGRID_API_KEY;
@@ -73,12 +77,14 @@ async function sendEmail(params: { to: string; toName?: string | null; subject: 
           content: [{ type: "text/plain", value: text }]
         })
       });
-      if (response.ok) return;
-      console.error("[Notify] SendGrid email failed:", response.status, await response.text());
+      if (response.ok) return { ok: true, channel: "sendgrid" };
+      lastError = `SendGrid ${response.status}: ${(await response.text()).slice(0, 300)}`;
+      console.error("[Notify] SendGrid email failed:", lastError);
       // Fall through to Resend/Gmail rather than silently dropping the
       // email — e.g. a not-yet-verified sender shouldn't lose the message
       // if another channel is available.
     } catch (err) {
+      lastError = `SendGrid: ${err instanceof Error ? err.message : String(err)}`;
       console.error("[Notify] SendGrid email error:", err);
     }
   }
@@ -91,9 +97,11 @@ async function sendEmail(params: { to: string; toName?: string | null; subject: 
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL ?? "noreply@zivira-labs.com", to, subject, text })
       });
-      if (response.ok) return;
-      console.error("[Notify] Resend email failed:", response.status, await response.text());
+      if (response.ok) return { ok: true, channel: "resend" };
+      lastError = `Resend ${response.status}: ${(await response.text()).slice(0, 300)}`;
+      console.error("[Notify] Resend email failed:", lastError);
     } catch (err) {
+      lastError = `Resend: ${err instanceof Error ? err.message : String(err)}`;
       console.error("[Notify] Resend email error:", err);
     }
   }
@@ -107,13 +115,32 @@ async function sendEmail(params: { to: string; toName?: string | null; subject: 
         subject,
         text
       });
-      return;
+      return { ok: true, channel: "gmail-smtp" };
     } catch (err) {
+      lastError = `Gmail SMTP: ${err instanceof Error ? err.message : String(err)}`;
       console.error("[Notify] Gmail SMTP send failed:", err);
     }
   }
 
   console.log(`[Notify] (email skipped — no SENDGRID_API_KEY/SENDGRID_FROM_EMAIL, GMAIL_USER/GMAIL_APP_PASSWORD, or RESEND_API_KEY configured) → ${toName ?? ""} <${to}>: ${subject} — ${text}`);
+  return { ok: false, error: lastError || "No e-mail provider configured" };
+}
+
+// Every notify* helper goes through here: deliver, then record the outcome in MailLog (never throws).
+async function sendEmail(params: { to: string; toName?: string | null; subject: string; text: string; mailType?: string; tenantSlug?: string | null; sentBy?: string }) {
+  const result = await deliverEmail(params);
+  try {
+    let tenantSlug = params.tenantSlug || "";
+    if (!tenantSlug) {
+      const e: any = await EmployeeModel.findOne({ $or: [{ email: params.to.toLowerCase() }, { personalEmail: params.to.toLowerCase() }] }).lean();
+      tenantSlug = e?.tenantSlug || "";
+    }
+    await MailLogModel.create({
+      tenantSlug, to: params.to, toName: params.toName || "", subject: params.subject, mailType: params.mailType || "general",
+      status: result.ok ? "sent" : "failed", channel: result.channel || "", error: result.ok ? "" : result.error || "", sentBy: params.sentBy || "system", sentAt: new Date()
+    });
+  } catch (err) { console.error("[Notify] mail log write failed:", err); }
+  return result;
 }
 
 // Item 3 — generic cross-portal broadcast. Used wherever ONE change should
@@ -166,6 +193,7 @@ export async function notifyEmployeeEmail(params: {
   await sendEmail({
     to: toEmail,
     toName,
+    mailType: "hr-notice",
     subject: `[Zivira HR] ${subject}`,
     text: `Hi ${toName ?? "there"},\n\n${message}\n\nLogin to the Zivira HR portal to view details.\n\nZivira Labs`
   });
@@ -192,6 +220,7 @@ export async function notifyOnboardingCredentials(params: {
   await sendEmail({
     to: toEmail,
     toName,
+    mailType: "onboarding-credentials",
     subject: "[Zivira HR] Welcome — complete your onboarding",
     text:
       `Hi ${toName ?? "there"},\n\n` +
@@ -229,6 +258,7 @@ export async function notifyPersonalOnboardingLink(params: {
   await sendEmail({
     to: toEmail,
     toName,
+    mailType: "onboarding-link",
     subject: "[Zivira HR] Welcome — your Zivira HR portal login",
     text:
       `Hi ${toName ?? "there"},\n\n` +
@@ -304,6 +334,7 @@ export async function notifyManager(params: {
   await sendEmail({
     to: managerEmail,
     toName: managerName,
+    mailType: "manager-notice",
     subject: `[Zivira] ${title}`,
     text: `Hi ${managerName ?? managerEmployeeCode},\n\n${message}\n\nLogin at your Manager portal to view details.\n\nZivira Labs`
   });

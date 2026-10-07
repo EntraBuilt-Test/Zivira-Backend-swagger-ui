@@ -49,6 +49,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import * as R53 from "../utils/r53-reports.js";
 import * as R52 from "../utils/r52-reports.js";
 import * as R51 from "../utils/r51-reports.js";
 import { computeModewise, MODEWISE_TYPES, type ModewiseType } from "../utils/r50-reports.js";
@@ -5730,6 +5731,21 @@ companyRouter.get("/mis/sample-details/drill", asyncHandler(async (req, res) => 
   res.json({ data: await R52.sampleDetailsDrill(req.auth!.tenantSlug!, r51Code(req), month, r52Source(req)) });
 }));
 companyRouter.get("/mis/sample-details", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R52.computeSampleDetails(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth, r52Source(req))); }));
+const r53Dates = (req: any) => { const from = String(req.query.from || ""), to = String(req.query.to || ""); if (!DATE_RE.test(from) || !DATE_RE.test(to) || from > to) throw new HttpError(400, "from/to must be YYYY-MM-DD with From not after To"); return { from, to }; };
+companyRouter.get("/mis/input-details", asyncHandler(async (req, res) => { const r = r51Range(req); const src = req.query.source === "despatch" || req.query.source === "both" ? (req.query.source as R53.InputSource) : "dcr"; r51Send(res, await R53.computeInputDetails(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth, src)); }));
+companyRouter.get("/mis/sample-rx-products", asyncHandler(async (req, res) => { res.json({ data: await R53.sampleRxOptions(req.auth!.tenantSlug!, req.query.mode === "brand" ? "brand" : "product") }); }));
+companyRouter.get("/mis/sample-rx-quantity", asyncHandler(async (req, res) => {
+  const r = r51Range(req); const mode = req.query.mode === "brand" ? "brand" : req.query.mode === "product" ? "product" : "";
+  if (!mode) throw new HttpError(400, "Select a mode");
+  const items = String(req.query.items || "").split("|").map((x) => x.trim()).filter(Boolean).slice(0, 80);
+  if (!items.length) throw new HttpError(400, "Select at least one " + mode);
+  r51Send(res, await R53.computeSampleRxQuantity(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth, mode, items, req.query.basis === "all" ? "all" : "sampled"));
+}));
+companyRouter.get("/mis/delayed-status", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R53.computeDelayedStatus(req.auth!.tenantSlug!, String(req.query.sfCode || "admin"), r.fromMonth)); }));
+companyRouter.get("/mis/leave-status-active", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R53.computeLeaveActive(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/leave-status-periodically", asyncHandler(async (req, res) => { const r = r53Dates(req); r51Send(res, await R53.computeLeavePeriodically(req.auth!.tenantSlug!, r51Code(req), r.from, r.to, String(req.query.detailed) === "1")); }));
+companyRouter.get("/mis/mail-status", asyncHandler(async (req, res) => { const r = r53Dates(req); res.json({ data: await R53.computeMailStatus(req.auth!.tenantSlug!, r.from, r.to) }); }));
+companyRouter.get("/mis/tp-deviation-baselevel", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R53.computeTpDeviationLegacy(req.auth!.tenantSlug!, r51Code(req), r.fromMonth)); }));
 companyRouter.get(
   "/mis/modewise",
   asyncHandler(async (req, res) => {
