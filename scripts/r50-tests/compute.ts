@@ -61,10 +61,13 @@ store["doctorCategories"] = [];
 const R = await import("../../src/utils/r50-reports.js");
 
 // ── Campaign ──
-const c: any = await R.computeModewise(T, "Z0", "campaign", "2026-09", "2026-10");
+const c: any = await R.computeModewise(T, "Z0", "campaign", "2026-09", "2026-10");   // default metric = campaign-tagged doctors mapped
 assert.deepEqual(c.rows.map((r: any) => r.employeeCode), ["B1", "B2", "A1", "R1", "Z0"]);   // hierarchy order, root last
-assert.deepEqual(c.rows.map((r: any) => r.cells["2026-10"]), [3, 0, 4, 4, 5]);               // B1 3 calls; ABM = 3+0+own joint campaign call 1; RBM=ABM; ZBM=+1
-assert.deepEqual(c.rows.map((r: any) => r.cells["2026-09"]), [1, 0, 1, 1, 1]);
+assert.deepEqual(c.rows.map((r: any) => r.cells["2026-10"]), [2, 1, 3, 3, 4]);               // B1 d1+d3, B2 d4 (d7 inactive), ABM/RBM rollups, ZBM +d6
+assert.deepEqual(c.rows.map((r: any) => r.cells["2026-09"]), [2, 1, 3, 3, 4]);               // roster is not month-wise
+const cc: any = await R.computeModewise(T, "Z0", "campaign", "2026-09", "2026-10", "calls");
+assert.deepEqual(cc.rows.map((r: any) => r.cells["2026-10"]), [3, 0, 4, 4, 5]);               // B1 3 calls; ABM = 3+0+own joint campaign call 1; RBM=ABM; ZBM=+1
+assert.deepEqual(cc.rows.map((r: any) => r.cells["2026-09"]), [1, 0, 1, 1, 1]);
 assert.deepEqual(c.rows.map((r: any) => r.isManager), [false, false, true, true, true]);
 assert.deepEqual(c.rows.map((r: any) => r.sno), [1, 2, 3, 4, 5]);
 

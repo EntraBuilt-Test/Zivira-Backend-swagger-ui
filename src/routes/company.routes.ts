@@ -49,6 +49,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import * as R51 from "../utils/r51-reports.js";
 import { computeModewise, MODEWISE_TYPES, type ModewiseType } from "../utils/r50-reports.js";
 import { computeDoctorwise, computeCallFeedbackwise, computeFixation, baseLevelOptions, DOCTORWISE_MODES, FIXATION_TYPES, type DoctorwiseMode, type FixationType } from "../utils/r48-reports.js";
 import { visitDetailOptions, computeCatClsVisit, computeDateWise, VISIT_MODES, type VisitMode } from "../utils/visit-details-reports.js";
@@ -5694,6 +5695,33 @@ companyRouter.get(
   })
 );
 
+const r51Range = (req: any) => {
+  const ym = (m: unknown, y: unknown) => { const mm = parseInt(String(m), 10), yy = parseInt(String(y), 10); return mm >= 1 && mm <= 12 && yy >= 2000 && yy <= 2100 ? `${yy}-${String(mm).padStart(2, "0")}` : ""; };
+  const fromMonth = ym(req.query.fromMonth, req.query.fromYear);
+  const toMonth = req.query.toMonth ? ym(req.query.toMonth, req.query.toYear) : fromMonth;
+  if (!fromMonth || !toMonth || fromMonth > toMonth) throw new HttpError(400, "fromMonth/fromYear/toMonth/toYear must be valid with From not after To");
+  return { fromMonth, toMonth };
+};
+const r51Code = (req: any) => { const c = String(req.query.sfCode || req.query.employeeCode || ""); if (!c) throw new HttpError(400, "Select a field force"); return c; };
+const r51Send = (res: any, data: unknown) => { if (!data) throw new HttpError(404, "Field force not found"); res.json({ data }); };
+companyRouter.get("/mis/at-a-glance", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeAtGlance(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/vacant-hq-manager-visits", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeVacantManagerVisits(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/chemist-unlisted-stockist", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeChemistUnlisted(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/territory-wise", asyncHandler(async (req, res) => {
+  const r = r51Range(req);
+  if (String(req.query.self) === "1") return r51Send(res, await R51.computeManagerCoverage(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth));
+  r51Send(res, await R51.computeTerritoryWise(req.auth!.tenantSlug!, r51Code(req), r.fromMonth));
+}));
+companyRouter.get("/mis/product-exposure/options", asyncHandler(async (req, res) => { res.json({ data: await R51.productOptions(req.auth!.tenantSlug!) }); }));
+companyRouter.get("/mis/product-exposure/drill", asyncHandler(async (req, res) => {
+  const codes = String(req.query.codes || "").split(",").map((c) => c.trim()).filter(Boolean).slice(0, 500);
+  const month = String(req.query.month || ""); if (!codes.length || !MONTH_RE.test(month)) throw new HttpError(400, "codes and month (YYYY-MM) are required");
+  res.json({ data: await R51.productExposureDrill(req.auth!.tenantSlug!, codes, String(req.query.product || "ALL"), month) });
+}));
+companyRouter.get("/mis/product-exposure", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeProductExposure(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/listeddr-product-visit", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeListedDrProductVisit(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/product-exposure-unlisted", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeProductExposureUnlisted(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));
+
 companyRouter.get(
   "/mis/modewise",
   asyncHandler(async (req, res) => {
@@ -5705,7 +5733,7 @@ companyRouter.get(
     const fromMonth = ym(req.query.fromMonth, req.query.fromYear);
     const toMonth = type === "campaign" && !req.query.toMonth ? fromMonth : ym(req.query.toMonth, req.query.toYear);
     if (!fromMonth || !toMonth || fromMonth > toMonth) throw new HttpError(400, "fromMonth/fromYear/toMonth/toYear must be valid with From not after To");
-    const result = await computeModewise(req.auth!.tenantSlug!, code, type, fromMonth, toMonth);
+    const result = await computeModewise(req.auth!.tenantSlug!, code, type, fromMonth, toMonth, req.query.metric === "calls" ? "calls" : "doctors");
     if (!result) throw new HttpError(404, "Field force not found");
     res.json({ data: result });
   })

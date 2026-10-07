@@ -5,7 +5,7 @@
 // Real DCR / doctor data only (r48-reports loaders + doctor-tier). REJECTED/DRAFT DCRs are ignored.
 //
 // Inferences (surfaced in `notes`):
-//   * Campaign cell counts DCR calls (not distinct days) to doctors whose Doctor.campaign is set.
+//   * Campaign cell (default metric=doctors) = doctors mapped to the fieldforce with Doctor.campaign set; metric=calls = DCR calls to such doctors.
 //   * Ttl Drs = ACTIVE doctors currently mapped to the fieldforce (no month-wise roster history is stored).
 //   * Drs Met = distinct doctors visited that month by their mapped fieldforce.
 //   * Speciality and Class group layouts are inferred from the Category screenshot (Speciality groups = real specialities by doctor count, Class = Nil/A/B/C).
@@ -20,14 +20,16 @@ export type ModewiseType = (typeof MODEWISE_TYPES)[number];
 const lc = (v: unknown) => String(v ?? "").trim().toLowerCase();
 type Cnt = { ttl: number; met: number };
 
-export async function computeModewise(tenantSlug: string, code: string, type: ModewiseType, fromMonth: string, toMonth: string) {
+export type Hierarchy = {
+  root: OrgEmployee; order: OrgEmployee[]; subtree: Map<string, string[]>; isMgr: (e: OrgEmployee) => boolean;
+  head: (e: OrgEmployee, i: number) => { sno: number; employeeCode: string; name: string; designation: string; hq: string; role: string; isManager: boolean };
+};
+// The selected force plus everyone under it, children first and each manager's own row last (legacy order).
+export async function buildHierarchy(tenantSlug: string, code: string): Promise<Hierarchy | null> {
   const { root, list } = await resolveScope(tenantSlug, code, false);
   if (!root) return null;
-  const months = monthsBetween(fromMonth, toMonth);
   const team = list as OrgEmployee[];
   const members = team.some((e) => e.employeeCode === root.employeeCode) ? team : [root, ...team];
-
-  // hierarchy: children by reportingManager, emitted children-first (post-order); root last
   const kids = new Map<string, OrgEmployee[]>();
   for (const e of members) if (e.employeeCode !== root.employeeCode && e.reportingManager) (kids.get(e.reportingManager) ?? kids.set(e.reportingManager, []).get(e.reportingManager)!).push(e);
   const order: OrgEmployee[] = [];
@@ -41,20 +43,36 @@ export async function computeModewise(tenantSlug: string, code: string, type: Mo
     return codes;
   };
   walk(root);
-  const codes = order.map((e) => e.employeeCode);
   const isMgr = (e: OrgEmployee) => (kids.get(e.employeeCode)?.length ?? 0) > 0;
   const head = (e: OrgEmployee, i: number) => ({ sno: i + 1, employeeCode: e.employeeCode, name: e.name, designation: e.designation, hq: e.territory, role: e.role, isManager: isMgr(e) });
+  return { root, order, subtree, isMgr, head };
+}
+
+export async function computeModewise(tenantSlug: string, code: string, type: ModewiseType, fromMonth: string, toMonth: string, metric: "doctors" | "calls" = "doctors") {
+  const h = await buildHierarchy(tenantSlug, code);
+  if (!h) return null;
+  const { root, order, subtree, head } = h;
+  const months = monthsBetween(fromMonth, toMonth);
+  const codes = order.map((e) => e.employeeCode);
   const base = { type, months, employee: { employeeCode: root.employeeCode, name: root.name, designation: root.designation, hq: root.territory } };
   const visits = await loadVisits(tenantSlug, codes, months);
 
   if (type === "campaign") {
-    const own = new Map<string, Record<string, number>>(codes.map((c) => [c, Object.fromEntries(months.map((m) => [m, 0]))]));
-    for (const v of visits) if (String(v.doctor?.campaign || "").trim() && own.has(v.code) && v.month in own.get(v.code)!) own.get(v.code)![v.month]++;
+    // Legacy screenshot: the column equals each fieldforce's listed-doctor count, so the default metric is
+    // the number of doctors mapped to the fieldforce that carry a campaign. metric=calls keeps the Round 50
+    // reading (campaign-doctor DCR calls per month).
+    const cdocs = (await mappedDoctors(tenantSlug, codes)).filter((d) => String(d.campaign || "").trim());
+    const ownDocs = new Map<string, number>(codes.map((c) => [c, 0]));
+    for (const d of cdocs) if (ownDocs.has(d.mappedEmployeeCode)) ownDocs.set(d.mappedEmployeeCode, ownDocs.get(d.mappedEmployeeCode)! + 1);
+    const ownCalls = new Map<string, Record<string, number>>(codes.map((c) => [c, Object.fromEntries(months.map((m) => [m, 0]))]));
+    for (const v of visits) if (String(v.doctor?.campaign || "").trim() && ownCalls.has(v.code) && v.month in ownCalls.get(v.code)!) ownCalls.get(v.code)![v.month]++;
     const rows = order.map((e, i) => ({
       ...head(e, i),
-      cells: Object.fromEntries(months.map((m) => [m, subtree.get(e.employeeCode)!.reduce((s, c) => s + own.get(c)![m], 0)]))
+      cells: Object.fromEntries(months.map((m) => [m, subtree.get(e.employeeCode)!.reduce((s, c) => s + (metric === "doctors" ? ownDocs.get(c)! : ownCalls.get(c)![m]), 0)]))
     }));
-    return { ...base, rows, notes: ["Cell = campaign-doctor calls (DCR records) in the month; manager rows are team rollups.", "Only doctors with a campaign set are counted."] };
+    return { ...base, metric, rows, notes: metric === "doctors"
+      ? ["Cell = doctors mapped to the fieldforce that carry a campaign (current roster, so identical every month); manager rows are team rollups.", "The legacy column equals the listed-doctor count; where every doctor carries a campaign the two match."]
+      : ["Cell = campaign-doctor calls (DCR records) in the month; manager rows are team rollups.", "Only doctors with a campaign set are counted."] };
   }
 
   // category / speciality / class
