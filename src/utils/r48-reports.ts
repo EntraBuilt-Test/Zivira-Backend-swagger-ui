@@ -45,8 +45,8 @@ async function scopeOf(tenantSlug: string, code: string, scope: "Team" | "Indivi
 }
 
 // ── visits ────────────────────────────────────────────────────────────────
-type Visit = { code: string; doctorId: string; doctor: any; day: number; month: string; notes: string; feedback: boolean };
-async function loadVisits(tenantSlug: string, codes: string[], months: string[]): Promise<Visit[]> {
+export type Visit = { code: string; doctorId: string; doctor: any; day: number; month: string; notes: string; feedback: boolean };
+export async function loadVisits(tenantSlug: string, codes: string[], months: string[]): Promise<Visit[]> {
   if (codes.length === 0) return [];
   const rows = (await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month: { $in: months } }).populate("doctorId").lean()) as any[];
   const out: Visit[] = [];
@@ -63,8 +63,8 @@ async function loadVisits(tenantSlug: string, codes: string[], months: string[])
 }
 const daysOf = (vs: Visit[]) => [...new Set(vs.map((v) => v.day))].sort((a, b) => a - b);
 
-type DocCtx = { coreMap: Map<string, string>; classByCode: Map<string, string> };
-async function docCtx(tenantSlug: string, doctors: any[], mrNames: string[]): Promise<DocCtx> {
+export type DocCtx = { coreMap: Map<string, string>; classByCode: Map<string, string> };
+export async function docCtx(tenantSlug: string, doctors: any[], mrNames: string[]): Promise<DocCtx> {
   const classRows = await masterRows("doctorClassification", { tenantSlug, doctorCode: { $in: doctors.map((d) => d.doctorCode).filter(Boolean) } });
   return { coreMap: await loadCoreMap(tenantSlug, mrNames), classByCode: new Map<string, string>(classRows.map((r) => [r.doctorCode, r.doctorCategory])) };
 }
@@ -73,7 +73,7 @@ const docRow = (d: any, ctx: DocCtx, mrName: string) => ({
   category: tierOfDoctor(d, ctx.coreMap, mrName) as string, specialty: d.specialty || "", cls: (ctx.classByCode.get(d.doctorCode) || d.category || "Nil") as string,
   qualification: d.qualification || "", territory: d.territory || "", campaign: d.campaign || ""
 });
-const mappedDoctors = async (tenantSlug: string, codes: string[], status: "ACTIVE" | "INACTIVE" = "ACTIVE") =>
+export const mappedDoctors = async (tenantSlug: string, codes: string[], status: "ACTIVE" | "INACTIVE" = "ACTIVE") =>
   codes.length ? ((await DoctorModel.find({ tenantSlug, mappedEmployeeCode: { $in: codes }, status }).lean()) as any[]) : [];
 const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
 

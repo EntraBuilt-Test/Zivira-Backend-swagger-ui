@@ -49,6 +49,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import { computeModewise, MODEWISE_TYPES, type ModewiseType } from "../utils/r50-reports.js";
 import { computeDoctorwise, computeCallFeedbackwise, computeFixation, baseLevelOptions, DOCTORWISE_MODES, FIXATION_TYPES, type DoctorwiseMode, type FixationType } from "../utils/r48-reports.js";
 import { visitDetailOptions, computeCatClsVisit, computeDateWise, VISIT_MODES, type VisitMode } from "../utils/visit-details-reports.js";
 import { computeProductWise, computeFieldforceWise, computeDayWise, buildPobDump, dumpToXlsx, computeHeat, computeHqVisits } from "../utils/pob-rx-reports.js";
@@ -5688,6 +5689,23 @@ companyRouter.get(
     const toMonth = String(req.query.toMonth || fromMonth);
     if (!MONTH_RE.test(fromMonth) || !MONTH_RE.test(toMonth) || fromMonth > toMonth) throw new HttpError(400, "fromMonth/toMonth must be YYYY-MM with From not after To");
     const result = await computeCallFeedbackwise(req.auth!.tenantSlug!, code, fromMonth, toMonth);
+    if (!result) throw new HttpError(404, "Field force not found");
+    res.json({ data: result });
+  })
+);
+
+companyRouter.get(
+  "/mis/modewise",
+  asyncHandler(async (req, res) => {
+    const code = String(req.query.sfCode || req.query.employeeCode || "");
+    if (!code) throw new HttpError(400, "Select a field force");
+    const type = String(req.query.type || "").toLowerCase() as ModewiseType;
+    if (!MODEWISE_TYPES.includes(type)) throw new HttpError(400, "type must be category, speciality, class or campaign");
+    const ym = (m: unknown, y: unknown) => { const mm = parseInt(String(m), 10), yy = parseInt(String(y), 10); return mm >= 1 && mm <= 12 && yy >= 2000 && yy <= 2100 ? `${yy}-${String(mm).padStart(2, "0")}` : ""; };
+    const fromMonth = ym(req.query.fromMonth, req.query.fromYear);
+    const toMonth = type === "campaign" && !req.query.toMonth ? fromMonth : ym(req.query.toMonth, req.query.toYear);
+    if (!fromMonth || !toMonth || fromMonth > toMonth) throw new HttpError(400, "fromMonth/fromYear/toMonth/toYear must be valid with From not after To");
+    const result = await computeModewise(req.auth!.tenantSlug!, code, type, fromMonth, toMonth);
     if (!result) throw new HttpError(404, "Field force not found");
     res.json({ data: result });
   })
