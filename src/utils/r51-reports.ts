@@ -210,8 +210,16 @@ export async function computeListedDrProductVisit(tenantSlug: string, code: stri
 export async function computeProductExposureUnlisted(tenantSlug: string, code: string, product: string, fromMonth: string, toMonth: string) {
   const h = await hier(tenantSlug, code); if (!h) return null;
   const months = monthsBetween(fromMonth, toMonth);
-  const rows = h.order.map((e, i) => ({ ...h.head(e, i), perMonth: Object.fromEntries(months.map((m) => [m, 0])) }));
-  return { product, months, employee: header(h), rows, dataAvailable: false,
-    notes: ["No product is captured on unlisted-doctor visits (the field visit log stores only the doctor name, times and notes), so there is no real data to count; every cell is therefore 0 and nothing is fabricated.", "This report needs a product field on unlisted-doctor visit capture before it can show values."] };
+  const codes = h.order.map((e) => e.employeeCode);
+  const logs = (await FieldVisitLogModel.find({ tenantSlug, employeeCode: { $in: codes }, visitType: "UnlistedDoctor" }).lean()) as any[];
+  const tagged = logs.filter((l) => String(l.visitDateOnly || "") && months.includes(String(l.visitDateOnly).slice(0, 7)) && Array.isArray(l.productsDetailed) && l.productsDetailed.length
+    && (product === "ALL" ? true : l.productsDetailed.some((p: string) => lc(p) === lc(product))));
+  const cnt = (code1: string, m: string) => new Set(tagged.filter((l) => l.employeeCode === code1 && String(l.visitDateOnly).slice(0, 7) === m).map((l) => lc(l.entityName))).size;
+  const rows = h.order.map((e, i) => ({ ...h.head(e, i), perMonth: Object.fromEntries(months.map((m) => [m, cnt(e.employeeCode, m)])) }));
+  const anyData = tagged.length > 0;
+  return { product, months, employee: header(h), rows, dataAvailable: anyData,
+    notes: [anyData ? "Count = distinct unlisted doctors (by name) visited and detailed with the product, from the products recorded on unlisted-doctor visits; 'All Product' = any product. Each row counts that fieldforce's own visits only."
+      : "No unlisted visits with products yet.",
+      "Products are captured on unlisted-doctor visits only from the release that added this field; earlier visits carry no product data and are not counted."] };
 }
 export type { Hierarchy };

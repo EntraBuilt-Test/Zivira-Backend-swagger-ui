@@ -119,6 +119,6 @@ assert.deepEqual(lp.rows.map((r: any) => [r.employeeCode, r.taggedDrs, r.perMont
 
 // ── 8) Unlisted exposure (honest gap) ──
 const un: any = await R.computeProductExposureUnlisted(T, "A1", "PREDIRA", "2026-09", "2026-10");
-assert.equal(un.dataAvailable, false); assert.ok(un.rows.every((r: any) => Object.values(r.perMonth).every((x) => x === 0)));
+assert.equal(un.dataAvailable, false); assert.ok(un.rows.every((r: any) => Object.values(r.perMonth).every((x) => x === 0)));   // no tagged visits in this seed -> zero (see r55 test for tagged data)
 assert.equal(await R.computeAtGlance(T, "NOPE", "2026-10", "2026-10"), null);
 console.log("R51 compute tests passed");

@@ -32,7 +32,9 @@ const fieldVisitLogSchema = new Schema(
     },
     visitDate: { type: Date, required: true, index: true },
     visitDateOnly: { type: String, index: true }, // 'YYYY-MM-DD', derived server-side
-    notes: { type: String, trim: true, default: null }
+    notes: { type: String, trim: true, default: null },
+    // Round 55 -- products detailed on an unlisted-doctor visit (canonical product-master names). Empty for history before this field existed.
+    productsDetailed: { type: [String], default: [] }
   },
   { timestamps: true }
 );

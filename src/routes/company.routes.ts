@@ -49,6 +49,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import * as R55 from "../utils/r55-reports.js";
 import * as R54 from "../utils/r54-reports.js";
 import * as R53 from "../utils/r53-reports.js";
 import * as R52 from "../utils/r52-reports.js";
@@ -5723,6 +5724,18 @@ companyRouter.get("/mis/product-exposure/drill", asyncHandler(async (req, res) =
 }));
 companyRouter.get("/mis/product-exposure", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeProductExposure(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));
 companyRouter.get("/mis/listeddr-product-visit", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeListedDrProductVisit(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
+companyRouter.get("/mis/product-exposure-specat/options", asyncHandler(async (req, res) => { res.json({ data: await R55.specatOptions(req.auth!.tenantSlug!) }); }));
+companyRouter.get("/mis/product-exposure-specat/drill", asyncHandler(async (req, res) => {
+  const employeeCode = String(req.query.employeeCode || "").trim(); const month = String(req.query.month || ""); const value = String(req.query.value || "").trim();
+  if (!employeeCode || !value || !MONTH_RE.test(month)) throw new HttpError(400, "employeeCode, value and month (YYYY-MM) are required");
+  r51Send(res, await R55.productExposureSpecatDrill(req.auth!.tenantSlug!, employeeCode, String(req.query.product || "ALL"), month, String(req.query.mode) === "category" ? "category" : "speciality", value));
+}));
+companyRouter.get("/mis/product-exposure-specat", asyncHandler(async (req, res) => {
+  const r = r51Range(req); const mode = String(req.query.mode) === "category" ? "category" : "speciality";
+  const selected = String(req.query.values || "").split("|").map((x) => x.trim()).filter(Boolean).slice(0, 100);
+  if (!selected.length) throw new HttpError(400, "Select at least one " + mode);
+  r51Send(res, await R55.computeProductExposureSpecat(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth, mode, selected));
+}));
 companyRouter.get("/mis/product-exposure-unlisted", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeProductExposureUnlisted(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));
 
 companyRouter.get("/mis/product-priority-wise", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R52.computePriorityWise(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));

@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import { z } from "zod";
 import { asyncHandler } from "../http/async-handler.js";
 import { HttpError } from "../http/errors.js";
+import { loadProductMaster } from "../utils/pob-rx-reports.js";
 import { requireAuth, requireFieldForce } from "../http/auth.js";
 import { AttendanceModel } from "../models/attendance.model.js";
 import { DcrModel } from "../models/dcr.model.js";
@@ -2468,7 +2469,7 @@ fieldRouter.get("/visit-logs", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const date = typeof req.query.date === "string" && req.query.date ? req.query.date : dateOnlyUTC(new Date());
   const logs = await FieldVisitLogModel.find({ tenantSlug, employeeCode: employee.employeeCode, visitDateOnly: date }).sort({ createdAt: -1 }).lean();
-  res.json({ data: logs.map((l: any) => ({ id: String(l._id), visitType: l.visitType, entityName: l.entityName, checkInTime: l.checkInTime, checkOutTime: l.checkOutTime, notes: l.notes, visitDateOnly: l.visitDateOnly })) });
+  res.json({ data: logs.map((l: any) => ({ id: String(l._id), visitType: l.visitType, entityName: l.entityName, checkInTime: l.checkInTime, checkOutTime: l.checkOutTime, notes: l.notes, productsDetailed: l.productsDetailed || [], visitDateOnly: l.visitDateOnly })) });
 }));
 
 const visitLogSchema = z.object({
@@ -2477,7 +2478,8 @@ const visitLogSchema = z.object({
   visitDate: z.string().optional(), // YYYY-MM-DD; defaults to today
   checkInTime: z.string().optional(),
   checkOutTime: z.string().optional(),
-  notes: z.string().optional()
+  notes: z.string().optional(),
+  productsDetailed: z.array(z.string()).max(50).optional() // Round 55: product names; UnlistedDoctor visits only
 });
 
 fieldRouter.post("/visit-logs", asyncHandler(async (req, res) => {
@@ -2487,6 +2489,18 @@ fieldRouter.post("/visit-logs", asyncHandler(async (req, res) => {
   const dateOnly = body.visitDate && body.visitDate.trim() ? body.visitDate.trim() : dateOnlyUTC(new Date());
   await assertDateNotLocked(tenantSlug, employee.employeeCode, dateOnly);
 
+  // Round 55: validate detailed products against the product master and store canonical names.
+  let productsDetailed: string[] = [];
+  const sent = [...new Set((body.productsDetailed || []).map((p) => p.trim()).filter(Boolean))];
+  if (sent.length) {
+    if (body.visitType !== "UnlistedDoctor") throw new HttpError(400, "Products detailed can only be recorded on Unlisted Doctor visits.");
+    const master = await loadProductMaster(tenantSlug);
+    const byLower = new Map(master.map((m) => [m.name.toLowerCase(), m.name]));
+    const bad = sent.filter((p) => !byLower.has(p.toLowerCase()));
+    if (bad.length) throw new HttpError(400, `Unknown product(s): ${bad.join(", ")}`);
+    productsDetailed = [...new Set(sent.map((p) => byLower.get(p.toLowerCase())!))];
+  }
+
   const log = await FieldVisitLogModel.create({
     tenantSlug,
     employeeCode: employee.employeeCode,
@@ -2495,7 +2509,8 @@ fieldRouter.post("/visit-logs", asyncHandler(async (req, res) => {
     visitDate: new Date(dateOnly),
     checkInTime: body.checkInTime || null,
     checkOutTime: body.checkOutTime || null,
-    notes: body.notes?.trim() || null
+    notes: body.notes?.trim() || null,
+    productsDetailed
   });
 
   await audit("FIELD_VISIT_LOG_SAVED", "FieldVisitLog", String(log._id), { tenantSlug, employeeCode: employee.employeeCode, visitType: body.visitType });
