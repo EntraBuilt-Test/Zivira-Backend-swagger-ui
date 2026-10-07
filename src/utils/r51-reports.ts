@@ -22,8 +22,8 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const pct = (a: number, b: number) => (b > 0 ? r2((a / b) * 100) : null);
 const slash = (d: string) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : "");
 
-type Call = { code: string; doctorId: string; doctor: any; day: number; month: string; products: string[]; date: string };
-async function loadCalls(tenantSlug: string, codes: string[], months: string[]): Promise<Call[]> {
+export type Call = { code: string; doctorId: string; doctor: any; day: number; month: string; products: string[]; date: string };
+export async function loadCalls(tenantSlug: string, codes: string[], months: string[]): Promise<Call[]> {
   if (!codes.length) return [];
   const rows = (await DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, month: { $in: months } }).populate("doctorId").lean()) as any[];
   const seen = new Set<string>(); const out: Call[] = [];

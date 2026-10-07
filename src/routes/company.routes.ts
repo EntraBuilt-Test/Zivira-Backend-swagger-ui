@@ -49,6 +49,7 @@ import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP
 import XLSX from "xlsx";
 import { buildRcpaRows, rcpaHtmlXls, rcpaCsv, buildSkuRows, skuTsv, buildVisitDrsRows, VISIT_DRS_HEADERS, buildSsRows, SS_HEADERS, buildListeddrRows, listeddrCsv, LISTEDDR_HEADERS, buildChemistRows, CHEMIST_HEADERS, CHEMIST_WIDTHS, buildTransitRows, TRANSIT_HEADERS, TRANSIT_WIDTHS, buildStockistRows, STOCKIST_HEADERS, STOCKIST_WIDTHS, computeResignedUsers, computeJoinLeft, computeTpDeviation, legacyXlsx, forceLabel } from "../utils/r46-reports.js";
 import { computeQuizResult, buildCallLines, dayWiseHtmlXls, dayWiseCells, DAYWISE_HEADERS, callReportCsv, callReportCells, CALL_REPORT_HEADERS, aoaToXlsx, detailingOptions, computeDetailingVisitWise, computeBrandStarRating, slideAnalysisOptions, computeSlideAnalysis, computeDrsAnalysis, type SlideFilterKind } from "../utils/r45-reports.js";
+import * as R52 from "../utils/r52-reports.js";
 import * as R51 from "../utils/r51-reports.js";
 import { computeModewise, MODEWISE_TYPES, type ModewiseType } from "../utils/r50-reports.js";
 import { computeDoctorwise, computeCallFeedbackwise, computeFixation, baseLevelOptions, DOCTORWISE_MODES, FIXATION_TYPES, type DoctorwiseMode, type FixationType } from "../utils/r48-reports.js";
@@ -5722,6 +5723,13 @@ companyRouter.get("/mis/product-exposure", asyncHandler(async (req, res) => { co
 companyRouter.get("/mis/listeddr-product-visit", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeListedDrProductVisit(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth)); }));
 companyRouter.get("/mis/product-exposure-unlisted", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R51.computeProductExposureUnlisted(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));
 
+companyRouter.get("/mis/product-priority-wise", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R52.computePriorityWise(req.auth!.tenantSlug!, r51Code(req), String(req.query.product || "ALL"), r.fromMonth, r.toMonth)); }));
+const r52Source = (req: any): R52.SampleSource => (req.query.source === "despatch" || req.query.source === "both" ? req.query.source : "dcr");
+companyRouter.get("/mis/sample-details/drill", asyncHandler(async (req, res) => {
+  const month = String(req.query.month || ""); if (!MONTH_RE.test(month)) throw new HttpError(400, "month (YYYY-MM) is required");
+  res.json({ data: await R52.sampleDetailsDrill(req.auth!.tenantSlug!, r51Code(req), month, r52Source(req)) });
+}));
+companyRouter.get("/mis/sample-details", asyncHandler(async (req, res) => { const r = r51Range(req); r51Send(res, await R52.computeSampleDetails(req.auth!.tenantSlug!, r51Code(req), r.fromMonth, r.toMonth, r52Source(req))); }));
 companyRouter.get(
   "/mis/modewise",
   asyncHandler(async (req, res) => {
