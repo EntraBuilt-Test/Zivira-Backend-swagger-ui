@@ -10,6 +10,9 @@ const stockistSchema = new Schema(
     address: { type: String, required: true, trim: true },
     phone: { type: String, trim: true },
     fieldForceName: { type: String, trim: true },
+    // Round 48 -- Stockist Upload layout (Emp Code / HQ Code columns)
+    empCode: { type: String, trim: true, default: null },
+    hqCode: { type: String, trim: true, default: null },
     status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
   },
   { timestamps: true }

@@ -26,7 +26,11 @@ const dispatchItemSchema = new Schema(
     // field portal shows dispatchQty as the default editable value, but we
     // never fabricate a "received" figure before the rep confirms it.
     receivedQty: { type: Number, default: null, min: 0 },
-    remarks: { type: String, trim: true, default: null } // "Short Qty Received" | "Excess" | "Breakage"
+    remarks: { type: String, trim: true, default: null },
+    // Round 48 -- Despatch upload layout (Despatch Date / Docket-LR No / Courier per line)
+    despatchDate: { type: Date, default: null },
+    docketNo: { type: String, trim: true, default: null },
+    courier: { type: String, trim: true, default: null } // "Short Qty Received" | "Excess" | "Breakage"
   },
   { _id: false }
 );

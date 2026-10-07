@@ -8,6 +8,9 @@ const holidaySchema = new Schema(
     weekendHoliday: { type: String, trim: true, default: null },
     otherHolidayDate: { type: Date, default: null },
     otherHolidayDescription: { type: String, trim: true, default: null },
+    // Round 48 -- Holiday upload layout (HQ / Type columns)
+    hq: { type: String, trim: true, default: null },
+    holidayType: { type: String, trim: true, default: null },
     extraNotes: { type: [String], default: [] },
     status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
   },
