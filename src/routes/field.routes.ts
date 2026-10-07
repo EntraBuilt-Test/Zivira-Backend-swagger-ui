@@ -49,6 +49,7 @@ import { CrmModel } from "../models/crm.model.js";
 import { WORK_TYPE_TO_CODE } from "../models/work-type-code.model.js";
 import { detectLocks, getLockState, utcDateString, LOCK_LOOKBACK_DAYS } from "../utils/dcr-lock.js";
 import { getDcrDelayDays } from "../utils/settings.js";
+import { infoDeliveryRouter } from "./info.routes.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -237,6 +238,8 @@ async function assertDateNotLocked(tenantSlug: string, employeeCode: string, dat
 
 export const fieldRouter = Router();
 fieldRouter.use(requireAuth, requireFieldForce);
+// Round 48 Part D -- Flash News / Notice Board / Quote feed and Talk to Us for the signed-in rep.
+fieldRouter.use("/info-center", infoDeliveryRouter);
 
 async function getFieldProfile(userId: string) {
   const user = await UserModel.findById(userId);

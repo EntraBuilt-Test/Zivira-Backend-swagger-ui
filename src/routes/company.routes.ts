@@ -7,6 +7,7 @@ import { mastersRouter } from "./masters.routes.js";
 import { uploadsRouter } from "./uploads.routes.js";
 import { cached, clearCache } from "../utils/ttl-cache.js";
 import { uploadToolsRouter } from "./upload-tools.routes.js";
+import { infoAdminRouter } from "./info.routes.js";
 import { mailRouter } from "./mail.routes.js";
 import { mastersActionsRouter } from "./masters-actions.routes.js";
 import { dashboardsRouter } from "./dashboard.routes.js";
@@ -209,6 +210,7 @@ companyRouter.use((req, _res, next) => { if (req.method !== "GET") clearCache();
 companyRouter.use("/masters", mastersRouter);
 companyRouter.use("/masters", uploadsRouter);
 companyRouter.use("/upload-tools", uploadToolsRouter);
+companyRouter.use("/info", infoAdminRouter);
 companyRouter.use("/masters", mastersActionsRouter);
 // Round 13 mandate 1 — dashboard.routes.ts's own header comment already
 // documented "Mounted at /company/dashboards", but it was never actually

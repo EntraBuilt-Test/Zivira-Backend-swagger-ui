@@ -25,9 +25,12 @@ import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { computeRepAnalysisRows } from "../utils/rep-manager-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
+import { infoDeliveryRouter } from "./info.routes.js";
 
 export const managerRouter = Router();
 managerRouter.use(requireAuth);
+// Round 48 Part D -- same feed + Talk to Us for the signed-in manager.
+managerRouter.use("/info-center", infoDeliveryRouter);
 
 // PRD 8.1 — Role Architecture: Manager (ABM/RBM) — portal field stays
 // FIELD_FORCE, only the role differs. NBH kept for backward compatibility
