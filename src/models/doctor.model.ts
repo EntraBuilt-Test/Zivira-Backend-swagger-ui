@@ -70,6 +70,8 @@ const doctorSchema = new Schema(
     consultationFees: { type: String, trim: true, default: null },
     hospitalAddress: { type: String, trim: true, default: null },
     telephone: { type: String, trim: true, default: null },
+    // Round 58 -- optional Listed Doctor Upload Tool columns with no dedicated field (Fax, Website, Hospital State, No of Visit, DAY1-3, Others 1-3).
+    uploadExtras: { type: Schema.Types.Mixed, default: undefined },
     // P0..P5 priority products (index = priority) and mapped products.
     priorityProducts: { type: [String], default: [] },
     mappedProducts: { type: [String], default: [] },

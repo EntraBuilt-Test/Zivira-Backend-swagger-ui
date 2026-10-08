@@ -53,12 +53,12 @@ store["inputMaster"] = [{ tenantSlug: T, inputCode: "IN1", inputName: "Prescript
 
 const U = await import("../../src/utils/upload-tools.js");
 const buf = (headers: string[], rows: any[][]) => { const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([headers, ...rows]), "S"); return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer; };
-const run = async (key: string, headers: string[], rows: any[][]) => { const tool = U.getTool(key)!; const p = U.parseBuffer(buf(headers, rows)); return U.importRows(tool, T, "tester", "f.xlsx", p.headers, p.rows); };
+const run = async (key: string, headers: string[], rows: any[][], opts: any = {}) => { const tool = U.getTool(key)!; const p = U.parseBuffer(buf(headers, rows)); return U.importRows(tool, T, "tester", "f.xlsx", p.headers, p.rows, opts); };
 const val = async (key: string, headers: string[], rows: any[][]) => { const tool = U.getTool(key)!; const p = U.parseBuffer(buf(headers, rows)); return (await U.validateRows(tool, T, p.headers, p.rows)).out; };
 assert.equal(U.TOOLS.length, 12);
 
 // sample workbook = real xlsx with the headers
-for (const t of U.TOOLS) { const wb = XLSX.read(U.sampleWorkbook(t), { type: "buffer" }); assert.deepEqual((XLSX.utils.sheet_to_json(wb.Sheets["Upload"], { header: 1 })[0] as string[]), t.headers); }
+for (const t of U.TOOLS) { const wb = XLSX.read(await U.templateWorkbook(t, T), { type: "buffer" }); assert.deepEqual((XLSX.utils.sheet_to_json(wb.Sheets[t.sheetName || t.templateSheet || "Upload"], { header: 1 })[0] as string[]), t.templateHeaders || t.headers); }   // Round 58: legacy sheet names / template columns
 assert.equal(U.getTool("listed-doctor")!.headers.length, 66);
 
 // missing required column -> file error, nothing imported
@@ -85,11 +85,11 @@ assert.equal(store["products"].find((p) => p.code === "P003").productName, "OLDP
 assert.equal(store["products"].length, 3);
 assert.equal(store["products"].find((p) => p.code === "P003").status, "INACTIVE");
 const RH = U.getTool("product-rate")!.headers;
-const r1 = await run("product-rate", RH, [["P002", "ZIVITAB", "12.5", "11", "20", "01/04/2026"], ["P002", "ZIVITAB", "15", "", "25", "01/09/2026"], ["P002", "ZIVITAB", "99", "", "", "01/01/2099"], ["PXXX", "", "1", "", "", "01/04/2026"], ["P002", "ZIVITAB", "x", "", "", "32/13/2026"]]);
+const r1 = await run("product-rate", RH, [["P002", "ZIVITAB", "12.5", "11", "20", "01/04/2026"], ["P002", "ZIVITAB", "15", "", "25", "01/09/2026"], ["P002", "ZIVITAB", "99", "", "", "01/01/2099"], ["PXXX", "", "1", "", "", "01/04/2026"], ["P002", "ZIVITAB", "x", "", "", "32/13/2026"]], { state: "Gujarat" });
 assert.deepEqual([r1.ok, r1.failed], [3, 2]);
 assert.deepEqual(r1.errors.map((e) => [e.row, e.field]), [[5, "Product Code"], [6, "PTR"], [6, "Effective From"]]);
 assert.equal(store["products"].find((p) => p.code === "P002").rate, 15);                                  // latest rate effective today, future-dated 99 ignored
-const r2 = await run("product-rate", RH, [["P002", "ZIVITAB", "12.5", "11", "20", "01/04/2026"]]); assert.equal(r2.updated, 1); assert.equal(store["productRates"].length, 3);
+const r2 = await run("product-rate", RH, [["P002", "ZIVITAB", "12.5", "11", "20", "01/04/2026"]], { state: "Gujarat" }); assert.equal(r2.updated, 1); assert.equal(store["productRates"].length, 3);
 
 // ── Salesforce
 const SH = U.getTool("field-force")!.headers;
@@ -136,7 +136,8 @@ assert.deepEqual([lv.ok, lv.failed], [1, 3]); assert.equal(store["leave_applicat
 await run("leave-bulk-upload", LV, [["E2", "CL", "05/10/2026", "07/10/2026", "", "Fever", ""]]); assert.equal(store["leave_applications"].length, 1);
 const TG = U.getTool("target")!.headers;
 const tg = await run("target", TG, [["E2", "October", "2026", "P001", "100", "5000"], ["E2", "13", "2026", "P001", "1", ""], ["E2", "Oct", "2026", "PNOPE", "1", ""]]);
-assert.deepEqual([tg.ok, tg.failed], [1, 2]); const tm = store["targetMaster"][0]; assert.deepEqual([tm.monthKey, tm.product, tm.targetUnit, tm.unitPrice, tm.targetValue, tm.fieldForceName], ["2026-10", "DEXNOVA", 100, 50, 5000, "AMITH K"]);
+assert.deepEqual([tg.ok, tg.failed, tg.inserted, tg.uploaded], [1, 2, 0, false]); assert.equal((store["targetMaster"] || []).length, 0);   // Round 58: Target is all-or-nothing
+await run("target", TG, [["E2", "October", "2026", "P001", "100", "5000"]]); const tm = store["targetMaster"][0]; assert.deepEqual([tm.monthKey, tm.product, tm.targetUnit, tm.unitPrice, tm.targetValue, tm.fieldForceName], ["2026-10", "DEXNOVA", 100, 50, 5000, "AMITH K"]);
 await run("target", TG, [["E2", "10", "2026", "P001", "120", "6000"]]); assert.equal(store["targetMaster"].length, 1); assert.equal(store["targetMaster"][0].targetUnit, 120);
 
 // ── Despatch (sample + input)

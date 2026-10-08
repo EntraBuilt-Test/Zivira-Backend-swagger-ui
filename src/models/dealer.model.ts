@@ -22,6 +22,14 @@ const dealerSchema = new Schema(
     category: { type: String, trim: true, default: null },
     clusterName: { type: String, trim: true, default: null },
     commonRefNo: { type: String, trim: true, default: null },
+    // Round 58 -- Chemists Upload Tool optional columns.
+    address2: { type: String, trim: true, default: null },
+    contactDesignation: { type: String, trim: true, default: null },
+    shopLandline: { type: String, trim: true, default: null },
+    website: { type: String, trim: true, default: null },
+    stockistErpCode: { type: String, trim: true, default: null },
+    chemistErpCode: { type: String, trim: true, default: null },
+    uploadExtras: { type: Schema.Types.Mixed, default: undefined },
     status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }
   },
   { timestamps: true }

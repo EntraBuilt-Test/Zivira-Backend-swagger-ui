@@ -11,11 +11,13 @@ const productRateSchema = new Schema(
     ptr: { type: Number, default: null, min: 0 },
     pts: { type: Number, default: null, min: 0 },
     mrp: { type: Number, default: null, min: 0 },
-    effectiveFrom: { type: Date, required: true }
+    effectiveFrom: { type: Date, required: true },
+    // Round 58 -- state-wise rates ("" = applies to all states; rows uploaded before this round).
+    stateName: { type: String, trim: true, default: "", index: true }
   },
   { timestamps: true }
 );
 
-productRateSchema.index({ tenantSlug: 1, productCode: 1, effectiveFrom: 1 }, { unique: true });
+productRateSchema.index({ tenantSlug: 1, productCode: 1, stateName: 1, effectiveFrom: 1 }, { unique: true });
 
 export const ProductRateModel = mongoose.model("ProductRate", productRateSchema, "productRates");
