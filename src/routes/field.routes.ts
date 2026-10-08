@@ -292,7 +292,7 @@ fieldRouter.get("/dashboard", asyncHandler(async (req, res) => {
     profile: serializeDocument(employee),
     today: { plannedVisits: doctors.length, completedDcrs, attendanceMarked: Boolean(attendance) },
     doctors: doctors.map(serializeDocument),
-    recentDcrs: recentDcrs.map(serializeDocument)
+    recentDcrs: recentDcrs.map((d) => ({ ...serializeDocument(d), ...decisionView(d) }))
   }});
 }));
 
