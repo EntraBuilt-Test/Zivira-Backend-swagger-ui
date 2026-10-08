@@ -139,13 +139,13 @@ uploadToolsRouter.get("/product-rate/states", asyncHandler(async (req, res) => {
 }));
 
 // ---- persisted upload log (Round 61 review 2, generalised in Round 62): Listed Doctor, Chemists and every tool added to LOGGED_TOOLS ----
-const LOGGED_TOOLS = new Set(["listed-doctor", "chemist"]);
+const LOGGED_TOOLS = new Set(TOOLS.map((t) => t.key));   // every upload tool keeps a persisted history
 const NOT_UPLOADED_MAX_BYTES = 2 * 1024 * 1024;
 /** The single most common reason across the rejected rows (a row counts once per reason), worded without the cell values. */
 export function topReasonOf(errors: { row: number; field: string; reason: string }[]): { text: string; rows: number } {
   const perKey = new Map<string, Set<number>>();
   for (const e of errors) {
-    const text = /not found in Field Force/i.test(e.reason) ? "User Name not found in Field Force" : `${e.field}: ${e.reason.replace(/"[^"]*"\s*/g, "").replace(/\s+/g, " ").trim()}`;
+    const text = /not found in Field Force/i.test(e.reason) ? `${/^employee/i.test(e.reason) ? "Employee" : e.field} not found in Field Force` : `${e.field}: ${e.reason.replace(/"[^"]*"\s*/g, "").replace(/\s+/g, " ").trim()}`;
     (perKey.get(text) || perKey.set(text, new Set()).get(text)!).add(e.row);
   }
   let best = { text: "", rows: 0 };

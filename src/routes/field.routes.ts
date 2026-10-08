@@ -2171,6 +2171,15 @@ fieldRouter.post("/deviation-visits", asyncHandler(async (req, res) => {
 // GET /field/chemists — this employee's own mapped chemists, the exact
 // same shape/scoping as GET /field/doctors above (DealerModel is the real,
 // live Chemist Master — see registry.ts's "dealers" master comment).
+// GET /field/targets -- this employee's own targets (Target Upload / Target Master), optionally for one monthKey (YYYY-MM).
+fieldRouter.get("/targets", asyncHandler(async (req, res) => {
+  const employee = await getFieldProfile(req.auth!.sub);
+  const filter: Record<string, unknown> = { tenantSlug: req.auth!.tenantSlug, employeeCode: employee.employeeCode };
+  if (typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month)) filter.monthKey = req.query.month;
+  const rows = (await getMasterModel("targetMaster").find(filter).sort({ monthKey: 1, product: 1 }).lean()) as any[];
+  res.json({ data: { rows: rows.map((r) => ({ monthKey: r.monthKey, month: r.month, year: r.year, productCode: r.productCode, product: r.product, targetUnit: r.targetUnit, unitPrice: r.unitPrice, targetValue: r.targetValue })), totalUnit: rows.reduce((a, r) => a + (Number(r.targetUnit) || 0), 0), totalValue: rows.reduce((a, r) => a + (Number(r.targetValue) || 0), 0) } });
+}));
+
 fieldRouter.get("/chemists", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const chemists = await DealerModel.find({ tenantSlug: req.auth!.tenantSlug, employeeCode: employee.employeeCode, status: "ACTIVE" }).sort({ dealerName: 1 });

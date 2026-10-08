@@ -1256,6 +1256,17 @@ managerRouter.get("/team-checkout-status", asyncHandler(async (req, res) => {
 // GET /manager/dcrs already gives for doctor DCRs. Reuses Phase 5's real
 // ChemistCallModel as-is — no new schema.
 // ══════════════════════════════════════════════════════════════════════
+// GET /manager/targets -- targets of the manager's direct team (Target Upload), totals per person for the chosen monthKey (default: all uploaded months).
+managerRouter.get("/targets", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = (await EmployeeModel.find({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, status: "ACTIVE" }, { employeeCode: 1, name: 1 }).lean()) as any[];
+  const filter: Record<string, unknown> = { tenantSlug: mgr.tenantSlug, employeeCode: { $in: team.map((e) => e.employeeCode) } };
+  if (typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month)) filter.monthKey = req.query.month;
+  const rows = team.length ? ((await getMasterModel("targetMaster").find(filter).lean()) as any[]) : [];
+  const people = team.map((e) => { const mine = rows.filter((r) => r.employeeCode === e.employeeCode); return { employeeCode: e.employeeCode, name: e.name, lines: mine.length, targetUnit: mine.reduce((a, r) => a + (Number(r.targetUnit) || 0), 0), targetValue: mine.reduce((a, r) => a + (Number(r.targetValue) || 0), 0) }; });
+  res.json({ data: { people, totalUnit: people.reduce((a, p) => a + p.targetUnit, 0), totalValue: people.reduce((a, p) => a + p.targetValue, 0) } });
+}));
+
 // GET /manager/chemists -- the chemists (Chemist Master / Chemists Upload Tool) mapped to this manager's direct team, with how many calls each has had.
 managerRouter.get("/chemists", asyncHandler(async (req, res) => {
   const mgr = await getManagerProfile(req.auth!.sub);

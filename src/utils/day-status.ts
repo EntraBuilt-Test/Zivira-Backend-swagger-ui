@@ -36,7 +36,7 @@ export async function buildDayStatusContext(tenantSlug: string, month: string, e
   if (distinctStates.length > 0) {
     const holidays = await HolidayModel.find({
       tenantSlug,
-      stateName: { $in: distinctStates },
+      stateName: { $in: [...distinctStates, "All", "ALL", "all"] },   // a holiday uploaded for State "All" (national) applies to every state
       status: "ACTIVE",
       otherHolidayDate: { $gte: monthStart, $lt: monthEnd }
     }).lean();

@@ -36,6 +36,8 @@ export type UploadOpts = { deactivate?: boolean; mode?: "insert" | "overwrite"; 
 type Tool = {
   key: string; title: string; group: "Customer Upload" | "Upload"; headers: string[]; required: string[]; dateHeaders: string[];
   note: string;
+  /** masters the tool cannot work without: an empty one gives a single clear message instead of rejecting every row */
+  needs?: ("employees" | "products" | "inputs")[];
   /** Legacy sheet name the workbook must contain (case-insensitive). A single-sheet file with a different name is accepted with a warning. */
   sheetName?: string;
   /** norm(alias header) -> canonical header; lets the legacy template column names and the demo-pack names both import. */
@@ -169,6 +171,7 @@ export function territoryTypeOf(raw: string): "HQ" | "EX" | "OS" | "" {
   return "";
 }
 const listedDoctor: Tool = {
+  needs: ["employees"],
   key: "listed-doctor", title: "Listed Doctor Upload Tool", group: "Customer Upload",
   headers: H, required: ["Employee Code", "Listed Dr Name", "Speciality", "Territory"], dateHeaders: ["DOB", "DOW"],
   templateSheet: "Listed Doctor Upload",
@@ -237,6 +240,7 @@ const listedDoctor: Tool = {
 
 // ── 2. Chemists ───────────────────────────────────────────────────────────
 const chemist: Tool = {
+  needs: ["employees"],
   key: "chemist", title: "Chemists Upload Tool", group: "Customer Upload",
   headers: ["Fieldforce Name", "Designation", "HQ", "Employee Code", "Chemists Name", "Class", "Address", "Territory", "Contact Person", "Mobile", "Common Reference Number"],
   required: ["Employee Code", "Chemists Name"], dateHeaders: [], templateSheet: "Chemist Upload",
@@ -284,9 +288,9 @@ const stockist: Tool = {
     const errors: Er[] = [];
     const erp = reqd(g, "ERP Code", errors), name = reqd(g, "Stockist Name", errors), state = reqd(g, "State", errors);
     const code = g("Emp Code");
-    const emp = code ? ctx.byCode.get(lc(code)) : null;
+    const emp = code ? empOf(ctx, code) : null;
     const hq = g("HQ Name") || emp?.territory || "";   // HQ Name optional: defaults to the mapped employee's HQ
-    if (code && !emp) errors.push({ field: "Emp Code", reason: `employee "${code}" not found` });
+    if (code && !emp) errors.push({ field: "Emp Code", reason: `Employee "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
     return { errors, key: lc(erp), value: { erp, name, hq, state, empCode: emp?.employeeCode || null, ff: emp?.name || g("Fieldforce Name") || null, hqCode: g("HQ Code") || null } };
   },
   async apply(tenant, items) {
@@ -475,6 +479,7 @@ async function ensureRateIndex() {
   try { if (typeof (ProductRateModel as any).syncIndexes === "function") await (ProductRateModel as any).syncIndexes(); } catch { /* index sync is best-effort */ }
 }
 const productRate: Tool = {
+  needs: ["products"],
   key: "product-rate", title: "Product Rate Upload", group: "Upload",
   headers: ["Product Code", "Product Name", "PTR", "PTS", "MRP", "Effective From"],
   required: ["Product Code", "PTR", "Effective From"], dateHeaders: ["Effective From"], templateSheet: "UPL_Product_Rate",
@@ -494,7 +499,14 @@ const productRate: Tool = {
   async apply(tenant, items, _ctx, opts) {
     await ensureRateIndex();
     const state = S(opts?.state);
-    const res = await catching(items, (v) => upsert(ProductRateModel, { tenantSlug: tenant, productCode: v.code, stateName: state, effectiveFrom: v.eff }, { productName: v.name, ptr: v.ptr, pts: v.pts, mrp: v.mrp }));
+    // State Name "ALL": the same rates are stored for every active state of the State master (per-state history is kept)
+    const allStates = lc(state) === "all" ? ((await StateModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[]).map((x) => S(x.stateName)).filter(Boolean) : [];
+    const targets = allStates.length ? allStates : [state];
+    const res = await catching(items, async (v) => {
+      let out: "inserted" | "updated" = "updated";
+      for (const [i, st] of targets.entries()) { const o = await upsert(ProductRateModel, { tenantSlug: tenant, productCode: v.code, stateName: st, effectiveFrom: v.eff }, { productName: v.name, ptr: v.ptr, pts: v.pts, mrp: v.mrp }); if (i === 0) out = o; }
+      return out;
+    });
     // Product.rate (flat rate used by POB / Rx valuation) = the latest effective PTR (on or before today) of the REFERENCE STATE of that product:
     // the state, among those that have a rate for it, with the most ACTIVE field force (Employee.state); a tie goes to the state whose rates were uploaded first.
     const today = new Date();
@@ -555,6 +567,7 @@ const holiday: Tool = {
 
 // ── 9. Leave ──────────────────────────────────────────────────────────────
 const leave: Tool = {
+  needs: ["employees"],
   key: "leave-bulk-upload", title: "Leave Upload", group: "Upload",
   headers: ["Employee Code", "Leave Type", "From Date", "To Date", "Days", "Reason", "Status"],
   required: ["Employee Code", "Leave Type", "From Date", "To Date"], dateHeaders: ["From Date", "To Date"], sheetName: "Leave_Upload",
@@ -566,8 +579,8 @@ const leave: Tool = {
   check(g, ctx, _row, opts) {
     const errors: Er[] = [];
     const code = reqd(g, "Employee Code", errors), lt = reqd(g, "Leave Type", errors);
-    const emp = code ? ctx.byCode.get(lc(code)) : null;
-    if (code && !emp) errors.push({ field: "Employee Code", reason: `employee "${code}" not found` });
+    const emp = code ? empOf(ctx, code) : null;
+    if (code && !emp) errors.push({ field: "Employee Code", reason: `Employee "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
     const type = ctx.types.find((t: string) => lc(t) === lc(lt));
     if (lt && !type) errors.push({ field: "Leave Type", reason: `"${lt}" is not in the Leave Type master (${ctx.types.join(", ") || "none defined"})` });
     const from = dateField(g, "From Date", errors, true), to = dateField(g, "To Date", errors, true);
@@ -599,6 +612,7 @@ function parseMonth(s: string): number | null {
 /** Financial year starting April of `fy`: month keys "fy-04" .. "fy+1-03". */
 const fyKeys = (fy: number) => Array.from({ length: 12 }, (_, i) => { const m = ((i + 3) % 12) + 1; return `${m >= 4 ? fy : fy + 1}-${String(m).padStart(2, "0")}`; });
 const target: Tool = {
+  needs: ["employees", "products"],
   key: "target", title: "Target Upload", group: "Customer Upload",
   headers: ["Employee Code", "Month", "Year", "Product Code", "Target Qty", "Target Value", "Target Rate"],
   required: ["Employee Code", "Month", "Product Code", "Target Qty"], dateHeaders: [], allOrNothing: true, templateSheet: "Upl_Target_Master",
@@ -610,7 +624,7 @@ const target: Tool = {
     const errors: Er[] = [];
     const code = reqd(g, "Employee Code", errors), pc = reqd(g, "Product Code", errors);
     const emp = empOf(ctx, code);
-    if (code && !emp) errors.push({ field: "Employee Code", reason: `employee "${code}" not found` });
+    if (code && !emp) errors.push({ field: "Employee Code", reason: `Employee "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
     const p = pc ? ctx.products.get(lc(pc)) : null;
     if (pc && !p) errors.push({ field: "Product Code", reason: `product "${pc}" not found` });
     const mRaw = reqd(g, "Month", errors); const m = mRaw ? parseMonth(mRaw) : null;
@@ -644,6 +658,7 @@ const target: Tool = {
 function despatchTool(type: "SAMPLE" | "INPUT"): Tool {
   const itemHeader = type === "SAMPLE" ? "Product Code" : "Input Item";
   return {
+    needs: type === "SAMPLE" ? ["employees", "products"] : ["employees", "inputs"],
     key: type === "SAMPLE" ? "sample" : "input", title: type === "SAMPLE" ? "Sample Despatch Upload" : "Input Despatch Upload", group: "Customer Upload",
     headers: ["Employee Code", itemHeader, "Qty", "Despatch Date", "Docket/LR No", "Courier"], required: ["Employee Code", itemHeader, "Qty"], dateHeaders: ["Despatch Date"],
     sheetName: type === "SAMPLE" ? "Upl_Despatch_Master" : undefined, templateSheet: "Upl_Despatch_Master",
@@ -664,7 +679,7 @@ function despatchTool(type: "SAMPLE" | "INPUT"): Tool {
       const errors: Er[] = [];
       const code = reqd(g, "Employee Code", errors), it = reqd(g, itemHeader, errors);
       const emp = empOf(ctx, code);
-      if (code && !emp) errors.push({ field: "Employee Code", reason: `employee "${code}" not found` });
+      if (code && !emp) errors.push({ field: "Employee Code", reason: `Employee "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
       let item: { code: string; name: string } | null = null;
       if (it) {
         if (type === "SAMPLE") { const p = ctx.products.get(lc(it)); if (p) item = { code: p.code, name: p.name }; }
@@ -734,28 +749,22 @@ export class SheetNameError extends Error {}
 export function parseBuffer(buf: Buffer, sheetName?: string, known?: Set<string>): { headers: string[]; rows: Raw[]; sheetNote?: string } {
   const wb = XLSX.read(buf, { type: "buffer", cellDates: false });
   let name = wb.SheetNames[0]; let sheetNote: string | undefined;
-  // Real Excel files: an instructions sheet before the data sheet, or a title line above the headers. When the caller knows the tool's column names, take the sheet and row that hold them.
-  if (known && !sheetName) {
-    let best = { score: 0, sheet: name, at: 0 };
-    for (const n of wb.SheetNames) {
-      const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[n], { header: 1, raw: true, defval: "", blankrows: false });
-      grid.slice(0, 10).forEach((r, at) => { const score = r.filter((c) => known.has(norm(c))).length; if (score > best.score) best = { score, sheet: n, at }; });
-    }
-    if (best.score >= 3) {
-      const aoa = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[best.sheet], { header: 1, raw: true, defval: "", blankrows: false }).slice(best.at);
-      const headers = (aoa[0] || []).map((h) => S(h));
-      return { headers, rows: aoa.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""]))), sheetNote: best.sheet !== wb.SheetNames[0] || best.at > 0 ? `Read the columns from sheet '${best.sheet}', row ${best.at + 1}.` : undefined };
-    }
-  }
+  const gridOf = (n: string) => XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[n], { header: 1, raw: true, defval: "", blankrows: false });
+  // header row: with the tool's column names known, the first row (of the top 10) holding at least 3 of them wins, so a title line above the headers is skipped
+  const headerAt = (aoa: unknown[][]) => { if (!known) return 0; let best = { score: 0, at: 0 }; aoa.slice(0, 10).forEach((r, at) => { const score = r.filter((c) => known.has(norm(c))).length; if (score > best.score) best = { score, at }; }); return best.score >= 3 ? best.at : 0; };
   if (sheetName) {
     const hit = wb.SheetNames.find((n) => lc(n) === lc(sheetName));
     if (hit) name = hit;
     else if (wb.SheetNames.length === 1) sheetNote = `The sheet is named '${wb.SheetNames[0]}'; the legacy format requires the sheet name '${sheetName}'. Accepted because the file has a single sheet - rename it to '${sheetName}' for future uploads.`;
     else throw new SheetNameError(`Sheet Name Must be '${sheetName}'`);
+  } else if (known) {   // no fixed sheet name: take the sheet whose top rows hold the most known columns (an instructions sheet may come first)
+    let best = { score: 0, sheet: name };
+    for (const n of wb.SheetNames) { const g = gridOf(n); const at = headerAt(g); const score = (g[at] || []).filter((c) => known.has(norm(c))).length; if (score > best.score) best = { score, sheet: n }; }
+    if (best.score >= 3) name = best.sheet;
   }
-  const ws = wb.Sheets[name];
-  if (!ws) return { headers: [], rows: [], sheetNote };
-  const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: true, defval: "", blankrows: false });
+  if (!wb.Sheets[name]) return { headers: [], rows: [], sheetNote };
+  const all = gridOf(name); const at = headerAt(all); const aoa = all.slice(at);
+  if (name !== wb.SheetNames[0] || at > 0) sheetNote = sheetNote || `Read the columns from sheet '${name}', row ${at + 1}.`;
   const headers = (aoa[0] || []).map((h) => S(h));
   const rows = aoa.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
   return { headers, rows, sheetNote };
@@ -780,7 +789,7 @@ async function buildSheet(sheet: string, headers: string[], mandatory: string[],
 
 /** The "Excel Format File - Download Here" workbook: legacy sheet name, mandatory columns in yellow. */
 /** Normalised column names (and aliases) a tool understands. */
-export const knownHeaders = (tool: Tool) => new Set([...tool.headers.map(norm), ...Object.keys(tool.aliases || {}), ...(GENERATE_COLUMNS[tool.key] || []).map((c) => norm(c.label))]);
+export const knownHeaders = (tool: Tool) => new Set([...tool.headers.map(norm), ...(tool.templateHeaders || []).map(norm), ...Object.keys(tool.aliases || {}), ...(GENERATE_COLUMNS[tool.key] || []).map((c) => norm(c.label))]);
 
 export async function templateWorkbook(tool: Tool, tenant: string, opts: UploadOpts = {}): Promise<Buffer> {
   const headers = tool.templateHeaders || tool.headers;
@@ -853,11 +862,15 @@ export async function validateRows(tool: Tool, tenant: string, headersIn: string
   const failed: FailedRow[] = [];
   if (out.fileErrors.length) return { out, items, ctx: null as Ctx, failed };
   const ctx = await tool.load(tenant, opts);
-  // an empty Field Force master makes every row fail for the same reason: say so once instead of rejecting each row
-  if (["listed-doctor", "chemist"].includes(tool.key) && ctx?.byCode && ctx.byCode.size === 0) {
-    out.fileErrors.push("The Field Force master has no employees for this company, so User Name cannot be matched. Upload the Salesforce file (Upload > Salesforce) or add the employees first, then upload the file again.");
-    return { out, items, ctx, failed };
-  }
+  // an empty master makes every row fail for the same reason: say so once instead of rejecting each row
+  const emptyMsg: Record<string, string> = {
+    employees: "The Field Force master has no employees for this company, so the employee column cannot be matched. Upload the Salesforce file (Upload > Salesforce) or add the employees first, then upload the file again.",
+    products: "The Product master has no products for this company, so the product column cannot be matched. Upload the Product file (Upload > Product) first, then upload the file again.",
+    inputs: "The Input master has no inputs for this company, so the input column cannot be matched. Add the inputs in the Input master first, then upload the file again."
+  };
+  const emptyOf = (n: string) => n === "employees" ? ctx?.byCode?.size === 0 : n === "products" ? ctx?.products?.size === 0 : ctx?.inputs?.length === 0;
+  for (const n of tool.needs || []) if (ctx && emptyOf(n)) { out.fileErrors.push(emptyMsg[n]); break; }
+  if (out.fileErrors.length) return { out, items, ctx, failed };
   const seen = new Map<string, number>();
   rows.forEach((raw, i) => {
     const rowNo = i + 2;

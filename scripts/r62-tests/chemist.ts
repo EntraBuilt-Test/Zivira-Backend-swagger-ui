@@ -170,7 +170,7 @@ assert.equal((await bin("admin", `${UC}/uploads/${l[1].id}/not-uploaded`)).statu
 { const ok = l.find((x) => x.fileName === "chemists_1.xlsx"); assert.equal((await bin("admin", `${UC}/uploads/${ok.id}/not-uploaded`)).status, 404); }
 for (let i = 1; i < l.length; i++) assert.ok(new Date(l[i - 1].uploadedAt) >= new Date(l[i].uploadedAt));
 // a different company's / tool's rows are not shared
-assert.equal((await j("admin", "GET", `/company/upload-tools/product/uploads`)).status, 404);
+assert.equal((await j("admin", "GET", `/company/upload-tools/nonsense/uploads`)).status, 404); assert.deepEqual((await j("admin", "GET", `/company/upload-tools/product/uploads`)).body.data, [], "another tool has its own (empty) history");
 console.log("5 partial + all-rejected: reasons, top reason, Not Uploaded List ok");
 
 // ═══ 6) deactivate flag
