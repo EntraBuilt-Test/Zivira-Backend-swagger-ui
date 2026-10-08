@@ -13,6 +13,8 @@ const doctorUploadLogSchema = new Schema(
     updated: { type: Number, default: 0 },
     rejected: { type: Number, default: 0 },
     note: { type: String, default: "" },
+    topReason: { type: String, default: "" },
+    topReasonRows: { type: Number, default: 0 },
     notUploadedFile: { type: Buffer, default: undefined },
     notUploadedTruncated: { type: Boolean, default: false }
   },

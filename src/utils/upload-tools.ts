@@ -8,6 +8,7 @@
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { EmployeeModel } from "../models/employee.model.js";
+import { UserModel } from "../models/user.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { DealerModel } from "../models/dealer.model.js";
 import { StockistModel } from "../models/stockist.model.js";
@@ -102,17 +103,26 @@ function reqd(g: Getter, h: string, errors: Er[]): string {
   return v;
 }
 type Emp = { employeeCode: string; name: string; designation: string; territory: string; state?: string; division?: string; status?: string; role?: string };
+const codeKey = (v: unknown) => lc(v).replace(/[\s\u200b-\u200d\ufeff]+/g, "");
 async function loadEmployees(tenant: string) {
   const list = (await EmployeeModel.find({ tenantSlug: tenant }).lean()) as unknown as Emp[];
-  const byCode = new Map(list.map((e) => [lc(e.employeeCode), e]));
+  const byCode = new Map(list.map((e) => [codeKey(e.employeeCode), e]));
   const byName = new Map<string, Emp[]>();
   for (const e of list) { const k = nm(e.name); byName.set(k, [...(byName.get(k) || []), e]); }
-  return { byCode, byName };
+  // login names (users linked to an employee code) resolve to that employee too
+  const byLogin = new Map<string, Emp>();
+  try {
+    for (const u of (await UserModel.find({ tenantSlug: tenant, employeeCode: { $exists: true } }).lean()) as any[]) {
+      const e = u.employeeCode ? byCode.get(codeKey(u.employeeCode)) : undefined;
+      if (e && u.username) byLogin.set(codeKey(u.username), e);
+    }
+  } catch { /* user lookup is optional */ }
+  return { byCode, byName, byLogin };
 }
-/** "User Name" / "Employee ID" may hold the employee code, or (legacy templates) the employee's name when that name is unique. */
+/** "User Name" / "Employee ID" may hold the employee code (any case, stray spaces), a login name, or the employee's name when that name is unique. */
 function empOf(ctx: any, v: string): Emp | null {
   if (!v) return null;
-  const hit = ctx.byCode.get(lc(v));
+  const hit = ctx.byCode.get(codeKey(v)) || ctx.byLogin?.get(codeKey(v));
   if (hit) return hit;
   const named = ctx.byName?.get(nm(v)) as Emp[] | undefined;
   return named && named.length === 1 ? named[0] : null;
@@ -717,9 +727,22 @@ export class SheetNameError extends Error {}
  * A workbook with exactly one sheet under another name (e.g. "Sheet1", as in the demo data pack) is accepted and a note is returned
  * (the column check that follows still has to pass); any other workbook without that sheet throws SheetNameError.
  */
-export function parseBuffer(buf: Buffer, sheetName?: string): { headers: string[]; rows: Raw[]; sheetNote?: string } {
+export function parseBuffer(buf: Buffer, sheetName?: string, known?: Set<string>): { headers: string[]; rows: Raw[]; sheetNote?: string } {
   const wb = XLSX.read(buf, { type: "buffer", cellDates: false });
   let name = wb.SheetNames[0]; let sheetNote: string | undefined;
+  // Real Excel files: an instructions sheet before the data sheet, or a title line above the headers. When the caller knows the tool's column names, take the sheet and row that hold them.
+  if (known && !sheetName) {
+    let best = { score: 0, sheet: name, at: 0 };
+    for (const n of wb.SheetNames) {
+      const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[n], { header: 1, raw: true, defval: "", blankrows: false });
+      grid.slice(0, 10).forEach((r, at) => { const score = r.filter((c) => known.has(norm(c))).length; if (score > best.score) best = { score, sheet: n, at }; });
+    }
+    if (best.score >= 3) {
+      const aoa = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[best.sheet], { header: 1, raw: true, defval: "", blankrows: false }).slice(best.at);
+      const headers = (aoa[0] || []).map((h) => S(h));
+      return { headers, rows: aoa.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""]))), sheetNote: best.sheet !== wb.SheetNames[0] || best.at > 0 ? `Read the columns from sheet '${best.sheet}', row ${best.at + 1}.` : undefined };
+    }
+  }
   if (sheetName) {
     const hit = wb.SheetNames.find((n) => lc(n) === lc(sheetName));
     if (hit) name = hit;
@@ -752,6 +775,9 @@ async function buildSheet(sheet: string, headers: string[], mandatory: string[],
 }
 
 /** The "Excel Format File - Download Here" workbook: legacy sheet name, mandatory columns in yellow. */
+/** Normalised column names (and aliases) a tool understands. */
+export const knownHeaders = (tool: Tool) => new Set([...tool.headers.map(norm), ...Object.keys(tool.aliases || {})]);
+
 export async function templateWorkbook(tool: Tool, tenant: string, opts: UploadOpts = {}): Promise<Buffer> {
   const headers = tool.templateHeaders || tool.headers;
   const mandatory = tool.templateMandatory || tool.required;
@@ -823,6 +849,11 @@ export async function validateRows(tool: Tool, tenant: string, headersIn: string
   const failed: FailedRow[] = [];
   if (out.fileErrors.length) return { out, items, ctx: null as Ctx, failed };
   const ctx = await tool.load(tenant, opts);
+  // an empty Field Force master makes every row fail for the same reason: say so once instead of rejecting each row
+  if (tool.key === "listed-doctor" && ctx?.byCode && ctx.byCode.size === 0) {
+    out.fileErrors.push("The Field Force master has no employees for this company, so User Name cannot be matched. Upload the Salesforce file (Upload > Salesforce) or add the employees first, then upload the doctors.");
+    return { out, items, ctx, failed };
+  }
   const seen = new Map<string, number>();
   rows.forEach((raw, i) => {
     const rowNo = i + 2;

@@ -3,7 +3,7 @@ import { Router } from "express";
 import multer from "multer";
 import { asyncHandler } from "../http/async-handler.js";
 import { HttpError } from "../http/errors.js";
-import { TOOLS, getTool, parseBuffer, templateWorkbook, generateWorkbook, GENERATE_COLUMNS, SheetNameError, validateRows, importRows, type UploadOpts } from "../utils/upload-tools.js";
+import { TOOLS, getTool, parseBuffer, templateWorkbook, generateWorkbook, GENERATE_COLUMNS, SheetNameError, validateRows, importRows, knownHeaders, type UploadOpts } from "../utils/upload-tools.js";
 import { ProductModel } from "../models/product.model.js";
 import { StateModel } from "../models/state.model.js";
 import { TenantModel } from "../models/tenant.model.js";
@@ -25,8 +25,8 @@ const toolOr404 = (key: string) => { const t = getTool(key); if (!t) throw new H
 
 async function whoIs(req: any): Promise<string> {
   try {
-    const u = (await UserModel.findById(req.auth?.sub).select("name email").lean()) as any;
-    return (u && (u.name || u.email)) || String(req.auth?.sub || "admin");
+    const u = (await UserModel.findById(req.auth?.sub).select("displayName username name email").lean()) as any;
+    return (u && (u.displayName || u.username || u.name || u.email)) || String(req.auth?.sub || "admin");
   } catch { return String(req.auth?.sub || "admin"); }
 }
 
@@ -42,9 +42,9 @@ function optsOf(req: any): UploadOpts {
 
 type Input = { fileName: string; headers: string[]; rows: Record<string, unknown>[]; sheetNote?: string; fileError?: string };
 // rows from a multipart file (server parse) or from JSON { headers, rows } (client parse)
-function inputOf(req: any, sheetName?: string): Input {
+function inputOf(req: any, sheetName?: string, known?: Set<string>): Input {
   if (req.file) {
-    try { return { fileName: req.file.originalname, ...parseBuffer(req.file.buffer, sheetName) }; }
+    try { return { fileName: req.file.originalname, ...parseBuffer(req.file.buffer, sheetName, known) }; }
     catch (e) {
       if (e instanceof SheetNameError) return { fileName: req.file.originalname, headers: [], rows: [], fileError: e.message };   // legacy: the message is shown on the page, not an HTTP error
       throw new HttpError(400, `Could not read the file: ${e instanceof Error ? e.message : String(e)}`);
@@ -137,18 +137,30 @@ uploadToolsRouter.get("/product-rate/states", asyncHandler(async (req, res) => {
 
 // ---- Listed Doctor: persisted upload log (Round 61 review 2) ----
 const NOT_UPLOADED_MAX_BYTES = 2 * 1024 * 1024;
-async function logDoctorUpload(tenant: string, who: string, fileName: string, r: { total: number; inserted: number; updated: number; failed: number }, notUploadedB64: string | null, note: string): Promise<string | undefined> {
+/** The single most common reason across the rejected rows (a row counts once per reason), worded without the cell values. */
+export function topReasonOf(errors: { row: number; field: string; reason: string }[]): { text: string; rows: number } {
+  const perKey = new Map<string, Set<number>>();
+  for (const e of errors) {
+    const text = /not found in Field Force/i.test(e.reason) ? "User Name not found in Field Force" : `${e.field}: ${e.reason.replace(/"[^"]*"\s*/g, "").replace(/\s+/g, " ").trim()}`;
+    (perKey.get(text) || perKey.set(text, new Set()).get(text)!).add(e.row);
+  }
+  let best = { text: "", rows: 0 };
+  for (const [text, rows] of perKey) if (rows.size > best.rows) best = { text, rows: rows.size };
+  return best;
+}
+async function logDoctorUpload(tenant: string, who: string, fileName: string, r: { total: number; inserted: number; updated: number; failed: number; errors?: { row: number; field: string; reason: string }[] }, notUploadedB64: string | null, note: string): Promise<string | undefined> {
   try {
     const buf = notUploadedB64 ? Buffer.from(notUploadedB64, "base64") : null;
     const keep = buf && buf.length <= NOT_UPLOADED_MAX_BYTES ? buf : undefined;
-    const rejected = note && !r.total ? 0 : r.failed;
-    const row = await DoctorUploadLogModel.create({ tenantSlug: tenant, fileName, uploadedAt: new Date(), uploadedBy: who, read: r.total, inserted: r.inserted, updated: r.updated, rejected, note, notUploadedFile: keep, notUploadedTruncated: !!buf && !keep });
+    const rejected = r.failed;
+    const top = topReasonOf(r.errors || []);
+    const row = await DoctorUploadLogModel.create({ tenantSlug: tenant, fileName, uploadedAt: new Date(), uploadedBy: who, read: r.total, inserted: r.inserted, updated: r.updated, rejected, note, topReason: top.text || note, topReasonRows: top.rows, notUploadedFile: keep, notUploadedTruncated: !!buf && !keep });
     return String((row as any)._id);
   } catch (e) { console.error("doctor upload log failed", e); return undefined; }
 }
 uploadToolsRouter.get("/listed-doctor/uploads", asyncHandler(async (req, res) => {
   const rows = (await DoctorUploadLogModel.find({ tenantSlug: req.auth!.tenantSlug! }).select("-notUploadedFile").sort({ uploadedAt: -1 }).limit(50).lean()) as any[];
-  res.json({ data: rows.map((r) => ({ id: String(r._id), fileName: r.fileName, uploadedAt: r.uploadedAt, uploadedBy: r.uploadedBy, read: r.read, inserted: r.inserted, updated: r.updated, success: (r.inserted || 0) + (r.updated || 0), rejected: r.rejected, note: r.note || "", hasNotUploaded: (r.rejected || 0) > 0 })) });
+  res.json({ data: rows.map((r) => ({ id: String(r._id), fileName: r.fileName, uploadedAt: r.uploadedAt, uploadedBy: r.uploadedBy, read: r.read, inserted: r.inserted, updated: r.updated, success: (r.inserted || 0) + (r.updated || 0), rejected: r.rejected, note: r.note || "", topReason: r.topReason || "", topReasonRows: r.topReasonRows || 0, hasNotUploaded: (r.rejected || 0) > 0 })) });
 }));
 uploadToolsRouter.get("/listed-doctor/uploads/:id/not-uploaded", asyncHandler(async (req, res) => {
   const row = (await DoctorUploadLogModel.findOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! })) as any;
@@ -163,7 +175,7 @@ uploadToolsRouter.get("/listed-doctor/uploads/:id/not-uploaded", asyncHandler(as
 
 uploadToolsRouter.post("/:key/validate", upload.single("file"), asyncHandler(async (req, res) => {
   const tool = toolOr404(req.params.key);
-  const inp = inputOf(req, tool.sheetName);
+  const inp = inputOf(req, tool.sheetName, tool.key === "listed-doctor" ? knownHeaders(tool) : undefined);
   if (inp.fileError) return res.json({ data: { fileName: inp.fileName, headers: tool.headers, fileErrors: [inp.fileError], total: 0, valid: 0, invalid: 0, errors: [], errorsTotal: 0, warnings: [], preview: [] } });
   const { out } = await validateRows(tool, req.auth!.tenantSlug!, inp.headers, inp.rows, 50, optsOf(req));
   if (inp.sheetNote) out.warnings.unshift({ row: 0, reason: inp.sheetNote });
@@ -172,7 +184,7 @@ uploadToolsRouter.post("/:key/validate", upload.single("file"), asyncHandler(asy
 
 uploadToolsRouter.post("/:key/import", upload.single("file"), asyncHandler(async (req, res) => {
   const tool = toolOr404(req.params.key);
-  const inp = inputOf(req, tool.sheetName);
+  const inp = inputOf(req, tool.sheetName, tool.key === "listed-doctor" ? knownHeaders(tool) : undefined);
   const who = await whoIs(req);
   if (inp.fileError) {
     const logId = tool.key === "listed-doctor" ? await logDoctorUpload(req.auth!.tenantSlug!, who, inp.fileName, { total: 0, inserted: 0, updated: 0, failed: 0 }, null, inp.fileError) : undefined;
