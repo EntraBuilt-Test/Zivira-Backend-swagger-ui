@@ -171,5 +171,64 @@ const before = docs().length;
 const wrong = await upload("admin", xl(SEL, [row(9, "MR1", "Dr Wrong", "X", "Physician", "Core", "A")], "Whatever"));
 assert.equal(wrong.inserted, 1); assert.equal(docs().length, before + 1); /* Listed Doctor has no fixed legacy sheet name, so any single sheet is accepted without a notice */
 console.log("7 sheet name is not enforced for this tool (single sheet accepted)");
+
+// ═══ 8) Round 61 review: tick nothing / tick some, fill the GENERATED file, 2-digit-year dates, territory-type aliases, helpful messages, result-table payload
+const genHeaders = async (cols: string[]) => {
+  const g = await bin("admin", `${UP}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ columns: cols }) });
+  assert.equal(g.status, 200); const wb = new ExcelJS.Workbook(); await wb.xlsx.load(g.buf as any); const ws = wb.worksheets[0];
+  const hdr = (ws.getRow(1).values as any[]).slice(1).map(String);
+  hdr.forEach((h, i) => assert.equal((ws.getRow(1).getCell(i + 1).fill as any)?.fgColor?.argb === "FFFFFF00", MANDATORY.includes(h), `yellow only on always-included: ${h}`));
+  assert.equal(ws.rowCount, 1, "the template has headers only, no sample rows");
+  return hdr;
+};
+assert.deepEqual(await genHeaders([]), MANDATORY, "ticking nothing still generates the always-included columns");
+const some = ["Fax", "DOB(DD/MM/YY)", "DOW(DD/MM/YY)", "Unique Code", "Hospital Name"];
+const hdr2 = await genHeaders(some);
+assert.deepEqual(hdr2, LEGACY_ORDER.filter((l) => MANDATORY.includes(l) || some.includes(l)));
+emp("MR3", "Rahul Sharma", "MR", "M1");
+const cell = (h: string, o: Record<string, string>) => o[h] ?? "";
+const base8: Record<string, string> = { "User Name": "MR1", "Listed Doctor Name": "", "Territory/Cluster(For DCR)": "Alkapuri", "City Name(For Expense)": "Vadodara", Speciality: "Physician", Category: "Core", Qualification: "MBBS", Class: "A", "Territory Type": "HQ", Address: "1 Main Rd", "EMail ID": "", "Mobile No": "9876501234", Gender: "Female", State: "Gujarat" };
+const mk = (i: number, o: Record<string, string>) => hdr2.map((h) => (h === "SI No" ? String(i) : cell(h, { ...base8, ...o })));
+const rows8 = [
+  mk(1, { "Listed Doctor Name": "Dr Eight One", "User Name": "rahul.sharma", "Territory Type": "Ex-HQ", "DOB(DD/MM/YY)": "15/04/78", "DOW(DD/MM/YY)": "22/08/81", "Unique Code": "UQ-801", Fax: "0265-111" }),   // login-style name -> Rahul Sharma; 2-digit years; Ex-HQ
+  mk(2, { "Listed Doctor Name": "Dr Eight Two", "User Name": "mr1", "Territory Type": "Out Station", "DOB(DD-MM-YYYY)": "", "Unique Code": "UQ-802" }),
+  mk(3, { "Listed Doctor Name": "Dr Eight Three", "User Name": "Meera Shah", "Territory Type": "OutStation", "DOB(DD/MM/YY)": "03/11/2027", "Unique Code": "UQ-803" }),      // exact full name; 4-digit year
+  mk(4, { "Listed Doctor Name": "Dr Eight Four", "User Name": "MR2", "Territory Type": "Ex HQ", "DOB(DD/MM/YY)": "01-02-1980", "Unique Code": "UQ-804" }),               // legacy dd-mm-yyyy
+  mk(5, { "Listed Doctor Name": "Dr Eight Five", "User Name": "nobody.here", "Unique Code": "UQ-805" }),                                                                      // really unknown employee -> rejected, clear message
+  mk(6, { "Listed Doctor Name": "Dr Eight Six", "User Name": "MR1", Category: "A", "Unique Code": "UQ-806" }),                                                                 // class letter in Category -> still rejected
+  mk(7, { "Listed Doctor Name": "Dr Eight Seven", "User Name": "MR1", "Territory Type": "Somewhere", "Unique Code": "UQ-807" })                                               // unknown territory type -> rejected
+];
+const before8 = docs().length;
+res = await upload("admin", xl(hdr2, rows8));
+assert.equal(res.total, 7); assert.equal(res.inserted, 4, JSON.stringify(res.errors)); assert.equal(res.failed, 3);
+const dr = (code: string) => docs().find((d) => d.doctorCode === code);
+assert.equal(dr("UQ-801").mappedEmployeeCode, "MR3", "login-style 'rahul.sharma' resolves to the employee Rahul Sharma");
+assert.equal(dr("UQ-801").territoryType, "EX"); assert.equal(new Date(dr("UQ-801").dob).toISOString().slice(0, 10), "1978-04-15"); assert.equal(new Date(dr("UQ-801").anniversaryDate).toISOString().slice(0, 10), "1981-08-22");
+assert.equal(dr("UQ-802").territoryType, "OS"); assert.equal(dr("UQ-803").territoryType, "OS"); assert.equal(dr("UQ-803").mappedEmployeeCode, "M1"); assert.equal(new Date(dr("UQ-803").dob).toISOString().slice(0, 10), "2027-11-03");
+assert.equal(dr("UQ-804").territoryType, "EX"); assert.equal(new Date(dr("UQ-804").dob).toISOString().slice(0, 10), "1980-02-01");
+assert.equal(dr("UQ-801").doctorCategory, "CORE"); assert.equal(dr("UQ-801").category, "A", "Category = tier, Class = A/B/C: the generated headers map to the right fields");
+assert.equal(docs().length, before8 + 4);
+const msgs = res.errors.map((e: any) => `${e.row}|${e.field}|${e.reason}`);
+assert.ok(msgs.some((m: string) => /^6\|User Name\|User Name "nobody.here" not found in Field Force\. Use the Employee Code or exact name from the Field Force master$/.test(m)), msgs.join("\n"));
+assert.ok(msgs.some((m: string) => /^7\|Category\|"A" must be one of .*A \/ B \/ C belong in the Class column/.test(m)));
+assert.ok(msgs.some((m: string) => /^8\|Territory_type\|"Somewhere" must be HQ, EX \(Ex-HQ\) or OS \(Out Station\)/.test(m)));
+// result-table payload: the uploaded file's own columns, one entry per row with status + reason
+const rt = res.resultTable; assert.deepEqual(rt.columns, hdr2); assert.equal(rt.rows.length, 7); assert.equal(rt.truncated, false);
+assert.deepEqual(rt.rows.map((x: any) => x.status), ["Inserted", "Inserted", "Inserted", "Inserted", "Rejected", "Rejected", "Rejected"]);
+assert.equal(rt.rows[0].row, 2); assert.equal(rt.rows[0].cells.length, hdr2.length); assert.equal(rt.rows[0].cells[hdr2.indexOf("Listed Doctor Name")], "Dr Eight One"); assert.equal(rt.rows[0].cells[hdr2.indexOf("DOB(DD/MM/YY)")], "15/04/78");
+assert.match(rt.rows[4].reason, /not found in Field Force/); assert.equal(rt.rows[0].reason, ""); assert.ok(res.startedAt);
+// re-upload of the same rows: statuses become Updated
+res = await upload("admin", xl(hdr2, rows8.slice(0, 2))); assert.deepEqual(res.resultTable.rows.map((x: any) => x.status), ["Updated", "Updated"]);
+// the admin list can open sorted by last update, so the just-uploaded rows come first
+r = await j("admin", "GET", `/company/doctors?limit=100&sort=updated`); assert.equal(r.status, 200); assert.ok(r.body.data.slice(0, 2).every((d: any) => ["Dr Eight One", "Dr Eight Two"].includes(d.name)), r.body.data.slice(0, 3).map((d: any) => d.name).join());
+// a template download ("Download Here") also has headers only
+{ const t = await bin("admin", `${UP}/template`); const wb = new ExcelJS.Workbook(); await wb.xlsx.load(t.buf as any); assert.equal(wb.worksheets[0].rowCount, 1); }
+// territory-type helper and 2-digit-year pivot on their own
+const { territoryTypeOf, parseDate } = await import("../../src/utils/upload-tools.js");
+for (const [raw, want] of [["HQ", "HQ"], ["Ex-HQ", "EX"], ["EX-HQ", "EX"], ["Ex HQ", "EX"], ["EX", "EX"], ["Out Station", "OS"], ["OutStation", "OS"], ["OS", "OS"], ["nonsense", ""]] as const) assert.equal(territoryTypeOf(raw), want, raw);
+const yy = (v: string) => parseDate(v).date?.toISOString().slice(0, 10);
+assert.equal(yy("15/04/78"), "1978-04-15"); assert.equal(yy("22/08/81"), "1981-08-22"); assert.equal(yy("01/01/05"), "2005-01-01"); assert.equal(yy("01/01/27"), "2027-01-01"); assert.equal(yy("31/12/1999"), "1999-12-31"); assert.equal(yy("5-6-1990"), "1990-06-05"); assert.equal(yy("2026-10-08"), "2026-10-08");
+assert.equal(parseDate(46303).date?.toISOString().slice(0, 10), "2026-10-08", "Excel serial"); assert.equal(parseDate("31/02/24").bad, true);
+console.log("8 review fixes ok (tick nothing/some, generated-file upload, dates, aliases, messages, result table)");
 console.log("R61 listed-doctor tests passed");
 server.close(); process.exit(0);

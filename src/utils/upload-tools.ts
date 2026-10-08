@@ -47,7 +47,7 @@ type Tool = {
   deactivate?: (tenant: string) => Promise<number>;
   load: (tenant: string, opts?: UploadOpts) => Promise<Ctx>;
   check: (g: Getter, ctx: Ctx, rowNo: number, opts?: UploadOpts) => Check;
-  apply: (tenant: string, items: { row: number; value: any }[], ctx: Ctx, opts?: UploadOpts) => Promise<{ inserted: number; updated: number; errors: RowErr[]; skipped?: number; warnings?: { row: number; reason: string }[]; autoCreated?: { code: string; name: string; role: string; designation: string; reports: number; manager: string | null }[]; merged?: { code: string; name: string }[] }>;
+  apply: (tenant: string, items: { row: number; value: any }[], ctx: Ctx, opts?: UploadOpts) => Promise<{ inserted: number; updated: number; errors: RowErr[]; skipped?: number; warnings?: { row: number; reason: string }[]; outcomes?: { row: number; outcome: "inserted" | "updated" }[]; autoCreated?: { code: string; name: string; role: string; designation: string; reports: number; manager: string | null }[]; merged?: { code: string; name: string }[] }>;
 };
 const A = (m: Record<string, string>): Record<string, string> => Object.fromEntries(Object.entries(m).map(([k, v]) => [norm(k), v]));
 
@@ -69,8 +69,12 @@ export function parseDate(v: unknown): { date: Date | null; bad?: boolean } {
   const s = S(v);
   if (!s) return { date: null };
   let y: number, m: number, d: number;
-  let mt = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/);
-  if (mt) { d = +mt[1]; m = +mt[2]; y = +mt[3]; }
+  let mt = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}|\d{2})$/);
+  if (mt) {
+    d = +mt[1]; m = +mt[2]; y = +mt[3];
+    // two-digit year (dd/mm/yy): the 20xx reading unless that lands more than 10 years in the future, then 19xx (78 -> 1978, 27 -> 2027)
+    if (mt[3].length === 2) y = 2000 + y > new Date().getUTCFullYear() + 10 ? 1900 + y : 2000 + y;
+  }
   else if ((mt = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) { y = +mt[1]; m = +mt[2]; d = +mt[3]; }
   else return { date: null, bad: true };
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -135,17 +139,25 @@ async function upsert(Model: any, filter: Record<string, unknown>, set: Record<s
   return "inserted";
 }
 const catching = async (rows: { row: number; value: any }[], fn: (v: any) => Promise<"inserted" | "updated">) => {
-  let inserted = 0, updated = 0; const errors: RowErr[] = [];
+  let inserted = 0, updated = 0; const errors: RowErr[] = []; const outcomes: { row: number; outcome: "inserted" | "updated" }[] = [];
   for (const r of rows) {
-    try { (await fn(r.value)) === "inserted" ? inserted++ : updated++; }
+    try { const o = await fn(r.value); o === "inserted" ? inserted++ : updated++; outcomes.push({ row: r.row, outcome: o }); }
     catch (e) { errors.push({ row: r.row, field: "(save)", reason: e instanceof Error ? e.message : String(e) }); }
   }
-  return { inserted, updated, errors };
+  return { inserted, updated, errors, outcomes };
 };
 
 // ── 1. Listed Doctor (legacy 66-column Listeddr layout) ───────────────────
 const H = LISTEDDR_HEADERS;
 const DOCTOR_CLASSES = ["A", "B", "C", "Nil"];
+/** Territory type spellings seen in real files: HQ / Headquarter, EX / Ex-HQ / Ex HQ / Ex Headquarter, OS / Out Station / OutStation. Anything else stays invalid. */
+export function territoryTypeOf(raw: string): "HQ" | "EX" | "OS" | "" {
+  const k = String(raw ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  if (["hq", "headquarter", "headquarters", "headquaters"].includes(k)) return "HQ";
+  if (["ex", "exhq", "exheadquarter", "exheadquarters", "exstation", "extension"].includes(k)) return "EX";
+  if (["os", "outstation", "outofstation", "outsatation"].includes(k)) return "OS";
+  return "";
+}
 const listedDoctor: Tool = {
   key: "listed-doctor", title: "Listed Doctor Upload Tool", group: "Customer Upload",
   headers: H, required: ["Employee Code", "Listed Dr Name", "Speciality", "Territory"], dateHeaders: ["DOB", "DOW"],
@@ -166,14 +178,16 @@ const listedDoctor: Tool = {
     const spec = reqd(g, "Speciality", errors);
     const terr = reqd(g, "Territory", errors);
     const emp = empOf(ctx, code);
-    if (code && !emp) errors.push({ field: "Employee Code", reason: `employee "${code}" not found` });
+    // User Name may hold the employee code (any case), the exact full name, or a login-style name ("rahul.sharma" = "Rahul Sharma"); never an invented employee
+    if (code && !emp) errors.push({ field: "User Name", reason: `User Name "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
     const cat = g("Category");
     let tier: Tier | null = null;
-    if (cat) { tier = TIERS.find((t) => lc(t) === lc(cat)) || null; if (!tier) errors.push({ field: "Category", reason: `"${cat}" must be one of ${TIERS.join(", ")}` }); }
+    if (cat) { tier = TIERS.find((t) => lc(t) === lc(cat)) || null; if (!tier) errors.push({ field: "Category", reason: `"${cat}" must be one of ${TIERS.join(", ")}${/^[abc]$/i.test(cat) ? " (A / B / C belong in the Class column)" : ""}` }); }
     const cls = g("Class");
     if (cls && !DOCTOR_CLASSES.some((c) => lc(c) === lc(cls))) errors.push({ field: "Class", reason: `"${cls}" must be A, B, C or Nil` });
-    const tt = g("Territory_type");
-    if (tt && !["HQ", "EX", "OS"].includes(tt.toUpperCase())) errors.push({ field: "Territory_type", reason: `"${tt}" must be HQ, EX or OS` });
+    const ttRaw = g("Territory_type");
+    const tt = ttRaw ? territoryTypeOf(ttRaw) : "";
+    if (ttRaw && !tt) errors.push({ field: "Territory_type", reason: `"${ttRaw}" must be HQ, EX (Ex-HQ) or OS (Out Station)` });
     const dob = dateField(g, "DOB", errors, false), dow = dateField(g, "DOW", errors, false);
     const mail = g("Email"); if (mail && !isEmail(mail)) errors.push({ field: "Email", reason: "invalid email address" });
     const mob = g("Mobile"); if (mob && !isPhone(mob)) errors.push({ field: "Mobile", reason: "invalid mobile number" });
@@ -185,7 +199,7 @@ const listedDoctor: Tool = {
       employeeCode: emp?.employeeCode || code, empName: emp?.name || "", empState: g("State") || emp?.state || "", name, specialty: spec, territory: terr, doctorCode: uniq || undefined,
       doctorCategory: tier ? enumFromTier(tier) : undefined, category: cls && cls.toLowerCase() !== "nil" ? cls.toUpperCase() : undefined,
       set: {
-        qualification: g("Qualification") || null, territoryType: tt ? tt.toUpperCase() : undefined, city: g("City Name") || terr, address1: g("ListedDr_Address1") || null,
+        qualification: g("Qualification") || null, territoryType: tt || undefined, city: g("City Name") || terr, address1: g("ListedDr_Address1") || null,
         clinicName: g("Hospital Name") || null, hospitalAddress: g("Hospital Address") || null, dob: dob || undefined, anniversaryDate: dow || undefined,
         phone: mob || null, email: mail ? mail.toLowerCase() : null, gender: g("Gender") || null, postalCode: g("Pincode") || null, registrationNo: g("Register Number") || null, telephone: g("Telephone No") || null,
         drPotential: g("Dr_Potential") || null, businessValue: g("Business Value") || null, expBusinessValue: g("Exp Business Value") || null, currentBusiness: g("Current Business") || null,
@@ -843,15 +857,16 @@ function notUploadedList(headersIn: string[], failed: FailedRow[]): string {
 }
 
 export async function importRows(tool: Tool, tenant: string, who: string, fileName: string, headersIn: string[], rows: Raw[], opts: UploadOpts = {}, sheetNote?: string) {
+  const startedAt = new Date().toISOString();
   const { out, items, ctx, failed } = await validateRows(tool, tenant, headersIn, rows, 0, opts);
   if (sheetNote) out.warnings.unshift({ row: 0, reason: sheetNote });
   let inserted = 0, updated = 0, skipped = 0, deactivated = 0; const saveErrors: RowErr[] = [];
-  let autoCreated: any[] | undefined, merged: any[] | undefined;
+  let autoCreated: any[] | undefined, merged: any[] | undefined, outcomes: { row: number; outcome: "inserted" | "updated" }[] | undefined;
   const blocked = out.fileErrors.length > 0 || (!!tool.allOrNothing && out.invalid > 0) || (tool.allOrNothing && out.total === 0);
   if (!blocked && items.length) {
     if (opts.deactivate && tool.deactivate) deactivated = await tool.deactivate(tenant);
     const r = await tool.apply(tenant, items, ctx, opts);
-    inserted = r.inserted; updated = r.updated; skipped = r.skipped || 0; saveErrors.push(...r.errors); out.warnings.push(...(r.warnings || [])); autoCreated = r.autoCreated; merged = r.merged;
+    inserted = r.inserted; updated = r.updated; skipped = r.skipped || 0; saveErrors.push(...r.errors); out.warnings.push(...(r.warnings || [])); autoCreated = r.autoCreated; merged = r.merged; outcomes = r.outcomes;
   }
   const failedRows = new Set([...out.errors, ...saveErrors].map((e) => e.row));
   const errors = [...out.errors, ...saveErrors].sort((a, b) => a.row - b.row);
@@ -863,6 +878,22 @@ export async function importRows(tool: Tool, tenant: string, who: string, fileNa
   const saveFailed: FailedRow[] = saveErrors.map((e) => ({ row: e.row, cells: rows[e.row - 2] || {}, reasons: [`${e.field}: ${e.reason}`] }));
   const allFailed = [...failed, ...saveFailed];
   const summary = { fileName, total: out.total, ok: out.total - failedRows.size, failed: failedRows.size, inserted, updated, skipped, deactivated, uploaded, outcome, fileErrors: out.fileErrors, errors, warnings: out.warnings, autoCreatedManagers: autoCreated || [], mergedManagers: merged || [] };
+  // The table the admin page opens under the result: the columns of the uploaded file as read, one line per row with what happened to it.
+  const reasonsOf = new Map<number, string[]>();
+  for (const e of errors) reasonsOf.set(e.row, [...(reasonsOf.get(e.row) || []), `${e.field ? `${e.field}: ` : ""}${e.reason}`]);
+  const outcomeOf = new Map((outcomes || []).map((o) => [o.row, o.outcome]));
+  const cellText = (v: unknown) => (v instanceof Date ? dmy(v) : S(v));
+  const RESULT_ROWS_MAX = 1000;
+  const resultTable = {
+    columns: headersIn,
+    truncated: rows.length > RESULT_ROWS_MAX,
+    rows: rows.slice(0, RESULT_ROWS_MAX).map((raw, i) => {
+      const row = i + 2;
+      const reasons = reasonsOf.get(row);
+      const status = reasons ? "Rejected" : outcomeOf.get(row) === "inserted" ? "Inserted" : outcomeOf.get(row) === "updated" ? "Updated" : blocked ? "Not uploaded" : "Uploaded";
+      return { row, status, reason: reasons ? reasons.join("; ") : "", cells: headersIn.map((h) => cellText(raw[h])) };
+    })
+  };
   const hist = await UploadHistoryModel.create({ tenantSlug: tenant, toolKey: tool.key, fileName, uploadedBy: who, totalRows: summary.total, okRows: summary.ok, failedRows: summary.failed, inserted, updated, fileErrors: out.fileErrors, rowErrors: errors.slice(0, 1000) });
-  return { ...summary, historyId: String((hist as any)._id), notUploaded: allFailed.length ? { fileName: "Not_Uploaded_List.xlsx", base64: notUploadedList(headersIn, allFailed) } : null };
+  return { ...summary, startedAt, resultTable, historyId: String((hist as any)._id), notUploaded: allFailed.length ? { fileName: "Not_Uploaded_List.xlsx", base64: notUploadedList(headersIn, allFailed) } : null };
 }

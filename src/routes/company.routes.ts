@@ -352,7 +352,7 @@ companyRouter.get(
     const tenantSlug = req.auth!.tenantSlug;
     const { page, limit, skip } = parsePagination(req, { defaultLimit: 100, maxLimit: 500 });
     const [doctors, total] = await Promise.all([
-      DoctorModel.find({ tenantSlug }).sort({ createdAt: -1, doctorCode: 1 }).skip(skip).limit(limit),
+      DoctorModel.find({ tenantSlug }).sort(req.query.sort === "updated" ? { updatedAt: -1, doctorCode: 1 } : { createdAt: -1, doctorCode: 1 }).skip(skip).limit(limit),
       DoctorModel.countDocuments({ tenantSlug })
     ]);
     res.json({
