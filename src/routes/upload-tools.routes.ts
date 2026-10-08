@@ -10,6 +10,7 @@ import { TenantModel } from "../models/tenant.model.js";
 import { SubdivisionModel } from "../models/subdivision.model.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
 import { UploadHistoryModel } from "../models/upload-history.model.js";
+import { DoctorUploadLogModel } from "../models/doctor-upload-log.model.js";
 import { UploadGenerateStateModel } from "../models/upload-generate-state.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { DealerModel } from "../models/dealer.model.js";
@@ -134,6 +135,32 @@ uploadToolsRouter.get("/product-rate/states", asyncHandler(async (req, res) => {
   res.json({ data: { states: names, default: names.find((n) => n.toLowerCase() === "gujarat") || names[0] || "" } });
 }));
 
+// ---- Listed Doctor: persisted upload log (Round 61 review 2) ----
+const NOT_UPLOADED_MAX_BYTES = 2 * 1024 * 1024;
+async function logDoctorUpload(tenant: string, who: string, fileName: string, r: { total: number; inserted: number; updated: number; failed: number }, notUploadedB64: string | null, note: string): Promise<string | undefined> {
+  try {
+    const buf = notUploadedB64 ? Buffer.from(notUploadedB64, "base64") : null;
+    const keep = buf && buf.length <= NOT_UPLOADED_MAX_BYTES ? buf : undefined;
+    const rejected = note && !r.total ? 0 : r.failed;
+    const row = await DoctorUploadLogModel.create({ tenantSlug: tenant, fileName, uploadedAt: new Date(), uploadedBy: who, read: r.total, inserted: r.inserted, updated: r.updated, rejected, note, notUploadedFile: keep, notUploadedTruncated: !!buf && !keep });
+    return String((row as any)._id);
+  } catch (e) { console.error("doctor upload log failed", e); return undefined; }
+}
+uploadToolsRouter.get("/listed-doctor/uploads", asyncHandler(async (req, res) => {
+  const rows = (await DoctorUploadLogModel.find({ tenantSlug: req.auth!.tenantSlug! }).select("-notUploadedFile").sort({ uploadedAt: -1 }).limit(50).lean()) as any[];
+  res.json({ data: rows.map((r) => ({ id: String(r._id), fileName: r.fileName, uploadedAt: r.uploadedAt, uploadedBy: r.uploadedBy, read: r.read, inserted: r.inserted, updated: r.updated, success: (r.inserted || 0) + (r.updated || 0), rejected: r.rejected, note: r.note || "", hasNotUploaded: (r.rejected || 0) > 0 })) });
+}));
+uploadToolsRouter.get("/listed-doctor/uploads/:id/not-uploaded", asyncHandler(async (req, res) => {
+  const row = (await DoctorUploadLogModel.findOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! })) as any;
+  if (!row) throw new HttpError(404, "Upload not found");
+  const raw = row.notUploadedFile;
+  const buf: Buffer | null = raw ? (Buffer.isBuffer(raw) ? raw : Buffer.from((raw.buffer ?? raw) as any)) : null;
+  if (!buf || !buf.length) throw new HttpError(404, row.notUploadedTruncated ? "The Not Uploaded List for this upload was too large to keep" : "This upload had no rejected records");
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="Not_Uploaded_List_${String(row.fileName || "listed-doctor").replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_")}.xlsx"`);
+  res.send(buf);
+}));
+
 uploadToolsRouter.post("/:key/validate", upload.single("file"), asyncHandler(async (req, res) => {
   const tool = toolOr404(req.params.key);
   const inp = inputOf(req, tool.sheetName);
@@ -146,9 +173,14 @@ uploadToolsRouter.post("/:key/validate", upload.single("file"), asyncHandler(asy
 uploadToolsRouter.post("/:key/import", upload.single("file"), asyncHandler(async (req, res) => {
   const tool = toolOr404(req.params.key);
   const inp = inputOf(req, tool.sheetName);
-  if (inp.fileError) return res.json({ data: { fileName: inp.fileName, total: 0, ok: 0, failed: 0, inserted: 0, updated: 0, skipped: 0, deactivated: 0, uploaded: false, outcome: inp.fileError, fileErrors: [inp.fileError], errors: [], warnings: [], notUploaded: null } });
-  const result = await importRows(tool, req.auth!.tenantSlug!, await whoIs(req), inp.fileName, inp.headers, inp.rows, optsOf(req), inp.sheetNote);
-  res.json({ data: result });
+  const who = await whoIs(req);
+  if (inp.fileError) {
+    const logId = tool.key === "listed-doctor" ? await logDoctorUpload(req.auth!.tenantSlug!, who, inp.fileName, { total: 0, inserted: 0, updated: 0, failed: 0 }, null, inp.fileError) : undefined;
+    return res.json({ data: { fileName: inp.fileName, total: 0, ok: 0, failed: 0, inserted: 0, updated: 0, skipped: 0, deactivated: 0, uploaded: false, outcome: inp.fileError, fileErrors: [inp.fileError], errors: [], warnings: [], notUploaded: null, logId } });
+  }
+  const result = await importRows(tool, req.auth!.tenantSlug!, who, inp.fileName, inp.headers, inp.rows, optsOf(req), inp.sheetNote);
+  const logId = tool.key === "listed-doctor" ? await logDoctorUpload(req.auth!.tenantSlug!, who, inp.fileName, result, result.notUploaded?.base64 || null, result.fileErrors[0] || "") : undefined;
+  res.json({ data: { ...result, logId } });
 }));
 
 uploadToolsRouter.get("/:key/history", asyncHandler(async (req, res) => {

@@ -230,5 +230,74 @@ const yy = (v: string) => parseDate(v).date?.toISOString().slice(0, 10);
 assert.equal(yy("15/04/78"), "1978-04-15"); assert.equal(yy("22/08/81"), "1981-08-22"); assert.equal(yy("01/01/05"), "2005-01-01"); assert.equal(yy("01/01/27"), "2027-01-01"); assert.equal(yy("31/12/1999"), "1999-12-31"); assert.equal(yy("5-6-1990"), "1990-06-05"); assert.equal(yy("2026-10-08"), "2026-10-08");
 assert.equal(parseDate(46303).date?.toISOString().slice(0, 10), "2026-10-08", "Excel serial"); assert.equal(parseDate("31/02/24").bad, true);
 console.log("8 review fixes ok (tick nothing/some, generated-file upload, dates, aliases, messages, result table)");
+
+// ---------------------------------------------------------------- review 2: persisted upload history, Not Uploaded List download, ready-to-upload file
+{
+  const { DoctorUploadLogModel } = await import("../../src/models/doctor-upload-log.model.js");
+  const fs = await import("node:fs");
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const uploadNamed = async (as: string, buf: Buffer, name: string, fields: Record<string, string> = {}) => { const fd = new FormData(); for (const [k, v] of Object.entries(fields)) fd.append(k, v); fd.append("file", new Blob([buf]), name); const r = await fetch(`${base}${UP}/import`, { method: "POST", headers: { authorization: `Bearer ${tokens[as]}` }, body: fd }); const b: any = await r.json(); return b.data; };
+  const hdr = ["User Name", "Listed Doctor Name", "Territory/Cluster(For DCR)", "Speciality", "Category", "Class"];
+  const listLog = async () => (await j("admin", "GET", `${UP}/uploads`)).body.data as any[];
+  const before = (await listLog()).length;
+
+  // full reject: unknown employee + A/B in Category
+  await sleep(5);
+  let a = await uploadNamed("admin", xl(hdr, [["sunil.verma", "Dr H1", "Chennai-North", "Cardiology", "A", "A"], ["priya.nair", "Dr H2", "Chennai-South", "Cardiology", "B", "B"]]), "full_reject.xlsx");
+  assert.equal(a.failed, 2); assert.equal(a.uploaded, false); assert.ok(a.logId);
+  let list = await listLog(); assert.equal(list.length, before + 1);
+  assert.equal(list[0].fileName, "full_reject.xlsx"); assert.equal(list[0].success, 0); assert.equal(list[0].rejected, 2); assert.equal(list[0].read, 2); assert.equal(list[0].hasNotUploaded, true); assert.ok(list[0].uploadedBy); assert.ok(!("notUploadedFile" in list[0]), "the list never ships the file");
+  // the Not Uploaded List download carries the row errors
+  let dl = await bin("admin", `${UP}/uploads/${list[0].id}/not-uploaded`); assert.equal(dl.status, 200); assert.ok(/spreadsheetml/.test(dl.type || ""));
+  { const wb = XLSX.read(dl.buf, { type: "buffer" }); const rows = XLSX.utils.sheet_to_json<any>(wb.Sheets[wb.SheetNames[0]]); assert.equal(rows.length, 2); const txt = rows.map((x) => x.Reason).join("|");
+    assert.ok(/User Name "sunil.verma" not found in Field Force/.test(txt)); assert.ok(/Category: "A" must be one of/.test(txt)); assert.equal(rows[0]["Listed Doctor Name"], "Dr H1"); }
+
+  // partial: one good row (MR1 exists), one bad
+  await sleep(5);
+  a = await uploadNamed("admin", xl(hdr, [["MR1", "Dr Hist Good", "Vadodara", "Cardiology", "CORE", "A"], ["nobody.here", "Dr Hist Bad", "Vadodara", "Cardiology", "Nil", "A"]]), "partial.xlsx");
+  assert.equal(a.inserted, 1); assert.equal(a.failed, 1);
+  list = await listLog(); assert.equal(list[0].fileName, "partial.xlsx"); assert.equal(list[0].success, 1); assert.equal(list[0].rejected, 1); assert.equal(list[0].inserted, 1);
+  dl = await bin("admin", `${UP}/uploads/${list[0].id}/not-uploaded`); assert.equal(dl.status, 200);
+  { const rows = XLSX.utils.sheet_to_json<any>(XLSX.read(dl.buf, { type: "buffer" }).Sheets["Not Uploaded List"]); assert.equal(rows.length, 1); assert.equal(rows[0]["Listed Doctor Name"], "Dr Hist Bad"); assert.ok(/not found in Field Force/.test(rows[0].Reason)); }
+
+  // full success: no rejected, no download
+  await sleep(5);
+  a = await uploadNamed("admin", xl(hdr, [["MR1", "Dr Hist Good", "Vadodara", "Cardiology", "CORE", "A"], ["MR2", "Dr Hist Two", "Vadodara", "Cardiology", "Nil", "B"]]), "success.xlsx");
+  assert.equal(a.failed, 0); assert.equal(a.updated, 1); assert.equal(a.inserted, 1);
+  list = await listLog(); assert.equal(list[0].fileName, "success.xlsx"); assert.equal(list[0].success, 2); assert.equal(list[0].rejected, 0); assert.equal(list[0].hasNotUploaded, false);
+  dl = await bin("admin", `${UP}/uploads/${list[0].id}/not-uploaded`); assert.equal(dl.status, 404);
+  // a file-level error (no usable columns) is logged too
+  await sleep(5);
+  a = await uploadNamed("admin", xl(["Foo"], [["x"]]), "bad_columns.xlsx"); assert.ok(a.fileErrors.length);
+  list = await listLog(); assert.equal(list[0].fileName, "bad_columns.xlsx"); assert.equal(list[0].success, 0); assert.ok(list[0].note);
+  // newest first, strictly by time
+  assert.deepEqual(list.slice(0, 4).map((x) => x.fileName), ["bad_columns.xlsx", "success.xlsx", "partial.xlsx", "full_reject.xlsx"]);
+  for (let i = 1; i < list.length; i++) assert.ok(new Date(list[i - 1].uploadedAt) >= new Date(list[i].uploadedAt));
+  // another id / unknown id
+  assert.equal((await bin("admin", `${UP}/uploads/000000000000000000000001/not-uploaded`)).status, 404);
+  // capped at the latest 50
+  for (let i = 0; i < 55; i++) await DoctorUploadLogModel.create({ tenantSlug: T, fileName: `old_${i}.xlsx`, uploadedAt: new Date(2020, 0, 1 + i), uploadedBy: "x", read: 1, inserted: 1, updated: 0, rejected: 0 });
+  list = await listLog(); assert.equal(list.length, 50); assert.equal(list[0].fileName, "bad_columns.xlsx");
+  // the log is for the admin only (manager token is not allowed on /company/*)
+  assert.equal((await j("m1", "GET", `${UP}/uploads`)).status >= 400, true);
+
+  // ---- the ready-to-upload file: real employee codes of the demo Salesforce file, 10 inserted / 0 rejected, then 10 updated
+  for (const [c, n, hq] of [["E0144", "KANNAN RAMASAMY", "TRICHY"], ["E0373", "PRADHAP P", "COIMBATORE"], ["E0251", "SIVANANTHAM", "MADURAI"], ["E0272", "AMITH K", "KANNUR"], ["E0331", "SREESHAG T P", "CALICUT"], ["E0248", "ABHISHEK P", "PERINTHALMANNA"]] as const) emp(c, n, "BE", "M1", { territory: hq });
+  const ready = fs.readFileSync(new URL("./fixtures/Listed_Doctor_Upload_READY_TO_UPLOAD.xlsx", import.meta.url));
+  const nDocs = docs().length;
+  await sleep(5);
+  a = await uploadNamed("admin", ready, "Listed_Doctor_Upload_READY_TO_UPLOAD.xlsx");
+  assert.deepEqual([a.total, a.inserted, a.updated, a.failed, a.uploaded], [10, 10, 0, 0, true], JSON.stringify(a.errors));
+  assert.equal(docs().length, nDocs + 10);
+  { const d = docs().find((x: any) => x.name === "Dr. Anil Kumar"); assert.equal(d.mappedEmployeeCode, "E0144"); assert.equal(d.doctorCategory, "CORE"); assert.equal(d.category, "A"); assert.equal(d.territoryType, "HQ"); assert.equal(d.state, "Tamil Nadu"); assert.equal(d.status, "ACTIVE"); }
+  list = await listLog(); assert.deepEqual([list[0].fileName, list[0].success, list[0].rejected], ["Listed_Doctor_Upload_READY_TO_UPLOAD.xlsx", 10, 0]);
+  await sleep(5);
+  a = await uploadNamed("admin", ready, "Listed_Doctor_Upload_READY_TO_UPLOAD.xlsx");
+  assert.deepEqual([a.total, a.inserted, a.updated, a.failed], [10, 0, 10, 0]); assert.equal(docs().length, nDocs + 10);
+  list = await listLog(); assert.deepEqual([list[0].inserted, list[0].updated, list[0].rejected], [0, 10, 0]);
+  // and the doctors show in the admin list
+  r = await j("admin", "GET", `/company/doctors?limit=100&sort=updated`); assert.ok(r.body.data.some((d: any) => d.name === "Dr. Lakshmi Narayanan"));
+  console.log("review 2 ok (history rows for success / partial / full reject / file error, order, cap, Not Uploaded List download, ready file 10/0 then 10 updated)");
+}
 console.log("R61 listed-doctor tests passed");
 server.close(); process.exit(0);
