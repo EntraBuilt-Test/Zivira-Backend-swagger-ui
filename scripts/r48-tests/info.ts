@@ -74,10 +74,10 @@ await I.updateItem(T, f1.id, { active: false });
 assert.deepEqual((await I.feedFor(T, "E2", now)).flash, []);
 await assert.rejects(() => I.updateItem(T, "not-an-id", {}), /Not found/);
 await I.deleteItem(T, n1.id); assert.equal((await I.listItems(T, "NOTICE")).length, 2);
-// legacy single-document settings still surface until the new tool is used
+// the old single-document Flash/Notice/Quote settings are no longer delivered (they could not be removed from any screen); Talk to Us info text still is
 store["companyconfigs"] = [{ tenantSlug: T, key: "adminSettings:quoteOfTheWeek", value: { quote: "Legacy quote" } }, { tenantSlug: T, key: "adminSettings:talkToUs", value: { content: "Call HR on 1800" } }];
 feed = await I.feedFor(T, "E3", now);
-assert.equal(feed.quote!.body, "Legacy quote"); assert.equal(feed.talkInfo, "Call HR on 1800");
+assert.equal(feed.quote, null, "legacy quote is not a ghost item"); assert.equal(feed.talkInfo, "Call HR on 1800");
 // audience options
 const ao = await I.audienceOptions(T); assert.deepEqual(ao.designations, ["ABM", "BE"]); assert.deepEqual(ao.hqs, ["BANGALORE", "KANNUR"]);
 // Talk to Us

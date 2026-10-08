@@ -28,7 +28,7 @@ import { computeRepAnalysisRows } from "../utils/rep-manager-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
 import { DealerModel } from "../models/dealer.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
-import { infoDeliveryRouter } from "./info.routes.js";
+import { infoDeliveryRouter, announcementsFor } from "./info.routes.js";
 
 export const managerRouter = Router();
 managerRouter.use(requireAuth);
@@ -162,17 +162,7 @@ managerRouter.get("/manuals/:id/download", asyncHandler(async (req, res) => {
 // GET /manager/announcements — same real admin-settings feed as
 // GET /field/announcements (item 12, post-launch robustness round); see
 // that route's comment for why this exists.
-managerRouter.get("/announcements", asyncHandler(async (req, res) => {
-  const mgr = await getManagerProfile(req.auth!.sub);
-  const { getConfigValue } = await import("../models/company-config.model.js");
-  const [flashNews, noticeBoard, quoteOfTheWeek, talkToUs] = await Promise.all([
-    getConfigValue(mgr.tenantSlug, "adminSettings:flashNews"),
-    getConfigValue(mgr.tenantSlug, "adminSettings:noticeBoard"),
-    getConfigValue(mgr.tenantSlug, "adminSettings:quoteOfTheWeek"),
-    getConfigValue(mgr.tenantSlug, "adminSettings:talkToUs")
-  ]);
-  res.json({ data: { flashNews: flashNews ?? null, noticeBoard: noticeBoard ?? null, quoteOfTheWeek: quoteOfTheWeek ?? null, talkToUs: talkToUs ?? null } });
-}));
+managerRouter.get("/announcements", asyncHandler(async (req, res) => { await getManagerProfile(req.auth!.sub); res.setHeader("Cache-Control", "no-store"); res.json({ data: await announcementsFor(req) }); }));
 
 // GET /manager/team — list of employees reporting to this manager
 // Request E, item 1 — every other active manager in the tenant, for the

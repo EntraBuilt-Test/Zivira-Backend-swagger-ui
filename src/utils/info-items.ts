@@ -18,7 +18,12 @@ export const audienceMatches = (it: { designations?: string[]; divisions?: strin
   (!it.hqs?.length || it.hqs.some((d) => lc(d) === lc(v.hq)));
 export const inWindow = (it: { startDate?: string | null; endDate?: string | null }, today: string) =>
   (!it.startDate || it.startDate <= today) && (!it.endDate || it.endDate >= today);
-export const todayIso = (now = new Date()) => now.toISOString().slice(0, 10);
+// The calendar day for the COMPANY, not for the server clock: new Date().toISOString() is UTC, so between midnight and 05:30 IST an item
+// starting "today" was not visible yet and one ending "yesterday" was still showing.
+export const todayIso = (now = new Date(), tz = "Asia/Kolkata") => {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now); }
+  catch { return now.toISOString().slice(0, 10); }
+};
 
 export function shape(it: any) {
   return {
@@ -52,7 +57,7 @@ export async function createItem(tenant: string, kind: InfoKind, body: any, by: 
   if (!["FLASH", "NOTICE", "QUOTE"].includes(kind)) throw new HttpError(400, "Unknown kind");
   const data: any = clean(body, false);
   if (data.startDate && data.endDate && data.endDate < data.startDate) throw new HttpError(400, "End date is before start date");
-  const [doc] = await InfoItemModel.create([{ tenantSlug: tenant, kind, version: 1, createdBy: by, ...data }]);
+  const [doc] = await InfoItemModel.create([{ tenantSlug: tenant, kind, version: 1, active: true, priority: "NORMAL", createdBy: by, ...data }]);
   return shape(doc);
 }
 export async function updateItem(tenant: string, id: string, body: any) {
@@ -78,7 +83,6 @@ export async function audienceOptions(tenant: string) {
   return { designations: uniq("designation"), divisions: uniq("division"), hqs: uniq("territory") };
 }
 
-const ver = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h) % 100000 + 1; };
 // Real content already saved through the older single-document admin settings keeps showing
 // until the new Information Upload is used for that kind.
 async function legacy(tenant: string, key: string): Promise<any | null> {
@@ -91,19 +95,14 @@ async function legacy(tenant: string, key: string): Promise<any | null> {
 export async function feedFor(tenant: string, employeeCode: string, now = new Date()) {
   const emp = (await EmployeeModel.findOne({ tenantSlug: tenant, employeeCode }).lean()) as any;
   const viewer: Viewer = { designation: emp?.designation || "", division: emp?.division || "", hq: emp?.territory || "" };
-  const today = todayIso(now);
+  let tz = "Asia/Kolkata"; try { const { getCompanyTimezone } = await import("./settings.js"); tz = await getCompanyTimezone(tenant); } catch { /* default */ }
+  const today = todayIso(now, tz);
   const items = ((await InfoItemModel.find({ tenantSlug: tenant, active: true }).lean()) as any[]).filter((i) => inWindow(i, today) && audienceMatches(i, viewer)).map(shape);
   const rank = (a: any, b: any) => (+b.pinned - +a.pinned) || (["URGENT", "HIGH", "NORMAL"].indexOf(a.priority) - ["URGENT", "HIGH", "NORMAL"].indexOf(b.priority)) || (+new Date(b.updatedAt || 0) - +new Date(a.updatedAt || 0));
   const of = (k: InfoKind) => items.filter((i) => i.kind === k).sort(rank);
-  let flash = of("FLASH"), notices = of("NOTICE"), quotes = of("QUOTE");
-  const mk = (kind: InfoKind, id: string, body: string, extra: any = {}) => ({ id, kind, title: "", body, author: "", priority: "NORMAL", pinned: false, designations: [], divisions: [], hqs: [], startDate: null, endDate: null, active: true, attachmentUrl: "", attachmentName: "", version: ver(body), createdBy: "", createdAt: null, updatedAt: null, ...extra });
-  if (!flash.length) { const l = await legacy(tenant, "flashNews"); if (l?.content?.trim()) flash = [mk("FLASH", "legacy-flash", l.content.trim())]; }
-  if (!notices.length) {
-    const l = await legacy(tenant, "noticeBoard");
-    const text = [l?.content1, l?.content2, l?.content3].map((x) => String(x ?? "").trim()).filter(Boolean).join("\n");
-    if (text && inWindow({ startDate: l?.startDate ? String(l.startDate).slice(0, 10) : null, endDate: l?.endDate ? String(l.endDate).slice(0, 10) : null }, today)) notices = [mk("NOTICE", "legacy-notice", text, { title: "Notice Board" })];
-  }
-  if (!quotes.length) { const l = await legacy(tenant, "quoteOfTheWeek"); if (l?.quote?.trim()) quotes = [mk("QUOTE", "legacy-quote", l.quote.trim())]; }
+  const flash = of("FLASH"), notices = of("NOTICE"), quotes = of("QUOTE");
+  // No fallback to the old single-document settings (adminSettings:flashNews / noticeBoard / quoteOfTheWeek): the admin screens no longer edit or delete them,
+  // so a value left there could never be removed and kept showing as a ghost item. What the Information Upload screens list is exactly what is delivered.
   const talk = await legacy(tenant, "talkToUs");
   return { flash, notices, quote: quotes[0] ?? null, talkInfo: typeof talk?.content === "string" ? talk.content : "" };
 }

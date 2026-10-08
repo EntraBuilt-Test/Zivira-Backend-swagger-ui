@@ -52,7 +52,7 @@ import { CrmModel } from "../models/crm.model.js";
 import { WORK_TYPE_TO_CODE } from "../models/work-type-code.model.js";
 import { detectLocks, getLockState, utcDateString, LOCK_LOOKBACK_DAYS } from "../utils/dcr-lock.js";
 import { getDcrDelayDays } from "../utils/settings.js";
-import { infoDeliveryRouter } from "./info.routes.js";
+import { infoDeliveryRouter, announcementsFor } from "./info.routes.js";
 
 // PRD 12.3B — fixed gift/input item-type list for the compliance-tracked
 // picker (Pen, Calendar, Notepad, Literature, ...). Kept as a constant so
@@ -361,17 +361,7 @@ fieldRouter.get("/circulars/:id/download", asyncHandler(async (req, res) => {
 // settings here, read-only, so the field-rep home screen can show whatever
 // admin has actually set (and nothing, honestly, for any kind admin left
 // blank) instead of reinventing a separate feed.
-fieldRouter.get("/announcements", asyncHandler(async (req, res) => {
-  const tenantSlug = req.auth!.tenantSlug!;
-  const { getConfigValue } = await import("../models/company-config.model.js");
-  const [flashNews, noticeBoard, quoteOfTheWeek, talkToUs] = await Promise.all([
-    getConfigValue(tenantSlug, "adminSettings:flashNews"),
-    getConfigValue(tenantSlug, "adminSettings:noticeBoard"),
-    getConfigValue(tenantSlug, "adminSettings:quoteOfTheWeek"),
-    getConfigValue(tenantSlug, "adminSettings:talkToUs")
-  ]);
-  res.json({ data: { flashNews: flashNews ?? null, noticeBoard: noticeBoard ?? null, quoteOfTheWeek: quoteOfTheWeek ?? null, talkToUs: talkToUs ?? null } });
-}));
+fieldRouter.get("/announcements", asyncHandler(async (req, res) => { res.setHeader("Cache-Control", "no-store"); res.json({ data: await announcementsFor(req) }); }));
 
 // Request D, item 4 — the "Accompanying Manager" field on a DCR's Joint
 // Work section was free text; if more than one manager has ever had this
