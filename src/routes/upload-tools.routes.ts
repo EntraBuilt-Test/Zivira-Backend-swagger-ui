@@ -10,8 +10,12 @@ import { TenantModel } from "../models/tenant.model.js";
 import { SubdivisionModel } from "../models/subdivision.model.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
 import { UploadHistoryModel } from "../models/upload-history.model.js";
+import { UploadGenerateStateModel } from "../models/upload-generate-state.model.js";
+import { DoctorModel } from "../models/doctor.model.js";
+import { DealerModel } from "../models/dealer.model.js";
 import { UserModel } from "../models/user.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
+import { getSlideStore, readSlideBuffer, releaseSlideFile, hasSlideFile } from "../utils/slide-store.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 export const uploadToolsRouter = Router();
@@ -79,9 +83,35 @@ uploadToolsRouter.post("/:key/generate", asyncHandler(async (req, res) => {
   const columns = Array.isArray(req.body?.columns) ? req.body.columns.map(String) : [];
   let buf: Buffer;
   try { buf = await generateWorkbook(tool.key, columns); } catch (e) { throw new HttpError(400, e instanceof Error ? e.message : "Could not generate the Excel file"); }
+  // remember the generated state for this company user (server side)
+  if (req.body?.remember !== false) await UploadGenerateStateModel.updateOne({ tenantSlug: req.auth!.tenantSlug!, userId: String(req.auth!.sub), toolKey: tool.key }, { $set: { columns, generatedAt: new Date() } }, { upsert: true });
   res.setHeader("Content-Type", XLSX_MIME);
   res.setHeader("Content-Disposition", `attachment; filename="${fileSafe(tool.title)}.xlsx"`);
   res.send(buf);
+}));
+
+// "Generate Excel" state kept on the server per company user (survives a different browser / device).
+uploadToolsRouter.get("/:key/generated", asyncHandler(async (req, res) => {
+  if (!GENERATE_COLUMNS[req.params.key]) throw new HttpError(404, "This tool has no Generate Excel");
+  const row = (await UploadGenerateStateModel.findOne({ tenantSlug: req.auth!.tenantSlug!, userId: String(req.auth!.sub), toolKey: req.params.key }).lean()) as any;
+  res.json({ data: row ? { columns: row.columns || [], generatedAt: row.generatedAt || row.updatedAt || null } : null });
+}));
+uploadToolsRouter.delete("/:key/generated", asyncHandler(async (req, res) => {
+  if (!GENERATE_COLUMNS[req.params.key]) throw new HttpError(404, "This tool has no Generate Excel");
+  await UploadGenerateStateModel.deleteOne({ tenantSlug: req.auth!.tenantSlug!, userId: String(req.auth!.sub), toolKey: req.params.key });
+  res.json({ data: { cleared: true } });
+}));
+
+// "Speciality / Category" (Listed Doctor) and "Category / Class" (Chemists) reference popups: the real distinct values in the master with counts.
+const tally = (xs: unknown[]) => { const m = new Map<string, number>(); for (const x of xs) { const k = String(x ?? "").trim(); if (k) m.set(k, (m.get(k) || 0) + 1); } return [...m.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value)); };
+uploadToolsRouter.get("/listed-doctor/reference", asyncHandler(async (req, res) => {
+  const docs = (await DoctorModel.find({ tenantSlug: req.auth!.tenantSlug!, status: "ACTIVE" }).lean()) as any[];
+  const tier: Record<string, string> = { NIL: "Nil", CORE: "Core", "N CORE": "N Core", "S CORE": "S Core" };
+  res.json({ data: { total: docs.length, specialities: tally(docs.map((d) => d.specialty)), categories: tally(docs.map((d) => tier[d.doctorCategory] || "")), classes: tally(docs.map((d) => d.category)) } });
+}));
+uploadToolsRouter.get("/chemist/reference", asyncHandler(async (req, res) => {
+  const rows = (await DealerModel.find({ tenantSlug: req.auth!.tenantSlug!, status: "ACTIVE" }).lean()) as any[];
+  res.json({ data: { total: rows.length, categories: tally(rows.map((r) => r.category)), classes: tally(rows.map((r) => r.chemistClass)) } });
 }));
 
 // Product Upload: the Category / Group / Brand reference tables, from the real product master (legacy lists only when there are no products at all).
@@ -91,8 +121,10 @@ const LEGACY_BRANDS = ["BEPIREX", "BRINZIA", "BRITIVIN", "CIZIA", "DORVISA", "DO
 uploadToolsRouter.get("/product/reference", asyncHandler(async (req, res) => {
   const prods = (await ProductModel.find({ tenantSlug: req.auth!.tenantSlug!, status: "ACTIVE" }).lean()) as any[];
   const uniq = (xs: unknown[]) => [...new Set(xs.map((x) => String(x ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  if (!prods.length) return res.json({ data: { source: "legacy-fallback", categories: LEGACY_CATEGORIES, groups: LEGACY_GROUPS, brands: LEGACY_BRANDS } });
-  res.json({ data: { source: "product-master", categories: uniq(prods.map((p) => p.category)), groups: uniq(prods.map((p) => p.group)), brands: uniq(prods.map((p) => p.brandName)) } });
+  // each list falls back to the legacy list on its own when the product master has no values for it (Category and Group are optional on products)
+  const cats = uniq(prods.map((p) => p.category)), groups = uniq(prods.map((p) => p.group)), brands = uniq(prods.map((p) => p.brandName));
+  const from = { categories: cats.length ? "product-master" : "legacy-fallback", groups: groups.length ? "product-master" : "legacy-fallback", brands: brands.length ? "product-master" : "legacy-fallback" };
+  res.json({ data: { source: Object.values(from).every((x) => x === "product-master") ? "product-master" : Object.values(from).every((x) => x === "legacy-fallback") ? "legacy-fallback" : "mixed", sources: from, categories: cats.length ? cats : LEGACY_CATEGORIES, groups: groups.length ? groups : LEGACY_GROUPS, brands: brands.length ? brands : LEGACY_BRANDS } });
 }));
 
 // Product Rate: the State Name dropdown (state master).
@@ -133,22 +165,23 @@ uploadToolsRouter.post("/slides-upload/files", upload.array("files", 50), asyncH
   for (const f of (req.files as Express.Multer.File[]) || []) {
     const rows = (await Slides.find({ tenantSlug: tenant, fileName: f.originalname }).lean()) as any[];
     if (!rows.length) { unmatched.push(f.originalname); continue; }
-    const set: Record<string, unknown> = { fileData: f.buffer.toString("base64"), mimeType: f.mimetype || "application/octet-stream", uploadedOn: new Date() };
+    const fileRef = await getSlideStore().put(f.buffer, { fileName: f.originalname, mimeType: f.mimetype || "application/octet-stream", tenantSlug: tenant });   // one stored copy, referenced by every matching row
+    const set: Record<string, unknown> = { fileRef, fileSize: f.size, mimeType: f.mimetype || "application/octet-stream", uploadedOn: new Date() };
     if ((f.mimetype || "").toLowerCase() === "application/pdf") {
       const m = f.buffer.toString("latin1").match(/\/Type\s*\/Page(?!s)/g);
       if (m && m.length) set.pages = m.length;
     }
-    for (const r of rows) await Slides.updateOne({ _id: r._id }, { $set: set });
+    for (const r of rows) { await Slides.updateOne({ _id: r._id }, { $set: set, $unset: { fileData: "" } }); if (r.fileRef && String(r.fileRef) !== fileRef) await releaseSlideFile(tenant, r.fileRef); }
     matched.push(f.originalname);
   }
   res.json({ data: { matched, unmatched } });
 }));
 
 // ═══ Slide Upload - E-Detailing (DD_Slide_Upload) ═══════════════════════════════════════════
-// Storage mechanism: the slide FILE is stored base64 inside its metadata document in the existing
-// "slideUploadEDetailing" master collection (the same documents GET /field/slides and
-// /field/slides/:id/download serve to the field app). Per-file cap 10 MB (a Mongo document is 16 MB and base64 adds a third).
-// The 5 GB allocation (+2% allowance) is counted from the real stored sizes of those documents.
+// Storage mechanism (Round 59): the slide FILE is stored once in MongoDB GridFS (bucket "slideFiles", see utils/slide-store.ts); each brand it was uploaded for
+// gets a metadata row in the existing "slideUploadEDetailing" master collection (the rows GET /field/slides and /field/slides/:id/download serve to the field app)
+// holding `fileRef` -> the stored file. Rows from before this round keep their base64 `fileData` and are still served. Per-file cap stays 10 MB.
+// The 5 GB allocation (+2% allowance) is counted from the real stored sizes, each stored file counted once however many brands reference it.
 const SLIDE_ALLOC_BYTES = 5 * 1024 ** 3;
 const SLIDE_ALLOWANCE = 1.02;
 const SLIDE_MAX_FILE = 10 * 1024 * 1024;
@@ -160,8 +193,12 @@ async function slideUsage(tenant: string) {
   // legacy rows (uploaded before sizes were recorded) get their size measured once from the stored file
   const legacy = (await Slides.find({ tenantSlug: tenant, fileSize: { $exists: false }, fileData: { $exists: true } }).select("fileData").lean()) as any[];
   for (const r of legacy) await Slides.updateOne({ _id: r._id }, { $set: { fileSize: b64Bytes(r.fileData) } });
-  const rows = (await Slides.find({ tenantSlug: tenant }).select("fileSize").lean()) as any[];
-  const consumed = rows.reduce((s, r) => s + (typeof r.fileSize === "number" ? r.fileSize : 0), 0);
+  const rows = (await Slides.find({ tenantSlug: tenant }).select("fileSize fileRef").lean()) as any[];
+  const seen = new Set<string>();
+  const consumed = rows.reduce((s, r) => {
+    if (r.fileRef) { if (seen.has(String(r.fileRef))) return s; seen.add(String(r.fileRef)); }
+    return s + (typeof r.fileSize === "number" ? r.fileSize : 0);
+  }, 0);
   const limit = SLIDE_ALLOC_BYTES * SLIDE_ALLOWANCE;
   return { consumedBytes: consumed, allocatedBytes: SLIDE_ALLOC_BYTES, remainingBytes: Math.max(0, limit - consumed), limitBytes: limit };
 }
@@ -181,7 +218,7 @@ uploadToolsRouter.get("/slides/meta", asyncHandler(async (req, res) => {
 
 uploadToolsRouter.get("/slides/list", asyncHandler(async (req, res) => {
   const Slides = getMasterModel("slideUploadEDetailing");
-  const filter: Record<string, unknown> = { tenantSlug: req.auth!.tenantSlug!, fileData: { $exists: true } };
+  const filter: Record<string, unknown> = { tenantSlug: req.auth!.tenantSlug!, ...hasSlideFile };
   if (typeof req.query.subDivision === "string" && req.query.subDivision) filter.subDivision = req.query.subDivision;
   const brands = typeof req.query.brands === "string" ? req.query.brands.split("|").filter(Boolean) : [];
   if (brands.length) filter.brand = { $in: brands };
@@ -199,29 +236,39 @@ uploadToolsRouter.post("/slides/upload", slideUpload.array("files", 50), asyncHa
   const t = (await TenantModel.findOne({ slug: tenant }).lean()) as any;
   const Slides = getMasterModel("slideUploadEDetailing");
   const usage = await slideUsage(tenant);
-  const need = files.reduce((s, f) => s + f.size, 0) * brands.length;      // one stored copy per selected brand
+  const need = files.reduce((s, f) => s + f.size, 0);                       // each file is stored ONCE, however many brands it is uploaded for
   if (need > usage.remainingBytes) throw new HttpError(413, `Not enough slide storage: ${(need / 1024 ** 2).toFixed(1)} MB needed, ${(usage.remainingBytes / 1024 ** 3).toFixed(2)} GB remaining`);
   const saved: { fileName: string; brand: string }[] = [];
-  for (const f of files) for (const brand of brands) {
-    const set: Record<string, unknown> = { tenantSlug: tenant, division: t?.name || "", subDivision, brand, fileName: f.originalname, uploadedOn: new Date(), fileData: f.buffer.toString("base64"), mimeType: f.mimetype || "application/octet-stream", fileSize: f.size };
-    if ((f.mimetype || "").toLowerCase() === "application/pdf") { const m = f.buffer.toString("latin1").match(/\/Type\s*\/Page(?!s)/g); if (m && m.length) set.pages = m.length; }
-    const existing = (await Slides.findOne({ tenantSlug: tenant, brand, subDivision, fileName: f.originalname }).select("_id").lean()) as any;
-    if (existing) await Slides.updateOne({ _id: existing._id }, { $set: set }); else await Slides.create([set]);
-    saved.push({ fileName: f.originalname, brand });
+  for (const f of files) {
+    const mimeType = f.mimetype || "application/octet-stream";
+    const fileRef = await getSlideStore().put(f.buffer, { fileName: f.originalname, mimeType, tenantSlug: tenant });
+    let pages: number | undefined;
+    if (mimeType.toLowerCase() === "application/pdf") { const m = f.buffer.toString("latin1").match(/\/Type\s*\/Page(?!s)/g); if (m && m.length) pages = m.length; }
+    for (const brand of brands) {
+      const set: Record<string, unknown> = { tenantSlug: tenant, division: t?.name || "", subDivision, brand, fileName: f.originalname, uploadedOn: new Date(), fileRef, mimeType, fileSize: f.size, ...(pages ? { pages } : {}) };
+      const existing = (await Slides.findOne({ tenantSlug: tenant, brand, subDivision, fileName: f.originalname }).select("_id fileRef").lean()) as any;
+      if (existing) { await Slides.updateOne({ _id: existing._id }, { $set: set, $unset: { fileData: "" } }); if (existing.fileRef && String(existing.fileRef) !== fileRef) await releaseSlideFile(tenant, existing.fileRef); }
+      else await Slides.create([set]);
+      saved.push({ fileName: f.originalname, brand });
+    }
   }
   res.status(201).json({ data: { saved, usage: await slideUsage(tenant) } });
 }));
 
 uploadToolsRouter.get("/slides/:id/download", asyncHandler(async (req, res) => {
   const row = (await getMasterModel("slideUploadEDetailing").findOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! }).lean()) as any;
-  if (!row || !row.fileData) throw new HttpError(404, "Slide file not found");
+  const bytes = row ? await readSlideBuffer(row) : null;
+  if (!row || !bytes) throw new HttpError(404, "Slide file not found");
   res.setHeader("Content-Type", row.mimeType || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(String(row.fileName ?? "slide"))}"`);
-  res.send(Buffer.from(row.fileData, "base64"));
+  res.send(bytes);
 }));
 
 uploadToolsRouter.delete("/slides/:id", asyncHandler(async (req, res) => {
-  const r = await getMasterModel("slideUploadEDetailing").deleteOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! });
+  const Slides = getMasterModel("slideUploadEDetailing");
+  const row = (await Slides.findOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! }).select("fileRef").lean()) as any;
+  const r = await Slides.deleteOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! });
   if (!(r as any).deletedCount) throw new HttpError(404, "Slide not found");
+  if (row?.fileRef) await releaseSlideFile(req.auth!.tenantSlug!, row.fileRef);       // the stored file goes when its last brand row goes
   res.json({ data: { deleted: true, usage: await slideUsage(req.auth!.tenantSlug!) } });
 }));

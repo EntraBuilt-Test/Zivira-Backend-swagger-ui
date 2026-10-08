@@ -17,6 +17,7 @@ import { getMasterModel } from "../models/master-record.model.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { createTourPlanWithRetry } from "../utils/tour-plan-id.js";
 import { notifyManager, notifyFieldRep } from "../utils/notify.js";
+import { afterManagerDecision, managerActor } from "../utils/approval-trail.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
 import { enrichWithEmployeeNames } from "../utils/enrich-employee-names.js";
 import { computeComplianceRows } from "../utils/compliance.js";
@@ -347,13 +348,9 @@ managerRouter.post("/dcrs/:id/approve", asyncHandler(async (req, res) => {
   dcr.managerApprovedAt = new Date();
   await dcr.save();
   await audit("MANAGER_DCR_APPROVED", "Dcr", String(dcr._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode });
-  await notifyFieldRepByCode(
-    mgr.tenantSlug,
-    dcr.employeeCode,
-    "Your DCR was approved",
-    `${mgr.name} (${mgr.employeeCode}) approved your Daily Call Report.`
-  );
-  res.json({ data: serializeDocument(dcr) });
+  // Round 59 -- trail (who/when), admin approval row updated, notifications (field user + admin portal)
+  await afterManagerDecision({ tenantSlug: mgr.tenantSlug, kind: "DCR", rec: dcr, action: "Approved", actor: managerActor(mgr) });
+  res.json({ data: serializeDocument((await DcrModel.findById(dcr._id)) ?? dcr) });
 }));
 
 // POST /manager/dcrs/:id/reject
@@ -366,13 +363,8 @@ managerRouter.post("/dcrs/:id/reject", asyncHandler(async (req, res) => {
   if (reason) dcr.notes = (dcr.notes ? dcr.notes + "\n[Rejected]: " : "[Rejected]: ") + reason;
   await dcr.save();
   await audit("MANAGER_DCR_REJECTED", "Dcr", String(dcr._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode });
-  await notifyFieldRepByCode(
-    mgr.tenantSlug,
-    dcr.employeeCode,
-    "Your DCR was rejected",
-    `${mgr.name} (${mgr.employeeCode}) rejected your Daily Call Report.${reason ? ` Reason: ${reason}` : ""}`
-  );
-  res.json({ data: serializeDocument(dcr) });
+  await afterManagerDecision({ tenantSlug: mgr.tenantSlug, kind: "DCR", rec: dcr, action: "Rejected", actor: managerActor(mgr), remarks: reason ?? "" });
+  res.json({ data: serializeDocument((await DcrModel.findById(dcr._id)) ?? dcr) });
 }));
 
 // ══════════════════════════════════════════════════════════════════════
@@ -406,44 +398,9 @@ managerRouter.post("/leave-applications/:id/approve", asyncHandler(async (req, r
   leave.approvedAt = new Date();
   await leave.save();
   await audit("MANAGER_LEAVE_APPROVED", "LeaveApplication", String(leave._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode });
-  await notifyFieldRepByCode(
-    mgr.tenantSlug,
-    leave.employeeCode,
-    "Your leave request was approved",
-    `${mgr.name} (${mgr.employeeCode}) approved your ${leave.days} day(s) leave request (${leave.leaveType}).`
-  );
-  // Item 9 (post-launch robustness round) -- admin's "Leave Cancellation
-  // (After Approval)" screen reads/writes the separate "leaveCancellation"
-  // generic master, which nothing ever wrote to on a real manager approval
-  // -- the rows admin saw there were seed/demo data, never a real approved
-  // leave. Mirror-write a real row here so admin's screen reflects this
-  // approval for real and can genuinely cancel it afterwards.
-  try {
-    const approvingEmployee = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, employeeCode: leave.employeeCode }).lean();
-    if (approvingEmployee) {
-      const CancellationModel = getMasterModel("leaveCancellation");
-      await CancellationModel.findOneAndUpdate(
-        { tenantSlug: mgr.tenantSlug, fieldForceName: (approvingEmployee as any).name, fromDate: leave.fromDate },
-        {
-          $set: {
-            tenantSlug: mgr.tenantSlug,
-            fieldForceName: (approvingEmployee as any).name,
-            leaveAppliedDate: leave.createdAt,
-            fromDate: leave.fromDate,
-            toDate: leave.toDate,
-            noOfDays: leave.days,
-            approvedBy: mgr.name,
-            status: "Active"
-          }
-        },
-        { upsert: true }
-      );
-    }
-  } catch (err) {
-    console.error("Failed to mirror approved leave into leaveCancellation master:", err);
-  }
-
-  res.json({ data: serializeDocument(leave) });
+  // Round 59 -- trail + admin approval row + the Leave Cancellation (After Approval) row + notifications (field user, admin portal)
+  await afterManagerDecision({ tenantSlug: mgr.tenantSlug, kind: "LEAVE", rec: leave, action: "Approved", actor: managerActor(mgr) });
+  res.json({ data: serializeDocument((await LeaveApplicationModel.findById(leave._id)) ?? leave) });
 }));
 
 managerRouter.post("/leave-applications/:id/reject", asyncHandler(async (req, res) => {
@@ -460,13 +417,8 @@ managerRouter.post("/leave-applications/:id/reject", asyncHandler(async (req, re
   leave.rejectReason = reason ?? null;
   await leave.save();
   await audit("MANAGER_LEAVE_REJECTED", "LeaveApplication", String(leave._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode });
-  await notifyFieldRepByCode(
-    mgr.tenantSlug,
-    leave.employeeCode,
-    "Your leave request was rejected",
-    `${mgr.name} (${mgr.employeeCode}) rejected your ${leave.days} day(s) leave request (${leave.leaveType}).${reason ? ` Reason: ${reason}` : ""}`
-  );
-  res.json({ data: serializeDocument(leave) });
+  await afterManagerDecision({ tenantSlug: mgr.tenantSlug, kind: "LEAVE", rec: leave, action: "Rejected", actor: managerActor(mgr), remarks: reason ?? "" });
+  res.json({ data: serializeDocument((await LeaveApplicationModel.findById(leave._id)) ?? leave) });
 }));
 
 // DELETE /manager/leave-applications/:id -- manager equivalent of the field
@@ -482,8 +434,8 @@ managerRouter.delete("/leave-applications/:id", asyncHandler(async (req, res) =>
   if (!leave || leave.tenantSlug !== mgr.tenantSlug) throw new HttpError(404, "Leave request not found");
   const inTeam = await EmployeeModel.findOne({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, employeeCode: leave.employeeCode });
   if (!inTeam) throw new HttpError(403, "This leave request does not belong to your team");
-  if (leave.status === "APPROVED") {
-    throw new HttpError(400, "This leave is already approved -- cancel it via Leave Cancellation (After Approval) instead of deleting it here.");
+  if (leave.status === "APPROVED" || leave.status === "CANCELLED") {
+    throw new HttpError(400, leave.status === "CANCELLED" ? "A cancelled leave is kept for the record and cannot be deleted." : "This leave is already approved -- cancel it via Leave Cancellation (After Approval) instead of deleting it here.");
   }
   await LeaveApplicationModel.deleteOne({ _id: leave._id });
   try {
@@ -587,13 +539,8 @@ managerRouter.patch("/tour-plans/:tpId/approve", asyncHandler(async (req, res) =
   tp.approvedAt = new Date();
   await tp.save();
   await audit("MANAGER_TOUR_PLAN_APPROVED", "TourPlan", String(tp._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode, tpId: tp.tpId });
-  await notifyFieldRepByCode(
-    mgr.tenantSlug,
-    tp.employeeCode,
-    `Tour Plan ${tp.tpId} approved`,
-    `${mgr.name} (${mgr.employeeCode}) approved your Tour Plan for ${tp.month}.`
-  );
-  res.json({ data: serializeDocument(tp) });
+  await afterManagerDecision({ tenantSlug: mgr.tenantSlug, kind: "TP", rec: tp, action: "Approved", actor: managerActor(mgr) });
+  res.json({ data: serializeDocument((await TourPlanModel.findById(tp._id)) ?? tp) });
 }));
 
 // PATCH /manager/tour-plans/:tpId/reject
@@ -608,13 +555,8 @@ managerRouter.patch("/tour-plans/:tpId/reject", asyncHandler(async (req, res) =>
   tp.rejectReason = reason;
   await tp.save();
   await audit("MANAGER_TOUR_PLAN_REJECTED", "TourPlan", String(tp._id), { tenantSlug: mgr.tenantSlug, managerCode: mgr.employeeCode, tpId: tp.tpId });
-  await notifyFieldRepByCode(
-    mgr.tenantSlug,
-    tp.employeeCode,
-    `Tour Plan ${tp.tpId} rejected`,
-    `${mgr.name} (${mgr.employeeCode}) rejected your Tour Plan for ${tp.month}.${reason ? ` Reason: ${reason}` : ""}`
-  );
-  res.json({ data: serializeDocument(tp) });
+  await afterManagerDecision({ tenantSlug: mgr.tenantSlug, kind: "TP", rec: tp, action: "Rejected", actor: managerActor(mgr), remarks: reason ?? "" });
+  res.json({ data: serializeDocument((await TourPlanModel.findById(tp._id)) ?? tp) });
 }));
 
 // PATCH /manager/tour-plans/:tpId/void — ANY manager in the tenant may void

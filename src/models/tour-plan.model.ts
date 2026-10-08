@@ -7,6 +7,7 @@
 // a brand new TP is created under the new manager's approval chain, linked
 // back to the voided one via parentTpId.
 
+import { approvalTrailFields } from "./approval-trail.fragment.js";
 import mongoose, { Schema } from "mongoose";
 
 const tourPlanLocationSchema = new Schema(
@@ -46,7 +47,8 @@ const tourPlanSchema = new Schema(
     gstBranchCode: { type: String },     // linked to CompanyBranch (Section 12.5)
     gstBranchName: { type: String },
     managerNotifiedAt: { type: Date },
-    managerNotificationRead: { type: Boolean, default: false }
+    managerNotificationRead: { type: Boolean, default: false },
+    ...approvalTrailFields
   },
   { timestamps: true }
 );

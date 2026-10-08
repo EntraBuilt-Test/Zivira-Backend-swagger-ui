@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { approvalTrailFields } from "./approval-trail.fragment.js";
 
 // Zivira_HR_Client_Requirement_1A.docx §25 Leave Management: Leave Types ->
 // Leave Balance -> Leave Request -> Manager Approval -> HR Approval -> LWP
@@ -24,10 +25,15 @@ const leaveApplicationSchema = new Schema(
     // balance — see comp-off.model.ts and ess.routes.ts leave/apply.
     isCompOff: { type: Boolean, default: false },
     compOffId: { type: Schema.Types.ObjectId, ref: "CompOff", default: null },
-    status: { type: String, enum: ["PENDING", "APPROVED", "REJECTED"], default: "PENDING", index: true },
+    status: { type: String, enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"], default: "PENDING", index: true },
     approvedBy: { type: String, default: null },
     approvedAt: { type: Date, default: null },
-    rejectReason: { type: String, default: null }
+    rejectReason: { type: String, default: null },
+    // Round 59 -- cancellation after approval (status CANCELLED stops counting everywhere that reads APPROVED leave)
+    cancelledBy: { type: new Schema({ id: String, name: String, role: { type: String, enum: ["ADMIN", "MANAGER"] } }, { _id: false }), default: undefined },
+    cancelledAt: { type: Date, default: null },
+    cancelReason: { type: String, default: null },
+    ...approvalTrailFields
   },
   { timestamps: true }
 );

@@ -54,6 +54,8 @@ const A = (m: Record<string, string>): Record<string, string> => Object.fromEntr
 export const norm = (h: unknown) => String(h ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 const S = (v: unknown) => (v === null || v === undefined ? "" : String(v).trim());
 const lc = (v: unknown) => S(v).toLowerCase();
+/** Person names compare case-, spacing- and punctuation-insensitively ("JAYASANKAR  L" = "Jayasankar L", "A.V. Rao" = "a v rao"). */
+export const nm = (v: unknown) => S(v).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MONTHS_SHORT = MONTHS_LONG.map((m) => m.slice(0, 3));
 
@@ -99,7 +101,7 @@ async function loadEmployees(tenant: string) {
   const list = (await EmployeeModel.find({ tenantSlug: tenant }).lean()) as unknown as Emp[];
   const byCode = new Map(list.map((e) => [lc(e.employeeCode), e]));
   const byName = new Map<string, Emp[]>();
-  for (const e of list) { const k = lc(e.name); byName.set(k, [...(byName.get(k) || []), e]); }
+  for (const e of list) { const k = nm(e.name); byName.set(k, [...(byName.get(k) || []), e]); }
   return { byCode, byName };
 }
 /** "User Name" / "Employee ID" may hold the employee code, or (legacy templates) the employee's name when that name is unique. */
@@ -107,7 +109,7 @@ function empOf(ctx: any, v: string): Emp | null {
   if (!v) return null;
   const hit = ctx.byCode.get(lc(v));
   if (hit) return hit;
-  const named = ctx.byName?.get(lc(v)) as Emp[] | undefined;
+  const named = ctx.byName?.get(nm(v)) as Emp[] | undefined;
   return named && named.length === 1 ? named[0] : null;
 }
 type Prod = { code: string; name: string; brand: string; division: string };
@@ -299,14 +301,14 @@ const salesforce: Tool = {
     // resolve managers against DB + this file
     const fileByCode = new Map(items.map((i) => [lc(i.value.code), i.value]));
     const fileByName = new Map<string, any[]>();
-    for (const i of items) fileByName.set(lc(i.value.name), [...(fileByName.get(lc(i.value.name)) || []), i.value]);
+    for (const i of items) fileByName.set(nm(i.value.name), [...(fileByName.get(nm(i.value.name)) || []), i.value]);
     const resolve = (v: any): { code: string | null; err?: string; soft?: boolean } => {
       if (v.mc) {
         const hit = ctx.byCode.get(lc(v.mc)) || fileByCode.get(lc(v.mc));
         return hit ? { code: hit.employeeCode || hit.code } : { code: null, err: `reporting manager code "${v.mc}" not found` };
       }
       if (v.mn) {
-        const db = ctx.byName.get(lc(v.mn)) || [], fl = fileByName.get(lc(v.mn)) || [];
+        const db = ctx.byName.get(nm(v.mn)) || [], fl = fileByName.get(nm(v.mn)) || [];
         const all = [...new Set([...db.map((e: any) => e.employeeCode), ...fl.map((e: any) => e.code)])];
         if (all.length === 1) return { code: all[0] };
         // a manager given by NAME that does not exist anywhere yet is not fatal: the employee is imported without a manager (warning); ambiguous names stay errors
@@ -376,7 +378,7 @@ const productRate: Tool = {
   key: "product-rate", title: "Product Rate Upload", group: "Upload",
   headers: ["Product Code", "Product Name", "PTR", "PTS", "MRP", "Effective From"],
   required: ["Product Code", "PTR", "Effective From"], dateHeaders: ["Effective From"], templateSheet: "UPL_Product_Rate",
-  note: "Key = State + Product Code + Effective From (rate history is kept per state). The product's current rate (used for POB / Rx values) is set to the PTR of the latest rate effective on or before today; PTR is the assumed basis for 'rate'.",
+  note: "Key = State + Product Code + Effective From (rate history is kept per state). The product's flat rate (used for POB / Rx values) is the PTR of the latest rate effective on or before today in its reference state = the state with rates for it that has the most active field force (tie: the state uploaded first); PTR is the assumed basis for 'rate'.",
   async load(tenant) { return { products: await loadProducts(tenant) }; },
   check(g, ctx, _row, opts) {
     const errors: Er[] = [];
@@ -393,11 +395,19 @@ const productRate: Tool = {
     await ensureRateIndex();
     const state = S(opts?.state);
     const res = await catching(items, (v) => upsert(ProductRateModel, { tenantSlug: tenant, productCode: v.code, stateName: state, effectiveFrom: v.eff }, { productName: v.name, ptr: v.ptr, pts: v.pts, mrp: v.mrp }));
+    // Product.rate (flat rate used by POB / Rx valuation) = the latest effective PTR (on or before today) of the REFERENCE STATE of that product:
+    // the state, among those that have a rate for it, with the most ACTIVE field force (Employee.state); a tie goes to the state whose rates were uploaded first.
     const today = new Date();
+    const emps = (await EmployeeModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
+    const headcount = new Map<string, number>();
+    for (const e of emps) { const k = nm(e.state); if (k) headcount.set(k, (headcount.get(k) || 0) + 1); }
     for (const code of new Set(items.map((i) => i.value.code))) {
-      // flat Product.rate (POB / Rx valuation) follows the latest effective PTR of the uploaded state (plus any all-state rows)
-      const rates = ((await ProductRateModel.find({ tenantSlug: tenant, productCode: code, stateName: { $in: [state, ""] } }).lean()) as any[]).filter((r) => new Date(r.effectiveFrom) <= today).sort((a, b) => +new Date(b.effectiveFrom) - +new Date(a.effectiveFrom));
-      if (rates[0] && typeof rates[0].ptr === "number") await ProductModel.updateMany({ tenantSlug: tenant, code }, { $set: { rate: rates[0].ptr } });
+      const all = (await ProductRateModel.find({ tenantSlug: tenant, productCode: code }).lean()) as any[];
+      const named = [...new Set(all.map((r) => S(r.stateName)).filter(Boolean))];
+      const firstUpload = (s: string) => Math.min(...all.filter((r) => S(r.stateName) === s).map((r) => +new Date(r.createdAt || r.effectiveFrom)));
+      const ref = named.length ? [...named].sort((a, b) => (headcount.get(nm(b)) || 0) - (headcount.get(nm(a)) || 0) || firstUpload(a) - firstUpload(b) || a.localeCompare(b))[0] : "";
+      const rates = all.filter((r) => S(r.stateName) === ref && new Date(r.effectiveFrom) <= today).sort((a, b) => +new Date(b.effectiveFrom) - +new Date(a.effectiveFrom));
+      if (rates[0] && typeof rates[0].ptr === "number") await ProductModel.updateMany({ tenantSlug: tenant, code }, { $set: { rate: rates[0].ptr, rateState: ref || null } });
     }
     return res;
   }

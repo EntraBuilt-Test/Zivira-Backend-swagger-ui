@@ -9,6 +9,8 @@ const productSchema = new Schema(
     saleUnit: { type: String, trim: true, default: null },
     category: { type: String, required: true, trim: true },
     group: { type: String, trim: true, default: null },
+    // Round 59 -- the state whose rate Product.rate currently reflects (state with the most active field force among the states that have a rate)
+    rateState: { type: String, trim: true, default: null },
     subDivision: { type: String, trim: true, index: true },
     division: { type: String, trim: true, index: true },
     productName: { type: String, trim: true },

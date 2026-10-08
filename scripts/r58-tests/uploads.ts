@@ -36,7 +36,7 @@ let seq = 5000;
   return Promise.resolve(Array.isArray(arg) ? made : made[0]);
 };
 const applyUpdate = (docs: any[], u: any) => { for (const d of docs) { Object.assign(d, u.$set || {}); } };
-(mongoose.Model as any).updateOne = function (f: any, u: any) { const d = coll(this).filter(sift(f))[0]; if (d) applyUpdate([d], u); return Promise.resolve({}); };
+(mongoose.Model as any).updateOne = function (f: any, u: any, o: any = {}) { const d = coll(this).filter(sift(f))[0]; if (d) applyUpdate([d], u); else if (o.upsert) coll(this).push({ _id: asId(seq++), ...f, ...(u.$set || {}) }); return Promise.resolve({}); };
 (mongoose.Model as any).updateMany = function (f: any, u: any) { applyUpdate(coll(this).filter(sift(f)), u); return Promise.resolve({}); };
 (Q.prototype as any).limit = function (n: number) { this.docs = this.docs.slice(0, n); return this; };
 (mongoose.Model as any).deleteMany = function (f: any = {}) { const c = coll(this); const hit = new Set(c.filter(sift(f))); const keep = c.filter((d) => !hit.has(d)); c.length = 0; c.push(...keep); return Promise.resolve({ deletedCount: hit.size }); };
@@ -64,12 +64,17 @@ store["inputMaster"] = ["Visual Aid", "Prescription Pad", "Leave Behind Card"].m
 store["subdivisions"] = [{ tenantSlug: T, division: "Zivira Labs Pvt Ltd", subdivisionName: "Astra", status: "ACTIVE" }];
 store["productBrands"] = [{ tenantSlug: T, brandName: "BEPIREX", status: "ACTIVE" }, { tenantSlug: T, brandName: "STRIOS", status: "ACTIVE" }];
 
+// ── Round 59: slide files live in GridFS in production; the test swaps in an in-memory store with the same interface
+const { setSlideStore } = await import("../../src/utils/slide-store.js");
+const slideFiles = new Map<string, Buffer>(); let slideSeq = 1;
+setSlideStore({ put: async (buf) => { const id = `f${slideSeq++}`; slideFiles.set(id, Buffer.from(buf)); return id; }, read: async (id) => { const b = slideFiles.get(id); if (!b) throw new Error("missing"); return b; }, remove: async (id) => { slideFiles.delete(id); } });
+
 // ── real HTTP server around the real router (multer parses the real multipart bodies)
 const { uploadToolsRouter } = await import("../../src/routes/upload-tools.routes.js");
 const { HttpError } = await import("../../src/http/errors.js");
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-app.use((req: any, _res, next) => { req.auth = { tenantSlug: T, sub: "000000000000000000000001" }; next(); });
+app.use((req: any, _res, next) => { req.auth = { tenantSlug: T, sub: String(req.headers["x-user"] || "000000000000000000000001") }; next(); });
 app.use("/api/company/upload-tools", uploadToolsRouter);
 app.use((err: any, _req: any, res: any, _next: any) => { res.status(err instanceof HttpError ? err.statusCode : err?.name === "ZodError" ? 400 : err?.code === "LIMIT_FILE_SIZE" ? 413 : 500).json({ error: err.message }); });
 const server = http.createServer(app); await new Promise<void>((r) => server.listen(0, r));
@@ -120,12 +125,23 @@ assert.equal(bad.outcome, "Sheet Name Must be 'UPL_SalesForce'"); assert.equal(b
 const named = XLSX.read(demo("06_Upload_SalesforceUpload.xlsx"), { type: "buffer" }); named.SheetNames = ["UPL_SalesForce"]; named.Sheets = { UPL_SalesForce: named.Sheets[Object.keys(named.Sheets)[0]] };
 r = await imp("field-force", XLSX.write(named, { type: "buffer", bookType: "xlsx" }) as Buffer); ok(r, 71); assert.equal(r.updated, 71); assert.ok(!r.warnings.some((w: any) => /sheet is named/.test(w.reason)));   // legacy sheet name: no note, idempotent
 
+{ const sfp = await imp("field-force", xl(["Employee Code", "Name", "Designation", "HQ", "Reporting Manager Name"], [["T001", "Test Rep One", "BE", "SURAT", "test  manager.  two"], ["T002", "TEST MANAGER TWO", "ABM", "SURAT", ""], ["T003", "Test Rep Three", "BE", "SURAT", "Nobody Known"]]), {}, "t.xlsx");
+  assert.equal(sfp.failed, 0); assert.equal(store["employees"].find((e) => e.employeeCode === "T001").reportingManager, "T002", "manager defined LATER in the same file, spacing/case/punctuation-insensitive");
+  assert.ok(!store["employees"].find((e) => e.employeeCode === "T003").reportingManager); assert.ok(sfp.warnings.some((w: any) => /Nobody Known/.test(w.reason)), "a truly unknown manager imports with a warning");
+  store["employees"] = store["employees"].filter((e) => !/^T00/.test(e.employeeCode)); }
+
 // ═══ 8) Product (demo 08) and its reference tables (distinct values from the real master)
 r = await imp("product", demo("08_Upload_ProductUpload.xlsx")); ok(r, 28); assert.equal(r.inserted, 28);
 const ref1 = (await (await fetch(`${base}/product/reference`)).json() as any).data;
 assert.equal(ref1.source, "product-master"); assert.equal(ref1.brands.length, new Set(store["products"].map((p) => p.brandName)).size); assert.ok(ref1.brands.includes("STRIOS"));
-store["products"][0].category = "NSAID"; store["products"][0].group = "AI"; store["products"][1].category = "NSAID"; store["products"][1].group = "AA";
-const ref2 = (await (await fetch(`${base}/product/reference`)).json() as any).data; assert.deepEqual(ref2.categories, ["NSAID"]); assert.deepEqual(ref2.groups, ["AA", "AI"]);
+// Round 59: the demo Product file now carries real Category / Group values (legacy lists), so the reference tables come from the master
+assert.deepEqual(ref1.categories, [...new Set(store["products"].filter((p) => p.category).map((p) => p.category))].sort((a: string, b: string) => a.localeCompare(b)));
+assert.ok(ref1.categories.length >= 7 && ref1.groups.length >= 6 && store["products"].filter((p) => p.code?.startsWith("ZV") && p.category && p.group).length === 28);
+// each list falls back to the legacy list on its own when the master has no values for it
+{ const keep = store["products"].map((p) => [p.category, p.group]); store["products"].forEach((p) => { p.category = ""; p.group = null; });
+  const mixed = (await (await fetch(`${base}/product/reference`)).json() as any).data;
+  assert.equal(mixed.source, "mixed"); assert.deepEqual(mixed.sources, { categories: "legacy-fallback", groups: "legacy-fallback", brands: "product-master" }); assert.equal(mixed.categories.length, 10); assert.equal(mixed.groups.length, 8); assert.ok(mixed.brands.includes("STRIOS"));
+  store["products"].forEach((p, i) => { p.category = keep[i][0]; p.group = keep[i][1]; }); }
 // Group / Category columns import
 r = await imp("product", xl(["Product Code", "Product Name", "Group", "Category", "Brand", "Pack", "Division", "Active"], [["ZVX1", "NEWPROD", "AIC", "ANTI-INFECTIVE", "NEWB", "10ml", "Zivira Labs Pvt Ltd", "Yes"]]), {}, "p.xlsx");
 ok(r, 1); const np = store["products"].find((p) => p.code === "ZVX1"); assert.deepEqual([np.group, np.category, np.brandName], ["AIC", "ANTI-INFECTIVE", "NEWB"]);
@@ -139,11 +155,19 @@ assert.equal(store["productRates"].length, 56); assert.deepEqual([...new Set(sto
 r = await imp("product-rate", demo("09_Upload_ProductRate_DEMO_VALUES.xlsx"), { state: "Gujarat" }); assert.equal(r.updated, 28); assert.equal(store["productRates"].length, 56);   // idempotent per state
 const tws = (await tplOf("product-rate", "?state=Gujarat")).getWorksheet("UPL_Product_Rate")!; assert.equal(tws.rowCount - 1, 29);   // every active product (28 demo + ZVX1), rates pre-filled
 assert.deepEqual((tws.getRow(2).values as any[]).slice(1, 6), ["ZV001", "BEPIREX", 110, 99, 137.5]);
-assert.equal(store["products"].find((p) => p.code === "ZV001").rate, 110);                                      // flat Product.rate follows the uploaded state's latest effective PTR
+assert.equal(store["products"].find((p) => p.code === "ZV001").rate, 110);                                      // no field force has a state yet -> tie -> first state
+// Round 59: Product.rate = the rate of the state with the most ACTIVE field force (tie: the state uploaded first)
+{ const act = store["employees"].filter((e) => e.status === "ACTIVE"); act.slice(0, 3).forEach((e) => (e.state = "Kerala")); act.slice(3, 4).forEach((e) => (e.state = "Gujarat"));
+  await imp("product-rate", xl(["Product Code", "PTR", "Effective From"], [["ZV001", 200, "02/10/2026"]]), { state: "Kerala" });
+  const z = store["products"].find((p) => p.code === "ZV001"); assert.equal(z.rate, 200); assert.equal(z.rateState, "Kerala");           // Kerala has 3 field force vs Gujarat 1
+  act.slice(4, 9).forEach((e) => (e.state = "Gujarat"));                                                                                       // Gujarat now has 6
+  await imp("product-rate", xl(["Product Code", "PTR", "Effective From"], [["ZV001", 110, "01/10/2026"]]), { state: "Gujarat" });
+  assert.equal(z.rate, 110); assert.equal(z.rateState, "Gujarat");
+  assert.equal(store["productRates"].filter((x) => x.productCode === "ZV001" && x.stateName === "Kerala").length, 2); }               // per-state rows untouched
 
-// ═══ 7) Stockist (demo 07): 88 rows have no ERP Code, the rest map to employees the demo Salesforce file does not contain
-r = await imp("stockist", demo("07_Upload_StockistUpload.xlsx")); ok(r, 231, 184); assert.equal(r.inserted, 47); assert.equal(r.uploaded, true);
-const stRows = unList(r); assert.equal(stRows.length, 184); assert.ok(stRows.every((x: any) => String(x.Reason).length > 3));
+// ═══ 7) Stockist (demo 07, Round 59): every row has an ERP Code and a real employee code from the Salesforce demo -> imports fully
+r = await imp("stockist", demo("07_Upload_StockistUpload.xlsx")); ok(r, 73, 0); assert.equal(r.uploaded, true); assert.equal(r.outcome, "Successful"); assert.equal(r.notUploaded, null);
+{ const erps = new Set(rowsOf(demo("07_Upload_StockistUpload.xlsx")).map((x) => String(x["ERP Code"]))); assert.equal(r.inserted, erps.size); assert.equal(r.inserted + r.updated, 73); assert.equal(erps.size, 73); }
 assert.ok(store["stockists"].every((x) => x.hqName), "HQ defaults to the mapped employee's HQ");
 
 // ═══ 1) Listed Doctor (demo 01, 66-col as-is) + Generate Excel round trip + Deactivate Existing
@@ -157,6 +181,17 @@ const genWb = new ExcelJS.Workbook(); await genWb.xlsx.load(Buffer.from(await ge
 assert.deepEqual(header(gws), ["SI No", "User Name", "Listed Doctor Name", "Territory/Cluster(For DCR)", "City Name(For Expense)", "Speciality", "Category", "Qualification", "Class", "Territory Type", "Address", "Hospital Name", "EMail ID", "Mobile No", "Gender", "State", "Fax", "Others 1"]);
 assert.equal(yellow(gws).length, 15);
 assert.equal((await fetch(`${base}/listed-doctor/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ columns: ["Nope"] }) })).status, 400);
+// Round 59: the generated state is kept on the server per company user; "Delete and Generate New Excel" clears it
+{ const g1 = (await (await fetch(`${base}/listed-doctor/generated`)).json() as any).data; assert.deepEqual(g1.columns, ["Hospital Name", "Fax", "Others 1"]); assert.ok(g1.generatedAt);
+  assert.equal((await (await fetch(`${base}/listed-doctor/generated`, { headers: { "x-user": "000000000000000000000002" } })).json() as any).data, null, "another user has no generated state");
+  assert.equal((await (await fetch(`${base}/chemist/generated`)).json() as any).data, null, "per tool");
+  assert.equal((await fetch(`${base}/listed-doctor/generated`, { method: "DELETE" })).status, 200); assert.equal((await (await fetch(`${base}/listed-doctor/generated`)).json() as any).data, null);
+  assert.equal((await fetch(`${base}/target/generated`)).status, 404); }
+// Round 59: "Speciality / Category" popup = real distinct values with counts from the doctor master
+{ const rf = (await (await fetch(`${base}/listed-doctor/reference`)).json() as any).data; const act = store["doctors"].filter((d) => d.status === "ACTIVE");
+  assert.equal(rf.total, act.length); assert.equal(rf.specialities.reduce((a: number, x: any) => a + x.count, 0), act.length); assert.ok(rf.specialities.every((x: any) => x.value && x.count > 0));
+  assert.deepEqual(rf.specialities.slice(0, 1), [{ value: rf.specialities[0].value, count: Math.max(...rf.specialities.map((x: any) => x.count)) }]);
+  assert.equal(rf.categories.reduce((a: number, x: any) => a + x.count, 0), act.filter((d) => d.doctorCategory).length); }
 const emps = store["employees"]; const byNameCount = (n: string) => emps.filter((e) => e.name.toLowerCase() === n.toLowerCase()).length;
 const uniqueEmp = emps.find((e) => byNameCount(e.name) === 1)!;
 gws.addRow([1, emps[0].employeeCode, "Dr Gen One", "T-GEN", "Calicut", "OPT", "CORE", "MBBS", "A", "HQ", "1 Road", "Gen Hospital", "gen1@x.com", "9876543210", "Male", "Kerala", "0471-2", "note1"]);
@@ -170,6 +205,7 @@ assert.equal(store["doctors"].filter((d) => d.status === "ACTIVE").length, 2); a
 
 // ═══ 2) Chemists (demo 02 as-is) + generated format + Deactivate Existing
 r = await imp("chemist", demo("02_Customer_ChemistsUpload.xlsx")); ok(r, 287, 1); assert.equal(r.inserted, 286);
+{ const rf = (await (await fetch(`${base}/chemist/reference`)).json() as any).data; assert.equal(rf.total, 286); assert.ok(Array.isArray(rf.categories) && Array.isArray(rf.classes)); }
 const ccols = (await (await fetch(`${base}/chemist/columns`)).json() as any).data; assert.equal(ccols.length, 24); assert.deepEqual(ccols.filter((c: any) => c.mandatory).map((c: any) => c.label), ["SI No", "User Name", "Chemist Name", "Territory"]);
 const cg = await fetch(`${base}/chemist/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ columns: ["Category", "Contact person", "Contact Person Designation", "Shop landline No", "Chemist ERP Code", "Others 2"] }) });
 const cwb = new ExcelJS.Workbook(); await cwb.xlsx.load(Buffer.from(await cg.arrayBuffer()) as any); const cws = cwb.worksheets[0];
@@ -241,19 +277,28 @@ const pdf = (n: number) => Buffer.from(`%PDF-1.4\n${Array.from({ length: n }, ()
 const PF = (name: string, buf: Buffer) => ({ name, field: "files", buf, type: "application/pdf" });
 let up = await fetch(`${base}/slides/upload`, { method: "POST", body: form({ subDivision: "Astra", brands: "BEPIREX|STRIOS" }, [PF("one.pdf", pdf(3)), PF("two.pdf", pdf(5))]) });
 assert.equal(up.status, 201); const upd = (await up.json() as any).data; assert.equal(upd.saved.length, 4);                // 2 files x 2 brands
-const sizes = pdf(3).length * 2 + pdf(5).length * 2; assert.equal(upd.usage.consumedBytes, sizes);
+const sizes = pdf(3).length + pdf(5).length; assert.equal(upd.usage.consumedBytes, sizes, "each stored file counts once, not once per brand");
+assert.equal(slideFiles.size, 2, "ONE stored copy per file"); assert.equal(store["slideUploadEDetailing"].length, 4, "one metadata row per brand"); assert.ok(store["slideUploadEDetailing"].every((x) => x.fileRef && !x.fileData));
+assert.equal(new Set(store["slideUploadEDetailing"].filter((x) => x.fileName === "one.pdf").map((x) => x.fileRef)).size, 1, "both brand rows reference the same stored file");
 let sl = (await (await fetch(`${base}/slides/list?brands=BEPIREX`)).json() as any).data; assert.deepEqual(sl.map((x: any) => [x.fileName, x.pages, x.brand, x.subDivision]).sort(), [["one.pdf", 3, "BEPIREX", "Astra"], ["two.pdf", 5, "BEPIREX", "Astra"]]);
 assert.equal((await (await fetch(`${base}/slides/list?brands=BEPIREX|STRIOS`)).json() as any).data.length, 4);
 const dl = await get(`/slides/${sl.find((x: any) => x.fileName === "one.pdf").id}/download`); assert.deepEqual(dl.buf, pdf(3));
 up = await fetch(`${base}/slides/upload`, { method: "POST", body: form({ subDivision: "Astra", brands: "BEPIREX" }, [PF("one.pdf", pdf(4))]) }); assert.equal(up.status, 201);   // same file name + brand replaces, not duplicates
 assert.equal((await (await fetch(`${base}/slides/list?brands=BEPIREX`)).json() as any).data.length, 2);
+assert.equal(slideFiles.size, 3, "the replaced BEPIREX row now points at the new file; the old one is still used by the STRIOS row");
 assert.equal((await fetch(`${base}/slides/upload`, { method: "POST", body: form({ subDivision: "Astra" }, [PF("x.pdf", pdf(1))]) })).status, 400);                     // brand required
 assert.equal((await fetch(`${base}/slides/upload`, { method: "POST", body: form({ brands: "BEPIREX" }, []) })).status, 400);                                          // file required
 assert.equal((await fetch(`${base}/slides/upload`, { method: "POST", body: form({ brands: "BEPIREX" }, [PF("big.pdf", Buffer.alloc(10 * 1024 * 1024 + 1))]) })).status, 413);   // 10 MB per-file cap
-store["slideUploadEDetailing"].push({ tenantSlug: "demo", fileName: "huge", fileData: "x", fileSize: Math.floor(5 * 1024 ** 3 * 1.02) - 50 });                       // storage nearly full
+store["slideUploadEDetailing"].push({ tenantSlug: "demo", fileName: "huge", fileData: "x", fileSize: Math.floor(5 * 1024 ** 3 * 1.02) - 50 });                       // storage nearly full (a pre-Round-59 base64 row)
 assert.equal((await fetch(`${base}/slides/upload`, { method: "POST", body: form({ brands: "BEPIREX" }, [PF("late.pdf", pdf(9))]) })).status, 413);
 store["slideUploadEDetailing"].pop();
 const del = await fetch(`${base}/slides/${sl[0].id}`, { method: "DELETE" }); assert.equal(del.status, 200); assert.equal((await (await fetch(`${base}/slides/list?brands=BEPIREX`)).json() as any).data.length, 1);
+// deleting the last row that references a stored file removes the file; a legacy base64 row is still served
+{ const left = (await (await fetch(`${base}/slides/list?brands=STRIOS`)).json() as any).data; const before = slideFiles.size;
+  for (const x of left) await fetch(`${base}/slides/${x.id}`, { method: "DELETE" });
+  assert.ok(slideFiles.size < before, "stored files are released when no row references them");
+  store["slideUploadEDetailing"].push({ _id: asId(77777), tenantSlug: "demo", fileName: "legacy.pdf", brand: "BEPIREX", subDivision: "Astra", fileData: Buffer.from("legacy-bytes").toString("base64"), mimeType: "application/pdf", fileSize: 12 });
+  const lg = await get(`/slides/${asId(77777)}/download`); assert.equal(lg.buf.toString(), "legacy-bytes"); }
 
 console.log("R58 upload tests passed");
 server.close();

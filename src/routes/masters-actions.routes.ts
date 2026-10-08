@@ -18,6 +18,7 @@ import { MailAutoRuleModel } from "../models/mail-auto-rule.model.js";
 import { DealerModel } from "../models/dealer.model.js";
 import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { approvalLabel } from "../utils/approval-trail.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
 import { ProductModel } from "../models/product.model.js";
 import { computeComplianceRows } from "../utils/compliance.js";
@@ -1090,8 +1091,15 @@ mastersActionsRouter.get(
         toDate: r.toDate,
         leaveInformation: "Prior",
         type: r.leaveType,
-        status: r.status === "APPROVED" ? "Approved" : r.status === "REJECTED" ? "Rejected" : "Pending",
-        approvedBy: r.approvedBy || "-",
+        status: r.status === "APPROVED" ? "Approved" : r.status === "REJECTED" ? "Rejected" : r.status === "CANCELLED" ? "Cancelled" : "Pending",
+        statusLabel: approvalLabel(r),
+        approvedBy: r.approval?.approvedBy?.name || r.approvedBy || "-",
+        approvedByRole: r.approval?.approvedBy?.role || null,
+        approvedAt: r.approval?.approvedAt || r.approvedAt || null,
+        approvalHistory: r.approvalHistory || [],
+        cancelledBy: r.cancelledBy || null,
+        cancelledAt: r.cancelledAt || null,
+        cancelReason: r.cancelReason || null,
         reason: r.reason || "-"
       };
     });

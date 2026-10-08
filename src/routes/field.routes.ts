@@ -18,6 +18,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { audit } from "../utils/audit.js";
 import { notifyManager } from "../utils/notify.js";
+import { readSlideBuffer } from "../utils/slide-store.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { createTourPlanWithRetry } from "../utils/tour-plan-id.js";
 import { createExpenseClaimWithRetry } from "../utils/expense-claim-id.js";
@@ -575,6 +576,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
   }
   await mirrorApprovalRow("approvalDcr", tenantSlug, {
     sfName: employee.name,
+    sourceId: String(dcr._id),
     activityDate: dcr.visitDate,
     workType: body.hospitalClinic ? "Field Work" : "Admin Work",
     hospitalClinic: body.hospitalClinic ?? "",
@@ -799,6 +801,7 @@ fieldRouter.post("/tour-plans", asyncHandler(async (req, res) => {
   await audit("FIELD_TOUR_PLAN_SUBMITTED", "TourPlan", String(created._id), { tenantSlug, employeeCode: employee.employeeCode, tpId: created.tpId });
   await mirrorApprovalRow("approvalTp", tenantSlug, {
     sfName: employee.name,
+    sourceId: String(created._id),
     tpId: created.tpId,
     month: created.month,
     targetLocations: body.locations.map((l) => `${l.town} (${l.area})`).filter(Boolean).join(", "),
@@ -1188,6 +1191,7 @@ fieldRouter.post("/leave-applications", asyncHandler(async (req, res) => {
   await audit("FIELD_LEAVE_APPLIED", "LeaveApplication", String(row._id), { tenantSlug, employeeCode: employee.employeeCode, days: body.days, reason: leaveType });
   await mirrorApprovalRow("approvalLeave", tenantSlug, {
     fieldForceName: employee.name,
+    sourceId: String(row._id),
     fromDate: from.toISOString().slice(0, 10),
     toDate: to.toISOString().slice(0, 10),
     leaveDays: body.days,
@@ -1226,8 +1230,8 @@ fieldRouter.delete("/leave-applications/:id", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const leave = await LeaveApplicationModel.findOne({ _id: req.params.id, tenantSlug, employeeCode: employee.employeeCode });
   if (!leave) throw new HttpError(404, "Leave request not found");
-  if (leave.status === "APPROVED") {
-    throw new HttpError(400, "This leave is already approved -- ask your admin to cancel it via Leave Cancellation (After Approval) instead of deleting it here.");
+  if (leave.status === "APPROVED" || leave.status === "CANCELLED") {
+    throw new HttpError(400, leave.status === "CANCELLED" ? "A cancelled leave is kept for the record and cannot be deleted." : "This leave is already approved -- ask your admin to cancel it via Leave Cancellation (After Approval) instead of deleting it here.");
   }
   await LeaveApplicationModel.deleteOne({ _id: leave._id });
   try {
@@ -1301,7 +1305,7 @@ function nameMatchesEmployee(name: unknown, employee: { name: string }) {
 }
 
 function omitFileData(row: Record<string, unknown>) {
-  const { _id, fileData, ...rest } = row;
+  const { _id, fileData, fileRef, ...rest } = row;
   return { id: String(_id), ...rest };
 }
 
@@ -1335,8 +1339,8 @@ fieldRouter.get("/slides/:id/download", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const Model = getMasterModel("slideUploadEDetailing");
   const row = (await Model.findOne({ _id: req.params.id, tenantSlug }).lean()) as Record<string, unknown> | null;
-  if (!row || !row.fileData) throw new HttpError(404, "Slide file not found");
-  const buffer = Buffer.from(row.fileData as string, "base64");
+  const buffer = row ? await readSlideBuffer(row) : null;      // GridFS (fileRef) or a pre-Round-59 base64 row
+  if (!row || !buffer) throw new HttpError(404, "Slide file not found");
   res.setHeader("Content-Type", (row.mimeType as string) || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(String(row.fileName ?? "slide"))}"`);
   res.send(buffer);

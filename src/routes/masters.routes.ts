@@ -10,6 +10,7 @@ import { EmployeeModel } from "../models/employee.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { ensureEmployeeLoginAccount } from "../utils/credentials.js";
 import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
+import { adminActor, afterAdminMirrorDecision, cancelLeaveFromMasterRow } from "../utils/approval-trail.js";
 import { syncDoctorDerivedFields } from "../utils/doctor-sync.js";
 
 export const mastersRouter = Router();
@@ -447,6 +448,18 @@ mastersRouter.put(
 
     validateOptionFields(config, update);
 
+    // Round 59 -- "Cancel Leave" on the Leave Cancellation (After Approval) screen cancels the REAL leave application (status CANCELLED,
+    // who/when/why, history, notifications); the master row is updated by the same call.
+    if (config.key === "leaveCancellation" && update.status === "Cancelled") {
+      const row = (await Model.findOne({ _id: req.params.id, tenantSlug }).lean()) as any;
+      if (!row) throw new HttpError(404, `${config.title} record not found`);
+      if (String(row.status ?? "Active") === "Cancelled") throw new HttpError(409, "This leave is already cancelled");
+      await cancelLeaveFromMasterRow(tenantSlug!, row, await adminActor(req), typeof req.body?.reason === "string" ? req.body.reason : "");
+      const after = await Model.findOne({ _id: req.params.id, tenantSlug });
+      res.json({ data: serializeDocument(after) });
+      return;
+    }
+
     for (const uf of config.uniqueFields ?? []) {
       if (update[uf] === undefined || update[uf] === null || update[uf] === "") continue;
       const dupe = await Model.findOne({ tenantSlug, [uf]: update[uf], _id: { $ne: req.params.id } });
@@ -485,14 +498,19 @@ mastersRouter.put(
     // reason is fabricated when none was given -- it's stored as "".
     if (config.uiKind === "approvalQueue" && (update.approvalStatus === "Approved" || update.approvalStatus === "Rejected")) {
       const row = updated.toObject() as any;
+      const actor = await adminActor(req);
+      const why = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
       await ApprovalAuditLogModel.create({
         tenantSlug, masterKey: config.key, recordId: String(updated._id),
         sfName: row.sfName || row.fieldForceName || "",
         activityDate: row.activityDate || null,
         action: update.approvalStatus,
-        reason: typeof req.body?.reason === "string" ? req.body.reason.trim() : "",
-        actedBy: "Admin"
+        reason: why,
+        actedBy: actor.name, actedById: actor.id, actedByRole: "ADMIN"
       });
+      // Round 59 -- record who decided on the row, carry the decision to the real DCR / Tour Plan / Leave, and notify (field user + manager chain).
+      try { await afterAdminMirrorDecision({ tenantSlug: tenantSlug!, masterKey: config.key, mirror: row, action: update.approvalStatus as "Approved" | "Rejected", actor, remarks: why }); }
+      catch (err) { console.error("[approval-trail] admin decision follow-up failed:", err); }
     }
 
     await audit(`MASTER_${config.key.toUpperCase()}_UPDATED`, config.key, String(updated._id), { tenantSlug });
@@ -679,7 +697,8 @@ async function setApprovalStatus(
   tenantSlug: string,
   id: string,
   status: "Approved" | "Rejected",
-  reason?: string
+  reason?: string,
+  req?: unknown
 ) {
   const Model = getMasterModel(config.key);
   const updated = await Model.findOneAndUpdate(
@@ -690,14 +709,17 @@ async function setApprovalStatus(
   if (!updated) throw new HttpError(404, `${config.title} record not found`);
   // Round 36 Item B -- same real audit row as the single-row PUT path.
   const row = updated.toObject() as any;
+  const actor = await adminActor(req);
   await ApprovalAuditLogModel.create({
     tenantSlug, masterKey: config.key, recordId: String(updated._id),
     sfName: row.sfName || row.fieldForceName || "",
     activityDate: row.activityDate || null,
     action: status,
     reason: (reason || "").trim(),
-    actedBy: "Admin"
+    actedBy: actor.name, actedById: actor.id, actedByRole: "ADMIN"
   });
+  try { await afterAdminMirrorDecision({ tenantSlug, masterKey: config.key, mirror: row, action: status, actor, remarks: (reason || "").trim() }); }
+  catch (err) { console.error("[approval-trail] admin decision follow-up failed:", err); }
   await audit(`MASTER_${config.key.toUpperCase()}_UPDATED`, config.key, String(updated._id), { tenantSlug, approvalStatus: status });
   await broadcastNotice({
     tenantSlug,
@@ -772,7 +794,7 @@ mastersRouter.post(
     const results: { id: string; ok: boolean; error?: string }[] = [];
     for (const id of ids) {
       try {
-        await setApprovalStatus(config, tenantSlug, id, status, reason);
+        await setApprovalStatus(config, tenantSlug, id, status, reason, req);
         results.push({ id, ok: true });
       } catch (err) {
         results.push({ id, ok: false, error: err instanceof Error ? err.message : "Failed to update" });

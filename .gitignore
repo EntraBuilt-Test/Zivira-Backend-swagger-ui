@@ -41,3 +41,5 @@ node_modules/
 *.db
 *.sqlite
 *.sqlite3
+# TypeScript incremental build cache
+*.tsbuildinfo

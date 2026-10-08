@@ -31,7 +31,13 @@ const noticeSchema = new Schema(
     // (e.g. Tour Plan voided-by-another-manager alert, Section 12.1) instead
     // of the whole audience. Left blank for normal broadcast notices.
     targetEmployeeCode: { type: String, trim: true, default: null },
-    readBy: { type: [String], default: [] }
+    readBy: { type: [String], default: [] },
+    // Round 59 -- approval / cancellation notifications: machine-readable type, the record they refer to, a portal deep link, and a dedupe key
+    type: { type: String, trim: true, default: null },
+    refKind: { type: String, trim: true, default: null },
+    refId: { type: String, trim: true, default: null },
+    link: { type: String, trim: true, default: null },
+    dedupeKey: { type: String, trim: true, default: null, index: true }
   },
   { timestamps: true }
 );

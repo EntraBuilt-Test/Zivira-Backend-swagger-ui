@@ -13,9 +13,11 @@ const approvalAuditLogSchema = new Schema(
     recordId: { type: String, required: true, trim: true, index: true }, // the mirror row's _id
     sfName: { type: String, trim: true, default: "" },
     activityDate: { type: Date, default: null },
-    action: { type: String, enum: ["Approved", "Rejected"], required: true },
+    action: { type: String, enum: ["Approved", "Rejected", "Cancelled"], required: true },
     reason: { type: String, trim: true, default: "" },
     actedBy: { type: String, trim: true, default: "Admin" },
+    actedById: { type: String, trim: true, default: "" },
+    actedByRole: { type: String, enum: ["ADMIN", "MANAGER", ""], default: "" },
     actedAt: { type: Date, default: Date.now, index: true }
   },
   { timestamps: true }

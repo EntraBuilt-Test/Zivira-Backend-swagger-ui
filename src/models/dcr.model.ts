@@ -1,3 +1,4 @@
+import { approvalTrailFields } from "./approval-trail.fragment.js";
 import mongoose, { Schema } from "mongoose";
 
 // PRD 12.3A — Drug Count: structured samples, one row per product per visit.
@@ -144,7 +145,8 @@ const dcrSchema = new Schema(
     status:          { type: String, enum: ["DRAFT", "SUBMITTED", "MANAGER_APPROVED", "APPROVED", "REJECTED", "AUTO_APPROVED"], default: "SUBMITTED", index: true },
     managerApprovedBy:   { type: String },
     managerApprovedAt:   { type: Date },
-    adminVisibleAt:      { type: Date }
+    adminVisibleAt:      { type: Date },
+    ...approvalTrailFields
   },
   { timestamps: true }
 );

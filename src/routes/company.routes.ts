@@ -83,6 +83,7 @@ import { SalaryStructureModel } from "../models/salary-structure.model.js";
 import { PayrollRunModel } from "../models/payroll-run.model.js";
 import { OnboardingModel } from "../models/onboarding.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { adminActor, adminDecideLeave, cancelLeave } from "../utils/approval-trail.js";
 import { LoanModel } from "../models/loan.model.js";
 import { ArrearModel } from "../models/arrear.model.js";
 import { StatutoryRuleModel } from "../models/statutory-rule.model.js";
@@ -4519,12 +4520,8 @@ companyRouter.patch(
   "/leave/:id/approve",
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
-    const row = await LeaveApplicationModel.findOne({ _id: req.params.id, tenantSlug });
-    if (!row) throw new HttpError(404, "Leave application not found");
-    row.status = "APPROVED";
-    row.approvedBy = req.auth!.sub ?? null;
-    row.approvedAt = new Date();
-    await row.save();
+    // Round 59 -- records who approved (Admin), mirrors the decision onto the admin approval row, notifies the field user and manager chain
+    const row = await adminDecideLeave(tenantSlug, req.params.id, "Approved", await adminActor(req), "");
     await audit("LEAVE_APPROVED", "LeaveApplication", String(row._id), { tenantSlug, employeeCode: row.employeeCode });
     res.json({ data: serializeDocument(row) });
   })
@@ -4535,16 +4532,21 @@ companyRouter.patch(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const { reason } = z.object({ reason: z.string().optional() }).parse(req.body ?? {});
-    const row = await LeaveApplicationModel.findOne({ _id: req.params.id, tenantSlug });
-    if (!row) throw new HttpError(404, "Leave application not found");
-    row.status = "REJECTED";
-    row.rejectReason = reason ?? null;
-    await row.save();
-    // If this application spent a Comp-Off credit, give it back on rejection.
-    if (row.isCompOff && row.compOffId) {
-      await CompOffModel.updateOne({ _id: row.compOffId, tenantSlug }, { status: "AVAILABLE", usedInLeaveId: null });
-    }
+    // Round 59 -- same trail; a Comp-Off credit spent by the application is given back inside adminDecideLeave
+    const row = await adminDecideLeave(tenantSlug, req.params.id, "Rejected", await adminActor(req), reason ?? "");
     await audit("LEAVE_REJECTED", "LeaveApplication", String(row._id), { tenantSlug, employeeCode: row.employeeCode });
+    res.json({ data: serializeDocument(row) });
+  })
+);
+
+// Round 59 -- cancel an APPROVED leave (Admin). Body { reason } is required. 404 unknown, 409 already cancelled, 400 not approved.
+companyRouter.post(
+  "/leave/:id/cancel",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const { reason } = z.object({ reason: z.string().optional() }).parse(req.body ?? {});
+    const row = await cancelLeave(tenantSlug, req.params.id, await adminActor(req), reason ?? "");
+    await audit("LEAVE_CANCELLED", "LeaveApplication", String(row._id), { tenantSlug, employeeCode: row.employeeCode, reason });
     res.json({ data: serializeDocument(row) });
   })
 );
