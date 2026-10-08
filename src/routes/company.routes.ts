@@ -1366,8 +1366,8 @@ companyRouter.get(
     }).lean();
 
     const combined = [
-      ...(actedLog as any[]).map((a) => ({ sfName: a.sfName, activityDate: a.activityDate, status: a.action, workType: "", reason: a.reason || "", actedAt: a.actedAt })),
-      ...(legacyFallback as any[]).map((a) => ({ sfName: a.sfName, activityDate: a.activityDate, status: a.approvalStatus, workType: a.workType || "", reason: "", actedAt: a.updatedAt }))
+      ...(actedLog as any[]).map((a) => ({ sfName: a.sfName, activityDate: a.activityDate, status: a.action, workType: "", reason: a.reason || "", actedAt: a.actedAt, actedBy: a.actedBy || "", actedByRole: a.actedByRole || "" })),
+      ...(legacyFallback as any[]).map((a) => ({ sfName: a.sfName, activityDate: a.activityDate, status: a.approvalStatus, workType: a.workType || "", reason: "", actedAt: a.updatedAt, actedBy: "", actedByRole: "" }))
     ].sort((a, b) => new Date(a.actedAt).getTime() - new Date(b.actedAt).getTime());
 
     const byName = await resolveEmployeesByName(tenantSlug, combined.map((a) => a.sfName));
@@ -1381,7 +1381,10 @@ companyRouter.get(
         actionDate: a.activityDate || null,
         workType: a.workType || "",
         reason: a.reason || "",
-        actedAt: a.actedAt || null
+        actedAt: a.actedAt || null,
+        actedBy: a.actedBy || "",
+        actedByRole: a.actedByRole || "",
+        label: a.actedByRole === "ADMIN" ? `${a.status === "Approved" ? "Approved" : "Rejected"} by Admin` : a.actedByRole === "MANAGER" ? `${a.status === "Approved" ? "Approved" : "Rejected"} by Manager${a.actedBy ? ` (${a.actedBy})` : ""}` : (a.status === "Approved" ? "Approved" : "Rejected")
       };
     });
     res.json({ data, month, usingRealAuditLog: actedLog.length > 0 });
@@ -2071,7 +2074,11 @@ companyRouter.get(
   "/notices",
   asyncHandler(async (req, res) => {
     const { NoticeModel } = await import("../models/notice.model.js");
-    const notices = await NoticeModel.find({ tenantSlug: req.auth!.tenantSlug })
+    const notices = await NoticeModel.find({
+      tenantSlug: req.auth!.tenantSlug,
+      // Round 59 -- system notices addressed to one MR / one manager belong in THEIR bells, not the admin bell.
+      $nor: [{ postedBy: "system", audience: { $in: ["MR", "MANAGER"] } }]
+    })
       .sort({ createdAt: -1 })
       .limit(50);
     res.json({ data: notices.map(serializeDocument) });
