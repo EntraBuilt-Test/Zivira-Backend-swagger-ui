@@ -115,10 +115,17 @@ const unList = (r: any) => { assert.ok(r.notUploaded, "notUploaded list"); const
 // ═══ 6) Salesforce (demo 06 as-is), wrong sheet name, Deactivate Existing
 let r = await imp("field-force", demo("06_Upload_SalesforceUpload.xlsx")); ok(r, 71); assert.equal(r.inserted, 71); assert.equal(r.outcome, "Successful");
 assert.ok(r.warnings.some((w: any) => /sheet is named 'Sheet1'/.test(w.reason)));                                  // single-sheet fallback is disclosed
-const noMgr = r.warnings.filter((w: any) => /imported without a reporting manager/.test(w.reason)).length;
-const withMgr = store["employees"].filter((e) => e.reportingManager).length;
-console.log(`salesforce: 71 imported, ${withMgr} with a resolved manager, ${noMgr} manager names not in the file/DB (warnings)`);
-assert.ok(withMgr > 0 && noMgr > 0);
+// Round 60: a manager NAME that exists nowhere gets a flagged stub instead of leaving the employee without a manager
+assert.ok(r.autoCreatedManagers.length > 0 && r.warnings.some((w: any) => w.row === 0 && /manager\(s\) auto-created, code pending/.test(w.reason)));
+const withMgr = store["employees"].filter((e) => !e.codePending && e.reportingManager).length;
+const stubsMade = store["employees"].filter((e) => e.codePending);
+const namedMgr = rowsOf(demo("06_Upload_SalesforceUpload.xlsx")).filter((x) => String(x["Reporting Manager Name"] ?? "").trim() || String(x["Reporting Manager Code"] ?? "").trim()).length;
+console.log(`salesforce: 71 imported, ${withMgr} of ${namedMgr} rows naming a manager now resolved, ${stubsMade.length} manager stub(s) auto-created: ${stubsMade.map((e) => `${e.employeeCode} ${e.name} [${e.role}]`).join(" | ")}`);
+assert.equal(withMgr, namedMgr, "every row that names a manager is linked");
+for (const st of stubsMade) { assert.ok(/^MGR-PENDING-\d{3}$/.test(st.employeeCode)); assert.equal(st.status, "ACTIVE"); assert.equal(st.autoCreatedSource, "auto-created from Salesforce upload"); }
+const upChain = async (code: string) => { const out: string[] = []; let c = store["employees"].find((e) => e.employeeCode === code); const seen = new Set<string>(); while (c?.reportingManager && !seen.has(c.reportingManager)) { seen.add(c.reportingManager); out.push(c.reportingManager); c = store["employees"].find((e) => e.employeeCode === c.reportingManager); } return out; };
+for (const e of store["employees"].filter((x) => !x.codePending && x.reportingManager)) assert.ok(store["employees"].some((m) => m.employeeCode === e.reportingManager), "no dangling manager link");
+(globalThis as any).__stubs = stubsMade.length; (globalThis as any).__upChain = upChain;
 const two = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(two, XLSX.utils.aoa_to_sheet([["Employee Code"]]), "A"); XLSX.utils.book_append_sheet(two, XLSX.utils.aoa_to_sheet([["x"]]), "B");
 const bad = await imp("field-force", XLSX.write(two, { type: "buffer", bookType: "xlsx" }) as Buffer);
 assert.equal(bad.outcome, "Sheet Name Must be 'UPL_SalesForce'"); assert.equal(bad.uploaded, false);
@@ -127,8 +134,9 @@ r = await imp("field-force", XLSX.write(named, { type: "buffer", bookType: "xlsx
 
 { const sfp = await imp("field-force", xl(["Employee Code", "Name", "Designation", "HQ", "Reporting Manager Name"], [["T001", "Test Rep One", "BE", "SURAT", "test  manager.  two"], ["T002", "TEST MANAGER TWO", "ABM", "SURAT", ""], ["T003", "Test Rep Three", "BE", "SURAT", "Nobody Known"]]), {}, "t.xlsx");
   assert.equal(sfp.failed, 0); assert.equal(store["employees"].find((e) => e.employeeCode === "T001").reportingManager, "T002", "manager defined LATER in the same file, spacing/case/punctuation-insensitive");
-  assert.ok(!store["employees"].find((e) => e.employeeCode === "T003").reportingManager); assert.ok(sfp.warnings.some((w: any) => /Nobody Known/.test(w.reason)), "a truly unknown manager imports with a warning");
-  store["employees"] = store["employees"].filter((e) => !/^T00/.test(e.employeeCode)); }
+  const t3 = store["employees"].find((e) => e.employeeCode === "T003"); const stubN = store["employees"].find((e) => e.employeeCode === t3.reportingManager);
+  assert.ok(stubN && stubN.codePending && stubN.name === "Nobody Known" && stubN.role === "ABM", "an unknown manager name becomes a flagged stub (BE reports -> ABM)"); assert.ok(sfp.warnings.some((w: any) => /1 manager\(s\) auto-created, code pending/.test(w.reason)));
+  store["employees"] = store["employees"].filter((e) => !/^T00/.test(e.employeeCode) && e.name !== "Nobody Known"); }
 
 // ═══ 8) Product (demo 08) and its reference tables (distinct values from the real master)
 r = await imp("product", demo("08_Upload_ProductUpload.xlsx")); ok(r, 28); assert.equal(r.inserted, 28);
@@ -258,9 +266,9 @@ assert.ok(store["despatch_logs"].length > 0);
 
 // ═══ 6b) Deactivate Existing Field Force List (Salesforce), then re-uploading reactivates
 const before = store["employees"].length;
-r = await imp("field-force", xl(["Employee Code", "Name", "Designation", "HQ"], [["E0038", "BALAKRISHNA SHENOY", "BE", "ERNAKULAM"]], "UPL_SalesForce"), { deactivate: "true" }, "sf.xlsx"); ok(r, 1); assert.equal(r.deactivated, 71);
+r = await imp("field-force", xl(["Employee Code", "Name", "Designation", "HQ"], [["E0038", "BALAKRISHNA SHENOY", "BE", "ERNAKULAM"]], "UPL_SalesForce"), { deactivate: "true" }, "sf.xlsx"); ok(r, 1); assert.equal(r.deactivated, 71 + (globalThis as any).__stubs);
 assert.equal(store["employees"].filter((e) => e.status === "ACTIVE").length, 1); assert.equal(store["employees"].length, before);
-r = await imp("field-force", demo("06_Upload_SalesforceUpload.xlsx"), { deactivate: "true" }); ok(r, 71); assert.equal(store["employees"].filter((e) => e.status === "ACTIVE").length, 71);
+r = await imp("field-force", demo("06_Upload_SalesforceUpload.xlsx"), { deactivate: "true" }); ok(r, 71); assert.equal(store["employees"].filter((e) => e.status === "ACTIVE" && !e.codePending).length, 71); assert.ok(store["employees"].filter((e) => e.codePending).every((e) => e.status === "ACTIVE"), "stubs reactivated with their reports");
 
 // ═══ /validate keeps working and returns the preview
 const vr = await (await fetch(`${base}/product/validate`, { method: "POST", body: form({}, [{ name: "v.xlsx", buf: demo("08_Upload_ProductUpload.xlsx") }]) })).json() as any; assert.equal(vr.data.total, 28); assert.equal(vr.data.invalid, 0); assert.equal(vr.data.preview.length, 28);

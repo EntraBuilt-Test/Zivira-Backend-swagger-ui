@@ -22,6 +22,7 @@ import { readSlideBuffer } from "../utils/slide-store.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { createTourPlanWithRetry } from "../utils/tour-plan-id.js";
 import { createExpenseClaimWithRetry } from "../utils/expense-claim-id.js";
+import { decisionView } from "../utils/approval-trail.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
 import { enrichWithEmployeeNames } from "../utils/enrich-employee-names.js";
 import { syncPayrollStatuses } from "../utils/payroll.js";
@@ -416,7 +417,7 @@ fieldRouter.get("/dcrs", asyncHandler(async (req, res) => {
   const requestedLimit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : NaN;
   const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 1000) : 500;
   const dcrs = await DcrModel.find({ tenantSlug: req.auth!.tenantSlug, employeeCode: employee.employeeCode }).sort({ visitDate: -1, createdAt: -1 }).limit(limit).populate("doctorId");
-  res.json({ data: dcrs.map(serializeDocument) });
+  res.json({ data: dcrs.map((d) => ({ ...serializeDocument(d), ...decisionView(d) })) });
 }));
 
 // DELETE /field/dcrs/:id -- coordinator follow-up round. Safety rule: only
@@ -745,7 +746,7 @@ fieldRouter.get("/tour-plans", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const tps = await TourPlanModel.find({ tenantSlug, employeeCode: employee.employeeCode }).sort({ createdAt: -1 });
-  res.json({ data: await enrichTourPlansWithNames(tenantSlug, tps) });
+  res.json({ data: (await enrichTourPlansWithNames(tenantSlug, tps)).map((t: any) => ({ ...t, ...decisionView(t) })) });
 }));
 
 fieldRouter.post("/tour-plans", asyncHandler(async (req, res) => {
@@ -1153,7 +1154,7 @@ fieldRouter.get("/leave-applications", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const rows = await LeaveApplicationModel.find({ tenantSlug, employeeCode: employee.employeeCode }).sort({ createdAt: -1 }).limit(100);
-  res.json({ data: rows.map(serializeDocument) });
+  res.json({ data: rows.map((r) => ({ ...serializeDocument(r), ...decisionView(r) })) });
 }));
 
 const leaveApplySchema = z.object({

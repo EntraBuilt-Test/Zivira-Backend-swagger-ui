@@ -15,7 +15,7 @@ import { DoctorModel } from "../models/doctor.model.js";
 import { DealerModel } from "../models/dealer.model.js";
 import { UserModel } from "../models/user.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
-import { getSlideStore, readSlideBuffer, releaseSlideFile, hasSlideFile } from "../utils/slide-store.js";
+import { getSlideStore, readSlideBuffer, releaseSlideFile, hasSlideFile, ensureSlidesMigrated, migrateLegacySlides, countLegacySlides } from "../utils/slide-store.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 export const uploadToolsRouter = Router();
@@ -205,6 +205,7 @@ async function slideUsage(tenant: string) {
 
 uploadToolsRouter.get("/slides/meta", asyncHandler(async (req, res) => {
   const tenant = req.auth!.tenantSlug!;
+  await ensureSlidesMigrated(tenant);
   const t = (await TenantModel.findOne({ slug: tenant }).lean()) as any;
   const subs = (await SubdivisionModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
   const brands = (await ProductBrandModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
@@ -213,10 +214,16 @@ uploadToolsRouter.get("/slides/meta", asyncHandler(async (req, res) => {
   // Sub Division in the slide screens is the root group (first word of the sub division names: Astra / Aura / Zivira), the value ProductBrand.division carries.
   const roots = uniq(subs.map((x) => String(x.subdivisionName || "").trim().split(/\s+/)[0]));
   const brandRows = brands.map((b) => ({ name: String(b.brandName || "").trim(), subDivision: String(b.division || "").trim() })).filter((b) => b.name);
-  res.json({ data: { division: t?.name || "", subDivisions: roots, brands: uniq(brands.map((b) => b.brandName)), brandRows, ...u, maxFileBytes: SLIDE_MAX_FILE } });
+  res.json({ data: { division: t?.name || "", subDivisions: roots, brands: uniq(brands.map((b) => b.brandName)), brandRows, ...u, maxFileBytes: SLIDE_MAX_FILE, legacySlides: await countLegacySlides(tenant) } });
+}));
+
+// Round 60 -- explicit migration of the old base64 slides into GridFS (also runs automatically on first access of meta/list/upload). Safe to re-run.
+uploadToolsRouter.post("/slides/migrate", asyncHandler(async (req, res) => {
+  res.json({ data: await migrateLegacySlides(req.auth!.tenantSlug!) });
 }));
 
 uploadToolsRouter.get("/slides/list", asyncHandler(async (req, res) => {
+  await ensureSlidesMigrated(req.auth!.tenantSlug!);
   const Slides = getMasterModel("slideUploadEDetailing");
   const filter: Record<string, unknown> = { tenantSlug: req.auth!.tenantSlug!, ...hasSlideFile };
   if (typeof req.query.subDivision === "string" && req.query.subDivision) filter.subDivision = req.query.subDivision;
@@ -230,6 +237,7 @@ uploadToolsRouter.post("/slides/upload", slideUpload.array("files", 50), asyncHa
   const tenant = req.auth!.tenantSlug!;
   const files = (req.files as Express.Multer.File[]) || [];
   if (!files.length) throw new HttpError(400, "Choose at least one slide file");
+  await ensureSlidesMigrated(tenant);
   const brands = String(req.body?.brands || req.body?.brand || "").split("|").map((b) => b.trim()).filter(Boolean);
   if (!brands.length) throw new HttpError(400, "Select the Brand first");
   const subDivision = String(req.body?.subDivision || "").trim();

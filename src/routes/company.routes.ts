@@ -44,6 +44,7 @@ import { HospitalModel } from "../models/hospital.model.js";
 import { UnlistedDoctorModel } from "../models/unlisted-doctor.model.js";
 import { CompanyBranchModel } from "../models/company-branch.model.js";
 import { TourPlanModel } from "../models/tour-plan.model.js";
+import { renameEmployeeCode } from "../utils/manager-stubs.js";
 import { resolveTeam, getDirectReports, findVacantManagerCodes, isManagerRole, getAllDescendants, getUpwardChain, getAllManagers } from "../utils/org-hierarchy.js";
 import { computeWorkHygiene, computeClassWiseView, buildDcrDump, dumpToCsv, DUMP_HEADERS, computeMissedCallListed, computeMissedCallDetailed, listDoctorsForForce, computeSingleDoctor, computeRepVsManager, computeReviewReport, computeAssessment } from "../utils/mis-reports-2-compute.js";
 import XLSX from "xlsx";
@@ -297,6 +298,20 @@ companyRouter.patch(
     const tenantSlug = req.auth!.tenantSlug!;
     const body = employeeSchema.partial().parse(req.body);
     const patch: Record<string, unknown> = { ...body };
+    // Round 60 -- "Complete details" of an auto-created manager stub: setting the real employeeCode renames the stub and re-links every
+    // report (reportingManager) in one step. Only a "code pending" stub may change its code.
+    let relinked = 0;
+    if (body.employeeCode && body.employeeCode !== req.params.employeeCode) {
+      const cur = await EmployeeModel.findOne({ tenantSlug, employeeCode: req.params.employeeCode }).select("codePending").lean() as any;
+      if (!cur) throw new HttpError(404, "Employee not found");
+      if (!cur.codePending) throw new HttpError(400, "Only an employee whose code is pending (auto-created manager) can have its code changed");
+      const { employeeCode: newCode, ...rest } = patch as any;
+      try { relinked = (await renameEmployeeCode(tenantSlug, req.params.employeeCode, String(newCode).trim(), { codePending: false, autoCreatedSource: null })).relinked; }
+      catch (e) { throw new HttpError(409, e instanceof Error ? e.message : "Could not change the employee code"); }
+      req.params.employeeCode = String(newCode).trim();
+      for (const k of Object.keys(patch)) delete (patch as any)[k];
+      Object.assign(patch, rest);
+    }
     if (body.leftDate !== undefined) patch.leftDate = body.leftDate ? new Date(body.leftDate) : null;
     if (body.status === "INACTIVE") {
       const cur = await EmployeeModel.findOne({ tenantSlug, employeeCode: req.params.employeeCode }).select("status deactivatedAt").lean() as any;
@@ -309,7 +324,7 @@ companyRouter.patch(
     );
     if (!employee) throw new HttpError(404, "Employee not found");
     await audit("EMPLOYEE_UPDATED", "Employee", String(employee._id), { tenantSlug, employeeCode: employee.employeeCode });
-    res.json({ data: serializeDocument(employee) });
+    res.json({ data: serializeDocument(employee), relinked });
   })
 );
 

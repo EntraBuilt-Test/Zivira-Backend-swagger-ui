@@ -44,7 +44,7 @@ M.distinct = function (k: string, f: any = {}) { return Promise.resolve([...new 
 M.create = function (arg: any) { const arr = Array.isArray(arg) ? arg : [arg]; const made = arr.map((d: any) => { const doc = wrap({ _id: asId(seq++), createdAt: new Date(), updatedAt: new Date(), ...d }); coll(this).push(doc); return doc; }); return Promise.resolve(Array.isArray(arg) ? made : made[0]); };
 const applyUpdate = (d: any, u: any) => { Object.assign(d, u.$set || {}); for (const [k, v] of Object.entries(u.$push || {})) (d[k] ||= []).push(v); for (const [k, v] of Object.entries(u.$addToSet || {})) { (d[k] ||= []); if (!d[k].includes(v)) d[k].push(v); } d.updatedAt = new Date(); };
 M.updateOne = function (f: any, u: any) { const d = coll(this).find(matchOne(f)); if (d) applyUpdate(d, u); return Promise.resolve({ matchedCount: d ? 1 : 0 }); };
-M.updateMany = function (f: any, u: any) { const ds = coll(this).filter(matchOne(f)); ds.forEach((d) => applyUpdate(d, u)); return Promise.resolve({}); };
+M.updateMany = function (f: any, u: any) { const ds = coll(this).filter(matchOne(f)); ds.forEach((d) => applyUpdate(d, u)); return Promise.resolve({ modifiedCount: ds.length }); };
 M.findOneAndUpdate = function (f: any, u: any) { const d = coll(this).find(matchOne(f)); if (d) applyUpdate(d, u); return Promise.resolve(wrap(d ?? null)); };
 M.deleteMany = function (f: any = {}) { const c = coll(this); const hit = new Set(c.filter(matchOne(f))); const keep = c.filter((d) => !hit.has(d)); c.length = 0; c.push(...keep); return Promise.resolve({ deletedCount: hit.size }); };
 M.deleteOne = function (f: any = {}) { const c = coll(this); const d = c.find(matchOne(f)); if (d) c.splice(c.indexOf(d), 1); return Promise.resolve({ deletedCount: d ? 1 : 0 }); };
@@ -80,6 +80,7 @@ const mL2 = mir("approvalLeave", { fieldForceName: "Rahul Mehta", fromDate: "202
 const mL3 = mir("approvalLeave", { fieldForceName: "Rahul Mehta", fromDate: "2026-10-28", toDate: "2026-10-28", leaveDays: 1, leaveType: "Casual Leave" });
 
 const { managerRouter } = await import("../../src/routes/manager.routes.js");
+const { fieldRouter } = await import("../../src/routes/field.routes.js");
 const { companyRouter } = await import("../../src/routes/company.routes.js");
 const { HttpError } = await import("../../src/http/errors.js");
 const { approvalLabel } = await import("../../src/utils/approval-label.js");
@@ -90,6 +91,7 @@ app.use(express.json());
 const { signToken } = await import("../../src/http/auth.js");
 app.use("/api/company", companyRouter);
 app.use("/api/manager", managerRouter);
+app.use("/api/field", fieldRouter);
 app.use((err: any, _req: any, res: any, _next: any) => { res.status(err instanceof HttpError ? err.statusCode : err?.name === "ZodError" ? 400 : 500).json({ error: err.message }); });
 const server = http.createServer(app); await new Promise<void>((r) => server.listen(0, r));
 const base = `http://127.0.0.1:${(server.address() as any).port}/api`;
@@ -183,6 +185,77 @@ console.log("5 admin leave approve/reject ok");
 assert.equal(approvalLabel({ status: "APPROVED" }), "Approved"); assert.equal(approvalLabel({ status: "REJECTED" }), "Rejected"); assert.equal(approvalLabel({ status: "SUBMITTED" }), "Pending");
 assert.equal(approvalLabel({ approvalStatus: "Approved" }), "Approved"); assert.equal(approvalLabel({ status: "CANCELLED" }), "Leave cancelled");
 assert.equal(approvalLabel({ status: "APPROVED", approval: { status: "Rejected", approvedBy: { role: "ADMIN" } } }), "Approved", "a stale trail that disagrees with the status is ignored");
+
+// ═══ 6b) Round 60: the field endpoints return the decision label, date and remarks (real data from the stored trail)
+{
+  const dc2 = (await call("mr1", "GET", `/field/dcrs`)).body.data as any[];
+  const d = (id: number) => dc2.find((x) => x.id === String(asId(id)));
+  assert.equal(d(300).statusLabel, "Approved by Manager (Meera Shah)"); assert.ok(d(300).statusDate);
+  assert.equal(d(301).statusLabel, "Rejected by Admin"); assert.equal(d(301).statusRemarks, "Doctor list incomplete");
+  assert.equal(d(302).statusLabel, "Approved by Admin");
+  const lvs = (await call("mr1", "GET", `/field/leave-applications`)).body.data as any[];
+  const l = (id: number) => lvs.find((x) => x.id === String(asId(id)));
+  assert.equal(l(400).statusLabel, "Leave cancelled by Admin"); assert.equal(l(400).statusRemarks, "Rescheduled by HQ"); assert.ok(l(400).statusDate && l(400).approvalHistory.length >= 2);
+  assert.equal(l(401).statusLabel, "Rejected by Admin"); assert.equal(l(401).statusRemarks, "Peak week");
+  assert.equal(l(402).statusLabel, "Approved by Admin");
+  const tps = (await call("mr1", "GET", `/field/tour-plans`)).body.data as any[];
+  assert.equal(tps[0].statusLabel, "Approved by Admin"); assert.ok(tps[0].statusDate);
+  store["dcrs"].push(wrap({ _id: asId(310), tenantSlug: T, employeeCode: "MR1", visitDate: day("2026-10-15"), visitDateOnly: "2026-10-15", month: "2026-10", status: "APPROVED" }));       // older record, no trail
+  const old = ((await call("mr1", "GET", `/field/dcrs`)).body.data as any[]).find((x) => x.id === String(asId(310)));
+  assert.equal(old.statusLabel, "Approved"); assert.equal(old.statusRemarks, ""); store["dcrs"].pop();
+  console.log("6b field endpoints carry the label ok");
+}
+
+// ═══ 6c) Round 60: manager team-leave endpoint -- per-person list + history, scoped to the manager's team
+{
+  store["employees"].push(emp("X1", "Outsider One", "MR", "M9"), emp("MR2", "Sneha Iyer", "MR", "M1"));
+  store["leave_applications"].push(wrap({ _id: asId(420), tenantSlug: T, employeeCode: "X1", leaveType: "Casual Leave", fromDate: day("2026-10-05"), toDate: day("2026-10-05"), days: 1, status: "PENDING" }));
+  let tl = await call("m1", "GET", `/manager/team-leave`);
+  assert.equal(tl.status, 200, JSON.stringify(tl.body));
+  const names = tl.body.data.map((x: any) => x.employeeCode).sort();
+  assert.deepEqual(names, ["MR1", "MR2"], "only people below this manager; X1 (another manager's team) is not listed");
+  const mr1 = tl.body.data.find((x: any) => x.employeeCode === "MR1");
+  assert.equal(mr1.isDirectReport, true); assert.deepEqual(mr1.counts, { pending: 0, approved: 1, rejected: 1, cancelled: 1 }, JSON.stringify(mr1.counts));
+  assert.equal(mr1.approvedDays, 1);
+  const lab = (id: number) => mr1.leaves.find((x: any) => x.id === String(asId(id)));
+  assert.equal(lab(400).statusLabel, "Leave cancelled by Admin"); assert.equal(lab(401).statusLabel, "Rejected by Admin"); assert.equal(lab(402).statusLabel, "Approved by Admin");
+  assert.equal(lab(400).approvalHistory.map((h: any) => h.action).join(","), "Approved,Cancelled");
+  assert.deepEqual(tl.body.data.find((x: any) => x.employeeCode === "MR2").leaves, [], "a team member with no leave is still listed");
+  tl = await call("m1", "GET", `/manager/team-leave?employeeCode=X1`); assert.equal(tl.status, 404);
+  tl = await call("m1", "GET", `/manager/team-leave?employeeCode=MR1`); assert.equal(tl.body.data.length, 1);
+  tl = await call("mr1", "GET", `/manager/team-leave`); assert.equal(tl.status, 403, "a field user cannot read it");
+  // the Round 59 leave notices for managers deep-link into this screen
+  const mgrLeave = notices("LEAVE_CANCELLED").filter((n) => n.audience === "MANAGER");
+  assert.ok(mgrLeave.length === 2 && mgrLeave.every((n) => n.link === "/manager/leave?tab=team&emp=MR1"), JSON.stringify(mgrLeave.map((n) => n.link)));
+  store["employees"] = store["employees"].filter((e) => !["X1", "MR2"].includes(e.employeeCode));
+  store["leave_applications"] = store["leave_applications"].filter((x) => String(x._id) !== String(asId(420)));
+  console.log("6c manager team-leave ok");
+}
+
+// ═══ 6d) Round 60: completing an auto-created manager stub renames its code and re-links every report; admin bell hides per-user system notices
+{
+  store["employees"].push(wrap({ _id: asId(900), tenantSlug: T, employeeCode: "MGR-PENDING-001", name: "Anil Kapoor", role: "ABM", designation: "Area Business Manager", division: "Zivira", territory: "Not provided (code pending)", reportingManager: "M2", status: "ACTIVE", codePending: true, autoCreatedSource: "auto-created from Salesforce upload" }),
+    emp("MR7", "Report One", "MR", "MGR-PENDING-001"), emp("MR8", "Report Two", "MR", "MGR-PENDING-001"));
+  let pr = await call("admin", "PATCH", `/company/employees/M1`, { employeeCode: "M1X" });
+  assert.equal(pr.status, 400); assert.match(pr.body.error, /code is pending/);                                   // a normal employee's code is never changed this way
+  pr = await call("admin", "PATCH", `/company/employees/MGR-PENDING-001`, { employeeCode: "MR1" }); assert.equal(pr.status, 409);   // clash
+  pr = await call("admin", "PATCH", `/company/employees/MGR-PENDING-001`, { employeeCode: "ABM-0042", designation: "Area Business Manager" });
+  assert.equal(pr.status, 200, JSON.stringify(pr.body));
+  const stub = store["employees"].find((e) => e._id.toString() === asId(900).toString());
+  assert.equal(stub.employeeCode, "ABM-0042"); assert.equal(stub.codePending, false); assert.ok(!stub.autoCreatedSource);
+  assert.equal(String(stub._id), String(asId(900)), "the internal id never changes");
+  assert.equal(store["employees"].find((e) => e.employeeCode === "MR7").reportingManager, "ABM-0042"); assert.equal(store["employees"].find((e) => e.employeeCode === "MR8").reportingManager, "ABM-0042");
+  assert.equal(pr.body.relinked, 2);
+  assert.equal(store["employees"].find((e) => e.employeeCode === "ABM-0042").reportingManager, "M2", "its own upward link is untouched");
+  const { getUpwardChain } = await import("../../src/utils/org-hierarchy.js");
+  assert.deepEqual((await getUpwardChain(T, "MR7")).map((e: any) => e.employeeCode), ["ABM-0042", "M2"], "reports still resolve through the completed manager");
+  // admin bell: system notices addressed to one MR / one manager are not shown; admin-audience ones are
+  const an = (await call("admin", "GET", `/company/notices`)).body.data as any[];
+  assert.ok(an.length > 0 && an.every((n) => !(n.postedBy === "system" && (n.audience === "MR" || n.audience === "MANAGER"))), "admin bell has no per-user system notices");
+  assert.ok(an.some((n) => n.audience === "ADMIN" && n.link && n.link.startsWith("/admin/")));
+  store["employees"] = store["employees"].filter((e) => !["ABM-0042", "MR7", "MR8"].includes(e.employeeCode));
+  console.log("6d stub completion + admin bell ok");
+}
 
 // ═══ 7) label parity: portal copies are byte-identical to the backend helper (when the repos are present)
 const here = path.resolve(import.meta.dirname, "../../src/utils/approval-label.ts");

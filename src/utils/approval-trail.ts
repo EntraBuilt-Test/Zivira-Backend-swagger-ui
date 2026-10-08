@@ -21,7 +21,7 @@ import { ApprovalAuditLogModel } from "../models/approval-audit-log.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { HttpError } from "../http/errors.js";
 import { notifyEmployeeEmail } from "./notify.js";
-import { approvalLabel as _label } from "./approval-label.js";
+import { approvalLabel as _label, approvalDate as _date } from "./approval-label.js";
 void _label;
 
 export type ApprovalKind = "DCR" | "TP" | "LEAVE";
@@ -84,13 +84,13 @@ const KIND_NAME: Record<ApprovalKind, string> = { DCR: "DCR", TP: "Tour Plan", L
 const fmtDate = (d: any) => { const x = d ? new Date(d) : null; return x && !Number.isNaN(x.getTime()) ? x.toISOString().slice(0, 10) : ""; };
 const actorText = (a: Actor) => (a.role === "ADMIN" ? "Admin" : `Manager ${a.name}`);
 
-async function createNotice(p: { tenantSlug: string; audience: "MR" | "MANAGER" | "ADMIN"; target: string | null; title: string; message: string; type: string; kind: ApprovalKind; refId: string; dedupeKey: string }) {
+async function createNotice(p: { tenantSlug: string; audience: "MR" | "MANAGER" | "ADMIN"; target: string | null; title: string; message: string; type: string; kind: ApprovalKind; refId: string; dedupeKey: string; employeeCode?: string }) {
   try {
     const dupe = await NoticeModel.findOne({ tenantSlug: p.tenantSlug, dedupeKey: p.dedupeKey }).lean();
     if (dupe) return false;
     await NoticeModel.create({
       tenantSlug: p.tenantSlug, title: p.title, message: p.message, audience: p.audience, priority: "NORMAL", postedBy: "system",
-      targetEmployeeCode: p.target, type: p.type, refKind: p.kind, refId: p.refId, link: LINKS[p.audience === "MR" ? "MR" : p.audience][p.kind], dedupeKey: p.dedupeKey
+      targetEmployeeCode: p.target, type: p.type, refKind: p.kind, refId: p.refId, link: p.audience === "MANAGER" && p.kind === "LEAVE" ? `/manager/leave?tab=team${p.employeeCode ? `&emp=${encodeURIComponent(p.employeeCode)}` : ""}` : LINKS[p.audience === "MR" ? "MR" : p.audience][p.kind], dedupeKey: p.dedupeKey
     });
     return true;
   } catch (err) { console.error("[approval-trail] notice failed:", err); return false; }
@@ -105,7 +105,7 @@ export async function notifyDecision(a: NotifyArgs) {
   const type = a.action === "Cancelled" ? "LEAVE_CANCELLED" : `${a.kind}_${a.action.toUpperCase()}`;
   const tail = `${a.remarks ? ` Remarks: ${a.remarks}` : ""}`;
   const titleOwn = a.action === "Cancelled" ? `Your leave was cancelled by ${actorText(a.actor)}` : `Your ${name} was ${verb} by ${actorText(a.actor)}`;
-  const base = { tenantSlug: a.tenantSlug, type, kind: a.kind, refId: a.refId };
+  const base = { tenantSlug: a.tenantSlug, type, kind: a.kind, refId: a.refId, employeeCode: a.employeeCode };
   const key = (who: string) => `${a.kind}:${a.refId}:${a.action}:${who}:${a.version}`;
   const sent: string[] = [];
   if (!(a.actor.role === "MANAGER" && a.actor.id === a.employeeCode)) {
@@ -312,4 +312,13 @@ export async function cancelLeaveFromMasterRow(tenantSlug: string, row: any, act
   }
   if (!leaveId) throw new HttpError(404, "No approved leave found for this row (it may already be cancelled or removed)");
   return cancelLeave(tenantSlug, leaveId, actor, reason);
+}
+
+
+/** Round 60 -- what a portal list needs to print the decision: shared label + date + remarks, computed server-side from the stored trail. */
+export function decisionView(rec: any): { statusLabel: string; statusDate: string | null; statusRemarks: string } {
+  const raw = String(rec?.status ?? rec?.approvalStatus ?? "").toUpperCase();
+  const date = _date(rec);
+  const remarks = raw === "CANCELLED" ? rec?.cancelReason : raw === "REJECTED" ? (rec?.approval?.remarks || rec?.rejectReason) : rec?.approval?.remarks;
+  return { statusLabel: _label(rec), statusDate: date ? new Date(date).toISOString() : null, statusRemarks: String(remarks ?? "") };
 }

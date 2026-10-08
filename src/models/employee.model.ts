@@ -44,6 +44,12 @@ const employeeSchema = new Schema(
     leftDate: { type: Date, default: null },
     deactivatedAt: { type: Date, default: null },
     sfCode: { type: String, trim: true, default: null },
+    // Round 60 -- manager stubs auto-created by the Salesforce upload for a manager NAME that has no employee record.
+    // codePending = the real employee code is not known yet (placeholder MGR-PENDING-NNN). Links to a stub are stored
+    // as reportingManager = its code, so completing the stub renames the code AND rewrites every reportingManager that
+    // pointed at the old code in one step (see utils/manager-stubs.ts renameEmployeeCode).
+    codePending: { type: Boolean, default: false, index: true },
+    autoCreatedSource: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );

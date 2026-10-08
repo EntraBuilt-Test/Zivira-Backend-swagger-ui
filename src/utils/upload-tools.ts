@@ -23,6 +23,7 @@ import { getMasterModel } from "../models/master-record.model.js";
 import { LISTEDDR_HEADERS } from "./r46-reports.js";
 import { enumFromTier, TIERS, type Tier } from "./doctor-tier.js";
 import { StateModel } from "../models/state.model.js";
+import { STUB_SOURCE, STUB_TERRITORY, DESIGNATION_FOR, inferStubRoles, breakStubCycles, nextStubNumber, stubCode, renameEmployeeCode, type StubPlan } from "./manager-stubs.js";
 
 export type RowErr = { row: number; field: string; reason: string };
 type Raw = Record<string, unknown>;
@@ -46,7 +47,7 @@ type Tool = {
   deactivate?: (tenant: string) => Promise<number>;
   load: (tenant: string, opts?: UploadOpts) => Promise<Ctx>;
   check: (g: Getter, ctx: Ctx, rowNo: number, opts?: UploadOpts) => Check;
-  apply: (tenant: string, items: { row: number; value: any }[], ctx: Ctx, opts?: UploadOpts) => Promise<{ inserted: number; updated: number; errors: RowErr[]; skipped?: number; warnings?: { row: number; reason: string }[] }>;
+  apply: (tenant: string, items: { row: number; value: any }[], ctx: Ctx, opts?: UploadOpts) => Promise<{ inserted: number; updated: number; errors: RowErr[]; skipped?: number; warnings?: { row: number; reason: string }[]; autoCreated?: { code: string; name: string; role: string; designation: string; reports: number; manager: string | null }[]; merged?: { code: string; name: string }[] }>;
 };
 const A = (m: Record<string, string>): Record<string, string> => Object.fromEntries(Object.entries(m).map(([k, v]) => [norm(k), v]));
 
@@ -282,7 +283,7 @@ const salesforce: Tool = {
   headers: ["Employee Code", "Name", "Designation", "HQ", "State", "DOJ", "Reporting Manager Code", "Reporting Manager Name", "Reporting Manager II Name", "Mobile", "Email", "Division", "SubDivision"],
   required: ["Employee Code", "Name", "Designation", "HQ"], dateHeaders: ["DOJ"], sheetName: "UPL_SalesForce",
   async deactivate(tenant) { const n = await EmployeeModel.countDocuments({ tenantSlug: tenant, status: "ACTIVE" }); await EmployeeModel.updateMany({ tenantSlug: tenant, status: "ACTIVE" }, { $set: { status: "INACTIVE" } }); return n; },
-  note: "Key = Employee Code. Reporting manager resolved by code, else by name (a manager defined earlier in the same file counts); unresolved managers are errors. Role is derived from Designation (unknown designations become OTHER with a warning). Division is stored as SubDivision when given. Reporting Manager II Name is informational (level 2 comes from the manager's own manager). Login credentials are never touched.",
+  note: "Key = Employee Code. Reporting manager resolved by code, else by name (a manager defined earlier in the same file counts); a manager NAME that exists nowhere gets an auto-created stub (placeholder code MGR-PENDING-NNN, flagged code pending, role inferred from the people reporting to it, its own manager from Reporting Manager II Name); a later row with the real code and the same name takes the stub over; an unknown manager CODE is an error. Role is derived from Designation (unknown designations become OTHER with a warning). Division is stored as SubDivision when given. Reporting Manager II Name is informational (level 2 comes from the manager's own manager). Login credentials are never touched.",
   async load(tenant) { return loadEmployees(tenant); },
   check(g, ctx) {
     const errors: Er[] = []; const warnings: string[] = [];
@@ -291,39 +292,110 @@ const salesforce: Tool = {
     const mail = g("Email"); if (mail && !isEmail(mail)) errors.push({ field: "Email", reason: "invalid email address" });
     const mob = g("Mobile"); if (mob && !isPhone(mob)) errors.push({ field: "Mobile", reason: "invalid mobile number" });
     const division = g("SubDivision") || g("Division");
-    const mc = g("Reporting Manager Code"), mn = g("Reporting Manager Name");
+    const mc = g("Reporting Manager Code"), mn = g("Reporting Manager Name"), mn2 = g("Reporting Manager II Name");
     if (code && mc && lc(mc) === lc(code)) errors.push({ field: "Reporting Manager Code", reason: "an employee cannot report to themselves" });
     const role = desig ? roleFromDesignation(desig) : "OTHER";
     if (desig && role === "OTHER") warnings.push(`Designation "${desig}" not recognised; role stored as OTHER`);
-    return { errors, warnings, key: lc(code), value: { code, name, desig, hq, state: g("State") || null, doj, mc, mn, mob, mail, division, role } };
+    return { errors, warnings, key: lc(code), value: { code, name, desig, hq, state: g("State") || null, doj, mc, mn, mn2, mob, mail, division, role } };
   },
-  async apply(tenant, items, ctx, opts) {
+  async apply(tenant, items, ctx0, opts) {
+    // 0) a row with a REAL code whose name matches a "code pending" stub takes the stub over (merge, no duplicate): the stub is renamed and every report re-linked
+    const merged: { code: string; name: string }[] = [];
+    const stubs = (await EmployeeModel.find({ tenantSlug: tenant, codePending: true }).lean()) as any[];
+    for (const it of items) {
+      const v = it.value;
+      if (ctx0.byCode.has(lc(v.code))) continue;
+      const hit = stubs.filter((st) => nm(st.name) === nm(v.name) && st.codePending);
+      if (hit.length !== 1) continue;
+      try {
+        await renameEmployeeCode(tenant, hit[0].employeeCode, v.code, { codePending: false, autoCreatedSource: null });
+        merged.push({ code: v.code, name: v.name }); hit[0].codePending = false;
+      } catch { /* clash etc.: falls through to the normal insert/update */ }
+    }
+    const ctx: any = merged.length ? await loadEmployees(tenant) : ctx0;
     // resolve managers against DB + this file
     const fileByCode = new Map(items.map((i) => [lc(i.value.code), i.value]));
     const fileByName = new Map<string, any[]>();
     for (const i of items) fileByName.set(nm(i.value.name), [...(fileByName.get(nm(i.value.name)) || []), i.value]);
-    const resolve = (v: any): { code: string | null; err?: string; soft?: boolean } => {
+    // a literal placeholder such as "admin" / "NA" / "vacant" in a manager column is not a person: no stub, no link (disclosed in the result)
+    const PLACEHOLDER = /^(admin|administrator|na|n a|nil|none|vacant|tbd|-+)$/i;
+    const skippedPlaceholders = new Set<string>();
+    const lookup = (name: string): { code: string | null; ambiguous?: string[] } => {
+      const db = ctx.byName.get(nm(name)) || [], fl = fileByName.get(nm(name)) || [];
+      const all = [...new Set([...db.map((e: any) => e.employeeCode), ...fl.map((e: any) => e.code)])];
+      return all.length === 1 ? { code: all[0] } : all.length ? { code: null, ambiguous: all } : { code: null };
+    };
+    // stubs wanted: key -> plan (a manager NAME that exists nowhere)
+    const plans = new Map<string, StubPlan>();
+    const planFor = (name: string, division: string): StubPlan => {
+      const key = nm(name);
+      let p = plans.get(key);
+      if (!p) { p = { key, name: name.trim(), division, reportRoles: [], mn2: "", mgrKey: null, mgrCode: null, role: "ABM", code: "" }; plans.set(key, p); }
+      return p;
+    };
+    const resolve = (v: any): { code: string | null; stubKey?: string; err?: string } => {
       if (v.mc) {
         const hit = ctx.byCode.get(lc(v.mc)) || fileByCode.get(lc(v.mc));
         return hit ? { code: hit.employeeCode || hit.code } : { code: null, err: `reporting manager code "${v.mc}" not found` };
       }
       if (v.mn) {
-        const db = ctx.byName.get(nm(v.mn)) || [], fl = fileByName.get(nm(v.mn)) || [];
-        const all = [...new Set([...db.map((e: any) => e.employeeCode), ...fl.map((e: any) => e.code)])];
-        if (all.length === 1) return { code: all[0] };
-        // a manager given by NAME that does not exist anywhere yet is not fatal: the employee is imported without a manager (warning); ambiguous names stay errors
-        return { code: null, err: all.length ? `reporting manager name "${v.mn}" is ambiguous (${all.join(", ")})` : `reporting manager "${v.mn}" not found - employee imported without a reporting manager`, soft: !all.length };
+        const r = lookup(v.mn);
+        if (r.code) return { code: r.code };
+        if (r.ambiguous) return { code: null, err: `reporting manager name "${v.mn}" is ambiguous (${r.ambiguous.join(", ")})` };
+        if (PLACEHOLDER.test(v.mn.trim().replace(/[^A-Za-z/ -]/g, " ").replace(/\s+/g, " ").trim())) { skippedPlaceholders.add(v.mn.trim()); return { code: null }; }
+        const p = planFor(v.mn, v.division || "General");
+        p.reportRoles.push(v.role);
+        if (v.mn2 && !p.mn2) p.mn2 = v.mn2;
+        return { code: null, stubKey: p.key };
       }
       return { code: null };
     };
     const errors: RowErr[] = []; const ok: typeof items = []; const warnings: { row: number; reason: string }[] = [];
-    const mgr = new Map<number, string | null>();
+    const mgr = new Map<number, string | null>(); const stubOf = new Map<number, string>();
     for (const it of items) {
       const r = resolve(it.value);
-      if (r.err && r.soft) { warnings.push({ row: it.row, reason: r.err }); mgr.set(it.row, null); ok.push(it); }
-      else if (r.err) errors.push({ row: it.row, field: it.value.mc ? "Reporting Manager Code" : "Reporting Manager Name", reason: r.err });
-      else { mgr.set(it.row, r.code); ok.push(it); }
+      if (r.err) errors.push({ row: it.row, field: it.value.mc ? "Reporting Manager Code" : "Reporting Manager Name", reason: r.err });
+      else { if (r.stubKey) stubOf.set(it.row, r.stubKey); mgr.set(it.row, r.code); ok.push(it); }
     }
+    // a pending stub that this file's rows report to must be ACTIVE (e.g. after "Deactivate Existing Field Force List")
+    const usedStubs = [...new Set([...mgr.values()].filter((c): c is string => !!c))];
+    for (let i = 0; i < usedStubs.length && i < 200; i++) {   // and the stubs above them
+      const up = (await EmployeeModel.findOne({ tenantSlug: tenant, codePending: true, employeeCode: usedStubs[i] }).lean()) as any;
+      if (up?.reportingManager && !usedStubs.includes(up.reportingManager)) usedStubs.push(up.reportingManager);
+    }
+    if (usedStubs.length) await EmployeeModel.updateMany({ tenantSlug: tenant, codePending: true, employeeCode: { $in: usedStubs } }, { $set: { status: "ACTIVE" } });
+    // the stubs' own managers ("Reporting Manager II Name"): an existing/file person, another stub, or one more stub (chain closes in a few passes)
+    for (let pass = 0; pass < 6; pass++) {
+      let grew = false;
+      for (const p of [...plans.values()]) {
+        if (!p.mn2 || p.mgrKey || p.mgrCode || nm(p.mn2) === p.key) continue;
+        const r = lookup(p.mn2);
+        if (r.code) p.mgrCode = r.code;
+        else if (!r.ambiguous && PLACEHOLDER.test(p.mn2.trim().replace(/[^A-Za-z/ -]/g, " ").replace(/\s+/g, " ").trim())) skippedPlaceholders.add(p.mn2.trim());
+        else if (!r.ambiguous) { const before = plans.size; const up = planFor(p.mn2, p.division); p.mgrKey = up.key; if (plans.size > before) grew = true; }
+      }
+      if (!grew) break;
+    }
+    breakStubCycles(plans);
+    inferStubRoles(plans);
+    // create the stubs (placeholder code, ACTIVE, flagged), then point their reports at them
+    const autoCreated: { code: string; name: string; role: string; designation: string; reports: number; manager: string | null }[] = [];
+    if (plans.size) {
+      let n = await nextStubNumber(tenant);
+      for (const p of plans.values()) p.code = stubCode(n++);
+      for (const p of plans.values()) {
+        const mgrCode = p.mgrCode || (p.mgrKey ? plans.get(p.mgrKey)!.code : null);
+        const designation = DESIGNATION_FOR[p.role] || "Manager";
+        try {
+          await EmployeeModel.create([{ tenantSlug: tenant, employeeCode: p.code, name: p.name, designation, role: p.role, division: p.division || "General", territory: STUB_TERRITORY, reportingManager: mgrCode, status: "ACTIVE", codePending: true, autoCreatedSource: STUB_SOURCE }], { validateBeforeSave: false });
+        } catch (e) { warnings.push({ row: 0, reason: `could not create manager "${p.name}": ${e instanceof Error ? e.message : String(e)}` }); continue; }
+        autoCreated.push({ code: p.code, name: p.name, role: p.role, designation, reports: [...stubOf.values()].filter((k) => k === p.key).length, manager: mgrCode });
+      }
+      for (const [row, key] of stubOf) { const c = plans.get(key)?.code || null; mgr.set(row, c && autoCreated.some((x) => x.code === c) ? c : null); }
+      if (autoCreated.length) warnings.push({ row: 0, reason: `${autoCreated.length} manager(s) auto-created, code pending (${autoCreated.map((a) => `${a.code} ${a.name}`).join("; ")}). Complete their details in the Field Force master; uploading a row with the real code and the same name will take the placeholder over.` });
+    }
+    if (skippedPlaceholders.size) warnings.push({ row: 0, reason: `manager value(s) ${[...skippedPlaceholders].map((x) => `"${x}"`).join(", ")} look like placeholders, not people - no manager stub was created for them` });
+    if (merged.length) warnings.push({ row: 0, reason: `${merged.length} pending manager(s) completed by this file: ${merged.map((m) => `${m.name} -> ${m.code}`).join("; ")}` });
     const res = await catching(ok, (v) => {
       const row = items.find((i) => i.value === v)!.row;
       return upsert(EmployeeModel, { tenantSlug: tenant, employeeCode: v.code }, {
@@ -332,7 +404,7 @@ const salesforce: Tool = {
         ...(opts?.deactivate ? { status: "ACTIVE" } : {})
       }).then(async (r) => { if (r === "inserted") await EmployeeModel.updateOne({ tenantSlug: tenant, employeeCode: v.code }, { $set: { status: "ACTIVE" } }); return r; });
     });
-    return { inserted: res.inserted, updated: res.updated, errors: [...errors, ...res.errors], warnings };
+    return { inserted: res.inserted, updated: res.updated, errors: [...errors, ...res.errors], warnings, autoCreated, merged };
   }
 };
 
@@ -774,11 +846,12 @@ export async function importRows(tool: Tool, tenant: string, who: string, fileNa
   const { out, items, ctx, failed } = await validateRows(tool, tenant, headersIn, rows, 0, opts);
   if (sheetNote) out.warnings.unshift({ row: 0, reason: sheetNote });
   let inserted = 0, updated = 0, skipped = 0, deactivated = 0; const saveErrors: RowErr[] = [];
+  let autoCreated: any[] | undefined, merged: any[] | undefined;
   const blocked = out.fileErrors.length > 0 || (!!tool.allOrNothing && out.invalid > 0) || (tool.allOrNothing && out.total === 0);
   if (!blocked && items.length) {
     if (opts.deactivate && tool.deactivate) deactivated = await tool.deactivate(tenant);
     const r = await tool.apply(tenant, items, ctx, opts);
-    inserted = r.inserted; updated = r.updated; skipped = r.skipped || 0; saveErrors.push(...r.errors); out.warnings.push(...(r.warnings || []));
+    inserted = r.inserted; updated = r.updated; skipped = r.skipped || 0; saveErrors.push(...r.errors); out.warnings.push(...(r.warnings || [])); autoCreated = r.autoCreated; merged = r.merged;
   }
   const failedRows = new Set([...out.errors, ...saveErrors].map((e) => e.row));
   const errors = [...out.errors, ...saveErrors].sort((a, b) => a.row - b.row);
@@ -789,7 +862,7 @@ export async function importRows(tool: Tool, tenant: string, who: string, fileNa
     : failedRows.size === 0 ? "Successful" : `${failedRows.size} record(s) not uploaded (see the Not Uploaded List)`;
   const saveFailed: FailedRow[] = saveErrors.map((e) => ({ row: e.row, cells: rows[e.row - 2] || {}, reasons: [`${e.field}: ${e.reason}`] }));
   const allFailed = [...failed, ...saveFailed];
-  const summary = { fileName, total: out.total, ok: out.total - failedRows.size, failed: failedRows.size, inserted, updated, skipped, deactivated, uploaded, outcome, fileErrors: out.fileErrors, errors, warnings: out.warnings };
+  const summary = { fileName, total: out.total, ok: out.total - failedRows.size, failed: failedRows.size, inserted, updated, skipped, deactivated, uploaded, outcome, fileErrors: out.fileErrors, errors, warnings: out.warnings, autoCreatedManagers: autoCreated || [], mergedManagers: merged || [] };
   const hist = await UploadHistoryModel.create({ tenantSlug: tenant, toolKey: tool.key, fileName, uploadedBy: who, totalRows: summary.total, okRows: summary.ok, failedRows: summary.failed, inserted, updated, fileErrors: out.fileErrors, rowErrors: errors.slice(0, 1000) });
   return { ...summary, historyId: String((hist as any)._id), notUploaded: allFailed.length ? { fileName: "Not_Uploaded_List.xlsx", base64: notUploadedList(headersIn, allFailed) } : null };
 }

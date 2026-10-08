@@ -17,7 +17,8 @@ import { getMasterModel } from "../models/master-record.model.js";
 import { serializeDocument } from "../utils/serialize.js";
 import { createTourPlanWithRetry } from "../utils/tour-plan-id.js";
 import { notifyManager, notifyFieldRep } from "../utils/notify.js";
-import { afterManagerDecision, managerActor } from "../utils/approval-trail.js";
+import { afterManagerDecision, managerActor, decisionView } from "../utils/approval-trail.js";
+import { getAllDescendants } from "../utils/org-hierarchy.js";
 import { enrichTourPlansWithNames } from "../utils/enrich-tour-plans.js";
 import { enrichWithEmployeeNames } from "../utils/enrich-employee-names.js";
 import { computeComplianceRows } from "../utils/compliance.js";
@@ -384,6 +385,29 @@ managerRouter.get("/leave-applications", asyncHandler(async (req, res) => {
   }).sort({ createdAt: -1 }).limit(200).lean();
   const serialized = rows.map(serializeDocument);
   res.json({ data: await enrichWithEmployeeNames(mgr.tenantSlug, serialized, ["employeeCode", "approvedBy"]) });
+}));
+
+// Round 60 -- per-person leave list + history for the manager's team (everyone below the manager; approve/reject stays with the direct manager only).
+// Each leave carries the shared decision label ("Approved by Admin", "Approved by Manager (Name)", "Rejected by ...", "Leave cancelled by Admin"), its date,
+// remarks/reason and the append-only history. ?employeeCode=X narrows to one person (404 when that person is not in this manager's team).
+managerRouter.get("/team-leave", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = (await getAllDescendants(mgr.tenantSlug, mgr.employeeCode)) as any[];
+  const only = typeof req.query.employeeCode === "string" ? req.query.employeeCode.trim() : "";
+  const members = only ? team.filter((e) => e.employeeCode === only) : team;
+  if (only && !members.length) throw new HttpError(404, "That employee is not in your team");
+  const rows = (await LeaveApplicationModel.find({ tenantSlug: mgr.tenantSlug, employeeCode: { $in: members.map((e) => e.employeeCode) } }).sort({ fromDate: -1, createdAt: -1 }).limit(2000).lean()) as any[];
+  const data = members.map((e) => {
+    const leaves = rows.filter((r) => r.employeeCode === e.employeeCode).map((r) => ({ ...serializeDocument(r), ...decisionView(r) }));
+    const n = (s: string) => leaves.filter((l: any) => l.status === s).length;
+    return {
+      employeeCode: e.employeeCode, name: e.name, designation: e.designation, territory: e.territory, isDirectReport: e.reportingManager === mgr.employeeCode,
+      counts: { pending: n("PENDING"), approved: n("APPROVED"), rejected: n("REJECTED"), cancelled: n("CANCELLED") },
+      approvedDays: leaves.filter((l: any) => l.status === "APPROVED").reduce((s: number, l: any) => s + (Number(l.days) || 0), 0),
+      leaves
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  res.json({ data });
 }));
 
 managerRouter.post("/leave-applications/:id/approve", asyncHandler(async (req, res) => {
