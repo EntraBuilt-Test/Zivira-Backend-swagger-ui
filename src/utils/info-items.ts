@@ -4,6 +4,7 @@ import { TalkTicketModel } from "../models/talk-ticket.model.js";
 import { EmployeeModel } from "../models/employee.model.js";
 import mongoose from "mongoose";
 import { HttpError } from "../http/errors.js";
+import { roleFromDesignation } from "./upload-tools.js";
 const assertId = (id: string) => { if (!mongoose.isValidObjectId(id)) throw new HttpError(404, "Not found"); };
 
 export type InfoKind = "FLASH" | "NOTICE" | "QUOTE";
@@ -11,11 +12,35 @@ const lc = (v: unknown) => String(v ?? "").trim().toLowerCase();
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const list = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.map((x) => String(x).trim()).filter(Boolean))] : []);
 
-export type Viewer = { designation: string; division: string; hq: string };
+export type Viewer = { designation: string; division: string; hq: string; role?: string };
+
+// Audience matching is tolerant, because the admin picks names from lists while real employees carry whatever the Salesforce upload stored
+// (designation "BE" / "ABM", division "Zivira Labs Pvt Ltd" or a sub division, HQ "BANGALORE"):
+//  - designation: same text (case/space-insensitive) OR the same role family ("Medical Representative" = "BE" = "MR", "Area Business Manager" = "ABM", ...)
+//  - division: same text OR one is a whole-word prefix of the other ("Zivira" matches "Zivira Labs Pvt Ltd")
+//  - HQ: same text after dropping a trailing "HQ" / "Headquarters" ("Bangalore HQ" matches "BANGALORE")
+const squash = (v: unknown) => lc(v).replace(/\s+/g, " ");
+const words = (v: unknown) => squash(v).split(" ").filter(Boolean);
+export const roleFamily = (d: unknown): string => {
+  const t = squash(d);
+  if (!t) return "";
+  if (/^(sr|senior)\b/.test(t) && /(executive|medical rep|\bbe\b|\bmr\b)/.test(t)) return "SR_MR";
+  const r = roleFromDesignation(String(d));
+  return r === "OTHER" ? "" : r;
+};
+const sameDesignation = (a: string, v: Viewer) => squash(a) === squash(v.designation) || (!!roleFamily(a) && (roleFamily(a) === roleFamily(v.designation) || roleFamily(a) === String(v.role || "").toUpperCase()));
+const sameDivision = (a: string, v: Viewer) => {
+  const x = words(a), y = words(v.division);
+  if (!x.length || !y.length) return false;
+  const n = Math.min(x.length, y.length);
+  return x.slice(0, n).join(" ") === y.slice(0, n).join(" ");
+};
+const hqKey = (v: unknown) => squash(v).replace(/\s*\b(hq|headquarters?)$/, "").trim();
+const sameHq = (a: string, v: Viewer) => !!hqKey(a) && hqKey(a) === hqKey(v.hq);
 export const audienceMatches = (it: { designations?: string[]; divisions?: string[]; hqs?: string[] }, v: Viewer) =>
-  (!it.designations?.length || it.designations.some((d) => lc(d) === lc(v.designation))) &&
-  (!it.divisions?.length || it.divisions.some((d) => lc(d) === lc(v.division))) &&
-  (!it.hqs?.length || it.hqs.some((d) => lc(d) === lc(v.hq)));
+  (!it.designations?.length || it.designations.some((d) => sameDesignation(d, v))) &&
+  (!it.divisions?.length || it.divisions.some((d) => sameDivision(d, v))) &&
+  (!it.hqs?.length || it.hqs.some((d) => sameHq(d, v)));
 export const inWindow = (it: { startDate?: string | null; endDate?: string | null }, today: string) =>
   (!it.startDate || it.startDate <= today) && (!it.endDate || it.endDate >= today);
 // The calendar day for the COMPANY, not for the server clock: new Date().toISOString() is UTC, so between midnight and 05:30 IST an item
@@ -77,10 +102,34 @@ export async function deleteItem(tenant: string, id: string) {
   await InfoItemModel.deleteOne({ _id: cur._id });
 }
 
+// Audience pick-lists for the New Flash News / Notice / Quote popups. Only ACTIVE employees contribute; values are trimmed and de-duplicated
+// case-insensitively (the properly cased spelling wins: "Zivira" over "zivira"); test / placeholder names ("test", "testing") and HQs whose
+// HQ-master record is INACTIVE are hidden. Nothing is deleted from any master. `hidden` lists what was left out, for transparency.
+const PLACEHOLDER = /^(test|testing)$/i;
+function cleanOptions(values: string[], inactive: Set<string> = new Set()) {
+  const groups = new Map<string, Map<string, number>>();
+  const hidden: string[] = [];
+  for (const raw of values) {
+    const v = String(raw ?? "").trim().replace(/\s+/g, " ");
+    if (!v) continue;
+    if (PLACEHOLDER.test(v) || inactive.has(v.toLowerCase())) { if (!hidden.includes(v)) hidden.push(v); continue; }
+    const k = v.toLowerCase();
+    const g = groups.get(k) ?? new Map<string, number>(); g.set(v, (g.get(v) || 0) + 1); groups.set(k, g);
+  }
+  const score = (v: string) => (v === v.toLowerCase() ? 0 : v === v.toUpperCase() && v.length > 3 ? 1 : 2);   // "Zivira" > "ZIVIRA" > "zivira"
+  const options = [...groups.values()].map((g) => [...g.entries()].sort((a, b) => score(b[0]) - score(a[0]) || b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]).sort((a, b) => a.localeCompare(b));
+  for (const [k, g] of groups) for (const v of g.keys()) if (!options.includes(v) && !hidden.includes(v) && k) hidden.push(v);   // the lower-priority spellings that were folded away
+  return { options, hidden };
+}
 export async function audienceOptions(tenant: string) {
   const emps = (await EmployeeModel.find({ tenantSlug: tenant, status: "ACTIVE" }).select("designation division territory").lean()) as any[];
-  const uniq = (k: string) => [...new Set(emps.map((e) => String(e[k] || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  return { designations: uniq("designation"), divisions: uniq("division"), hqs: uniq("territory") };
+  let inactiveHq = new Set<string>();
+  try {
+    const { HeadQuarterModel } = await import("../models/headquarter.model.js");
+    inactiveHq = new Set(((await HeadQuarterModel.find({ tenantSlug: tenant, status: "INACTIVE" }).lean()) as any[]).map((h) => String(h.headQuarterName || "").trim().toLowerCase()));
+  } catch { /* no HQ master */ }
+  const d = cleanOptions(emps.map((e) => e.designation)), v = cleanOptions(emps.map((e) => e.division)), h = cleanOptions(emps.map((e) => e.territory), inactiveHq);
+  return { designations: d.options, divisions: v.options, hqs: h.options, hidden: { designations: d.hidden, divisions: v.hidden, hqs: h.hidden } };
 }
 
 // Real content already saved through the older single-document admin settings keeps showing
@@ -94,7 +143,7 @@ async function legacy(tenant: string, key: string): Promise<any | null> {
 
 export async function feedFor(tenant: string, employeeCode: string, now = new Date()) {
   const emp = (await EmployeeModel.findOne({ tenantSlug: tenant, employeeCode }).lean()) as any;
-  const viewer: Viewer = { designation: emp?.designation || "", division: emp?.division || "", hq: emp?.territory || "" };
+  const viewer: Viewer = { designation: emp?.designation || "", division: emp?.division || "", hq: emp?.territory || "", role: emp?.role || "" };
   let tz = "Asia/Kolkata"; try { const { getCompanyTimezone } = await import("./settings.js"); tz = await getCompanyTimezone(tenant); } catch { /* default */ }
   const today = todayIso(now, tz);
   const items = ((await InfoItemModel.find({ tenantSlug: tenant, active: true }).lean()) as any[]).filter((i) => inWindow(i, today) && audienceMatches(i, viewer)).map(shape);
