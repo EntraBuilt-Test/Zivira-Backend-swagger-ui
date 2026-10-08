@@ -3,14 +3,15 @@ import { Router } from "express";
 import multer from "multer";
 import { asyncHandler } from "../http/async-handler.js";
 import { HttpError } from "../http/errors.js";
-import { TOOLS, getTool, parseBuffer, templateWorkbook, generateWorkbook, GENERATE_COLUMNS, SheetNameError, validateRows, importRows, knownHeaders, type UploadOpts } from "../utils/upload-tools.js";
+import { TOOLS, getTool, parseBuffer, templateWorkbook, generateWorkbook, GENERATE_COLUMNS, SheetNameError, validateRows, importRows, knownHeaders, norm, type UploadOpts } from "../utils/upload-tools.js";
 import { ProductModel } from "../models/product.model.js";
 import { StateModel } from "../models/state.model.js";
 import { TenantModel } from "../models/tenant.model.js";
 import { SubdivisionModel } from "../models/subdivision.model.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
 import { UploadHistoryModel } from "../models/upload-history.model.js";
-import { DoctorUploadLogModel } from "../models/doctor-upload-log.model.js";
+import { DoctorUploadLogModel } from "../models/doctor-upload-log.model.js";   // legacy Listed Doctor log rows (kept readable)
+import { UploadLogModel } from "../models/upload-log.model.js";
 import { UploadGenerateStateModel } from "../models/upload-generate-state.model.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { DealerModel } from "../models/dealer.model.js";
@@ -84,8 +85,10 @@ uploadToolsRouter.post("/:key/generate", asyncHandler(async (req, res) => {
   const columns = Array.isArray(req.body?.columns) ? req.body.columns.map(String) : [];
   let buf: Buffer;
   try { buf = await generateWorkbook(tool.key, columns); } catch (e) { throw new HttpError(400, e instanceof Error ? e.message : "Could not generate the Excel file"); }
-  // remember the generated state for this company user (server side)
-  if (req.body?.remember !== false) await UploadGenerateStateModel.updateOne({ tenantSlug: req.auth!.tenantSlug!, userId: String(req.auth!.sub), toolKey: tool.key }, { $set: { columns, generatedAt: new Date() } }, { upsert: true });
+  // remember the generated state for this company user (server side): the columns the file really has (always-included ones too), so ticking nothing is remembered as well
+  const want = new Set(columns.map((x: string) => norm(x)));
+  const effective = GENERATE_COLUMNS[tool.key].filter((c) => c.mandatory || want.has(norm(c.label))).map((c) => c.label);
+  if (req.body?.remember !== false) await UploadGenerateStateModel.updateOne({ tenantSlug: req.auth!.tenantSlug!, userId: String(req.auth!.sub), toolKey: tool.key }, { $set: { columns: effective, generatedAt: new Date() } }, { upsert: true });
   res.setHeader("Content-Type", XLSX_MIME);
   res.setHeader("Content-Disposition", `attachment; filename="${fileSafe(tool.title)}.xlsx"`);
   res.send(buf);
@@ -135,7 +138,8 @@ uploadToolsRouter.get("/product-rate/states", asyncHandler(async (req, res) => {
   res.json({ data: { states: names, default: names.find((n) => n.toLowerCase() === "gujarat") || names[0] || "" } });
 }));
 
-// ---- Listed Doctor: persisted upload log (Round 61 review 2) ----
+// ---- persisted upload log (Round 61 review 2, generalised in Round 62): Listed Doctor, Chemists and every tool added to LOGGED_TOOLS ----
+const LOGGED_TOOLS = new Set(["listed-doctor", "chemist"]);
 const NOT_UPLOADED_MAX_BYTES = 2 * 1024 * 1024;
 /** The single most common reason across the rejected rows (a row counts once per reason), worded without the cell values. */
 export function topReasonOf(errors: { row: number; field: string; reason: string }[]): { text: string; rows: number } {
@@ -148,34 +152,43 @@ export function topReasonOf(errors: { row: number; field: string; reason: string
   for (const [text, rows] of perKey) if (rows.size > best.rows) best = { text, rows: rows.size };
   return best;
 }
-async function logDoctorUpload(tenant: string, who: string, fileName: string, r: { total: number; inserted: number; updated: number; failed: number; errors?: { row: number; field: string; reason: string }[] }, notUploadedB64: string | null, note: string): Promise<string | undefined> {
+async function logUpload(toolKey: string, tenant: string, who: string, fileName: string, r: { total: number; inserted: number; updated: number; failed: number; errors?: { row: number; field: string; reason: string }[] }, notUploadedB64: string | null, note: string): Promise<string | undefined> {
   try {
     const buf = notUploadedB64 ? Buffer.from(notUploadedB64, "base64") : null;
     const keep = buf && buf.length <= NOT_UPLOADED_MAX_BYTES ? buf : undefined;
-    const rejected = r.failed;
     const top = topReasonOf(r.errors || []);
-    const row = await DoctorUploadLogModel.create({ tenantSlug: tenant, fileName, uploadedAt: new Date(), uploadedBy: who, read: r.total, inserted: r.inserted, updated: r.updated, rejected, note, topReason: top.text || note, topReasonRows: top.rows, notUploadedFile: keep, notUploadedTruncated: !!buf && !keep });
+    const row = await UploadLogModel.create({ toolKey, tenantSlug: tenant, fileName, uploadedAt: new Date(), uploadedBy: who, read: r.total, inserted: r.inserted, updated: r.updated, rejected: r.failed, note, topReason: top.text || note, topReasonRows: top.rows, notUploadedFile: keep, notUploadedTruncated: !!buf && !keep });
     return String((row as any)._id);
-  } catch (e) { console.error("doctor upload log failed", e); return undefined; }
+  } catch (e) { console.error("upload log failed", e); return undefined; }
 }
-uploadToolsRouter.get("/listed-doctor/uploads", asyncHandler(async (req, res) => {
-  const rows = (await DoctorUploadLogModel.find({ tenantSlug: req.auth!.tenantSlug! }).select("-notUploadedFile").sort({ uploadedAt: -1 }).limit(50).lean()) as any[];
+const loggedOr404 = (key: string) => { toolOr404(key); if (!LOGGED_TOOLS.has(key)) throw new HttpError(404, `No upload history for ${key}`); };
+uploadToolsRouter.get("/:key/uploads", asyncHandler(async (req, res) => {
+  loggedOr404(req.params.key);
+  const tenant = req.auth!.tenantSlug!;
+  let rows = (await UploadLogModel.find({ tenantSlug: tenant, toolKey: req.params.key }).select("-notUploadedFile").sort({ uploadedAt: -1 }).limit(50).lean()) as any[];
+  if (req.params.key === "listed-doctor") {   // rows logged before the shared model existed
+    const old = (await DoctorUploadLogModel.find({ tenantSlug: tenant }).select("-notUploadedFile").sort({ uploadedAt: -1 }).limit(50).lean()) as any[];
+    rows = [...rows, ...old].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()).slice(0, 50);
+  }
   res.json({ data: rows.map((r) => ({ id: String(r._id), fileName: r.fileName, uploadedAt: r.uploadedAt, uploadedBy: r.uploadedBy, read: r.read, inserted: r.inserted, updated: r.updated, success: (r.inserted || 0) + (r.updated || 0), rejected: r.rejected, note: r.note || "", topReason: r.topReason || "", topReasonRows: r.topReasonRows || 0, hasNotUploaded: (r.rejected || 0) > 0 })) });
 }));
-uploadToolsRouter.get("/listed-doctor/uploads/:id/not-uploaded", asyncHandler(async (req, res) => {
-  const row = (await DoctorUploadLogModel.findOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug! })) as any;
+uploadToolsRouter.get("/:key/uploads/:id/not-uploaded", asyncHandler(async (req, res) => {
+  loggedOr404(req.params.key);
+  const tenant = req.auth!.tenantSlug!;
+  let row = (await UploadLogModel.findOne({ _id: req.params.id, tenantSlug: tenant, toolKey: req.params.key })) as any;
+  if (!row && req.params.key === "listed-doctor") row = (await DoctorUploadLogModel.findOne({ _id: req.params.id, tenantSlug: tenant })) as any;
   if (!row) throw new HttpError(404, "Upload not found");
   const raw = row.notUploadedFile;
   const buf: Buffer | null = raw ? (Buffer.isBuffer(raw) ? raw : Buffer.from((raw.buffer ?? raw) as any)) : null;
   if (!buf || !buf.length) throw new HttpError(404, row.notUploadedTruncated ? "The Not Uploaded List for this upload was too large to keep" : "This upload had no rejected records");
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="Not_Uploaded_List_${String(row.fileName || "listed-doctor").replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_")}.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="Not_Uploaded_List_${String(row.fileName || req.params.key).replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_")}.xlsx"`);
   res.send(buf);
 }));
 
 uploadToolsRouter.post("/:key/validate", upload.single("file"), asyncHandler(async (req, res) => {
   const tool = toolOr404(req.params.key);
-  const inp = inputOf(req, tool.sheetName, tool.key === "listed-doctor" ? knownHeaders(tool) : undefined);
+  const inp = inputOf(req, tool.sheetName, LOGGED_TOOLS.has(tool.key) ? knownHeaders(tool) : undefined);
   if (inp.fileError) return res.json({ data: { fileName: inp.fileName, headers: tool.headers, fileErrors: [inp.fileError], total: 0, valid: 0, invalid: 0, errors: [], errorsTotal: 0, warnings: [], preview: [] } });
   const { out } = await validateRows(tool, req.auth!.tenantSlug!, inp.headers, inp.rows, 50, optsOf(req));
   if (inp.sheetNote) out.warnings.unshift({ row: 0, reason: inp.sheetNote });
@@ -184,14 +197,14 @@ uploadToolsRouter.post("/:key/validate", upload.single("file"), asyncHandler(asy
 
 uploadToolsRouter.post("/:key/import", upload.single("file"), asyncHandler(async (req, res) => {
   const tool = toolOr404(req.params.key);
-  const inp = inputOf(req, tool.sheetName, tool.key === "listed-doctor" ? knownHeaders(tool) : undefined);
+  const inp = inputOf(req, tool.sheetName, LOGGED_TOOLS.has(tool.key) ? knownHeaders(tool) : undefined);
   const who = await whoIs(req);
   if (inp.fileError) {
-    const logId = tool.key === "listed-doctor" ? await logDoctorUpload(req.auth!.tenantSlug!, who, inp.fileName, { total: 0, inserted: 0, updated: 0, failed: 0 }, null, inp.fileError) : undefined;
+    const logId = LOGGED_TOOLS.has(tool.key) ? await logUpload(tool.key, req.auth!.tenantSlug!, who, inp.fileName, { total: 0, inserted: 0, updated: 0, failed: 0 }, null, inp.fileError) : undefined;
     return res.json({ data: { fileName: inp.fileName, total: 0, ok: 0, failed: 0, inserted: 0, updated: 0, skipped: 0, deactivated: 0, uploaded: false, outcome: inp.fileError, fileErrors: [inp.fileError], errors: [], warnings: [], notUploaded: null, logId } });
   }
   const result = await importRows(tool, req.auth!.tenantSlug!, who, inp.fileName, inp.headers, inp.rows, optsOf(req), inp.sheetNote);
-  const logId = tool.key === "listed-doctor" ? await logDoctorUpload(req.auth!.tenantSlug!, who, inp.fileName, result, result.notUploaded?.base64 || null, result.fileErrors[0] || "") : undefined;
+  const logId = LOGGED_TOOLS.has(tool.key) ? await logUpload(tool.key, req.auth!.tenantSlug!, who, inp.fileName, result, result.notUploaded?.base64 || null, result.fileErrors[0] || "") : undefined;
   res.json({ data: { ...result, logId } });
 }));
 

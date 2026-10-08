@@ -101,7 +101,7 @@ const rawUpload = async (as: string, key: string, file: string, type = "applicat
   const r = await fetch(`${base}/company/upload-tools/${key}/import`, { method: "POST", headers: { authorization: `Bearer ${tokens.admin}` }, body: fd });
   assert.equal(r.status, 200, `${file}: HTTP ${r.status}`); return ((await r.json()) as any).data;
 };
-const reset = () => { for (const k of ["doctors", "employees", "doctorUploadLogs", "uploadHistories", "dealers"]) store[k] = []; };
+const reset = () => { for (const k of ["doctors", "employees", "doctorUploadLogs", "uploadLogs", "uploadHistories", "dealers"]) store[k] = []; };
 const rowsIn = (file: string) => { const wb = XLSX.read(fs.readFileSync(`${DIR}/${file}`)); const ws = wb.Sheets[wb.SheetNames[0]]; return XLSX.utils.sheet_to_json<any>(ws, { defval: "" }).filter((r) => Object.values(r).some((v) => String(v).trim() !== "")).length; };
 const FILES: [string, number, string?][] = [
   ["demo.xlsx", rowsIn("demo.xlsx")], ["demo.csv", rowsIn("demo.csv"), "text/csv"], ["demo_openpyxl.xlsx", rowsIn("demo.xlsx")], ["demo_lo.xlsx", rowsIn("demo.xlsx")],

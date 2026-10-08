@@ -142,10 +142,10 @@ async function loadProducts(tenant: string) {
 }
 
 /** Update-or-insert on a natural-key filter. Never validates required-ness of untouched legacy fields. */
-async function upsert(Model: any, filter: Record<string, unknown>, set: Record<string, unknown>): Promise<"inserted" | "updated"> {
+async function upsert(Model: any, filter: Record<string, unknown>, set: Record<string, unknown>, insertOnly: () => Record<string, unknown> = () => ({})): Promise<"inserted" | "updated"> {
   const existing = (await Model.findOne(filter).lean()) as any;
   if (existing) { await Model.updateOne({ _id: existing._id }, { $set: set }); return "updated"; }
-  await Model.create([{ ...filter, ...set }], { validateBeforeSave: false });
+  await Model.create([{ ...filter, ...set, ...insertOnly() }], { validateBeforeSave: false });
   return "inserted";
 }
 const catching = async (rows: { row: number; value: any }[], fn: (v: any) => Promise<"inserted" | "updated">) => {
@@ -194,7 +194,7 @@ const listedDoctor: Tool = {
     let tier: Tier | null = null;
     if (cat) { tier = TIERS.find((t) => lc(t) === lc(cat)) || null; if (!tier) errors.push({ field: "Category", reason: `"${cat}" must be one of ${TIERS.join(", ")}${/^[abc]$/i.test(cat) ? " (A / B / C belong in the Class column)" : ""}` }); }
     const cls = g("Class");
-    if (cls && !DOCTOR_CLASSES.some((c) => lc(c) === lc(cls))) errors.push({ field: "Class", reason: `"${cls}" must be A, B, C or Nil` });
+    if (cls && !DOCTOR_CLASSES.some((c) => lc(c) === lc(cls))) errors.push({ field: "Class", reason: "Class must be A, B, C or Nil" });
     const ttRaw = g("Territory_type");
     const tt = ttRaw ? territoryTypeOf(ttRaw) : "";
     if (ttRaw && !tt) errors.push({ field: "Territory_type", reason: `"${ttRaw}" must be HQ, EX (Ex-HQ) or OS (Out Station)` });
@@ -249,22 +249,26 @@ const chemist: Tool = {
   check(g, ctx) {
     const errors: Er[] = [];
     const code = reqd(g, "Employee Code", errors), name = reqd(g, "Chemists Name", errors);
+    if (!g("Territory")) errors.push({ field: "Territory", reason: "required" });
     const emp = empOf(ctx, code);
-    if (code && !emp) errors.push({ field: "Employee Code", reason: `employee "${code}" not found` });
+    if (code && !emp) errors.push({ field: "User Name", reason: `User Name "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
     const mob = g("Mobile"); if (mob && !isPhone(mob)) errors.push({ field: "Mobile", reason: "invalid mobile number" });
     const mail = g("EMail ID") || g("Email"); if (mail && !isEmail(mail)) errors.push({ field: "EMail ID", reason: "invalid email address" });
-    const cls = g("Class"); if (cls && cls.length > 20) errors.push({ field: "Class", reason: "too long" });
+    const cls = g("Class"); if (cls && cls.length > 20) errors.push({ field: "Class", reason: "Class must be 20 characters or fewer" });
     const extras: Record<string, string> = {};
     for (let i = 1; i <= 5; i++) if (g(`Others ${i}`)) extras[`others${i}`] = g(`Others ${i}`);
     return { errors, key: `${lc(code)}|${lc(name)}|${lc(g("Territory"))}`, value: { code: emp?.employeeCode || code, empName: emp?.name || "", state: g("State") || emp?.state || null, name, cls, address: g("Address"), territory: g("Territory"), contact: g("Contact Person"), mobile: mob, ref: g("Common Reference Number"),
       category: g("Category"), address2: g("Address 2"), city: g("City Name"), pin: g("Pin Code"), designation: g("Contact Person Designation"), landline: g("Shop landline No"), mail, website: g("Website"), stockistErp: g("Stockist ERP Code"), chemistErp: g("Chemist ERP Code"), extras } };
   },
   async apply(tenant, items) {
+    // new chemists get the next Chemist Code (sourceSNo) so the master shows CH001-style codes and keeps its order
+    const top = (await DealerModel.find({ tenantSlug: tenant, sourceSNo: { $exists: true } }).sort({ sourceSNo: -1 }).limit(1).lean()) as any[];
+    let nextNo = Number(top[0]?.sourceSNo || 0);
     return catching(items, (v) => upsert(DealerModel, { tenantSlug: tenant, employeeCode: v.code, dealerName: v.name, patchName: v.territory || null },
       { employeeName: v.empName, chemistClass: v.cls || null, address: v.address || null, contactPersonName: v.contact || null, dealerPhone: v.mobile || null, commonRefNo: v.ref || null, state: v.state, status: "ACTIVE",
       ...(v.category ? { category: v.category } : {}), ...(v.address2 ? { address2: v.address2 } : {}), ...(v.city ? { city: v.city } : {}), ...(v.pin ? { pincode: v.pin } : {}), ...(v.designation ? { contactDesignation: v.designation } : {}),
       ...(v.landline ? { shopLandline: v.landline } : {}), ...(v.mail ? { dealerEmail: v.mail.toLowerCase() } : {}), ...(v.website ? { website: v.website } : {}), ...(v.stockistErp ? { stockistErpCode: v.stockistErp } : {}), ...(v.chemistErp ? { chemistErpCode: v.chemistErp } : {}),
-      ...(Object.keys(v.extras).length ? { uploadExtras: v.extras } : {}) }));
+      ...(Object.keys(v.extras).length ? { uploadExtras: v.extras } : {}) }, () => ({ sourceSNo: ++nextNo })));
   }
 };
 
@@ -776,7 +780,7 @@ async function buildSheet(sheet: string, headers: string[], mandatory: string[],
 
 /** The "Excel Format File - Download Here" workbook: legacy sheet name, mandatory columns in yellow. */
 /** Normalised column names (and aliases) a tool understands. */
-export const knownHeaders = (tool: Tool) => new Set([...tool.headers.map(norm), ...Object.keys(tool.aliases || {})]);
+export const knownHeaders = (tool: Tool) => new Set([...tool.headers.map(norm), ...Object.keys(tool.aliases || {}), ...(GENERATE_COLUMNS[tool.key] || []).map((c) => norm(c.label))]);
 
 export async function templateWorkbook(tool: Tool, tenant: string, opts: UploadOpts = {}): Promise<Buffer> {
   const headers = tool.templateHeaders || tool.headers;
@@ -850,8 +854,8 @@ export async function validateRows(tool: Tool, tenant: string, headersIn: string
   if (out.fileErrors.length) return { out, items, ctx: null as Ctx, failed };
   const ctx = await tool.load(tenant, opts);
   // an empty Field Force master makes every row fail for the same reason: say so once instead of rejecting each row
-  if (tool.key === "listed-doctor" && ctx?.byCode && ctx.byCode.size === 0) {
-    out.fileErrors.push("The Field Force master has no employees for this company, so User Name cannot be matched. Upload the Salesforce file (Upload > Salesforce) or add the employees first, then upload the doctors.");
+  if (["listed-doctor", "chemist"].includes(tool.key) && ctx?.byCode && ctx.byCode.size === 0) {
+    out.fileErrors.push("The Field Force master has no employees for this company, so User Name cannot be matched. Upload the Salesforce file (Upload > Salesforce) or add the employees first, then upload the file again.");
     return { out, items, ctx, failed };
   }
   const seen = new Map<string, number>();

@@ -26,6 +26,7 @@ import { syncPayrollStatuses } from "../utils/payroll.js";
 import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { computeRepAnalysisRows } from "../utils/rep-manager-analysis.js";
 import { CampaignVisitModel } from "../models/campaign-visit.model.js";
+import { DealerModel } from "../models/dealer.model.js";
 import { ChemistCallModel } from "../models/chemist-call.model.js";
 import { infoDeliveryRouter } from "./info.routes.js";
 
@@ -1255,6 +1256,18 @@ managerRouter.get("/team-checkout-status", asyncHandler(async (req, res) => {
 // GET /manager/dcrs already gives for doctor DCRs. Reuses Phase 5's real
 // ChemistCallModel as-is — no new schema.
 // ══════════════════════════════════════════════════════════════════════
+// GET /manager/chemists -- the chemists (Chemist Master / Chemists Upload Tool) mapped to this manager's direct team, with how many calls each has had.
+managerRouter.get("/chemists", asyncHandler(async (req, res) => {
+  const mgr = await getManagerProfile(req.auth!.sub);
+  const team = (await EmployeeModel.find({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, status: "ACTIVE" }, { employeeCode: 1, name: 1 }).lean()) as any[];
+  const codes = team.map((e) => e.employeeCode);
+  const chemists = codes.length ? ((await DealerModel.find({ tenantSlug: mgr.tenantSlug, employeeCode: { $in: codes }, status: "ACTIVE" }).sort({ dealerName: 1 })) as any[]) : [];
+  const calls = chemists.length ? ((await ChemistCallModel.find({ tenantSlug: mgr.tenantSlug, employeeCode: { $in: codes } }, { chemistId: 1 }).lean()) as any[]) : [];
+  const perChemist = new Map<string, number>();
+  for (const c of calls) perChemist.set(String(c.chemistId), (perChemist.get(String(c.chemistId)) || 0) + 1);
+  res.json({ data: { mrs: team.map((e) => ({ employeeCode: e.employeeCode, name: e.name })), rows: chemists.map((c) => ({ chemistId: String(c._id), chemistName: c.dealerName, territory: c.patchName, category: c.category, chemistClass: c.chemistClass, mappedEmployeeCode: c.employeeCode, mappedEmployeeName: c.employeeName, callCount: perChemist.get(String(c._id)) || 0 })) } });
+}));
+
 managerRouter.get("/chemist-calls", asyncHandler(async (req, res) => {
   const mgr = await getManagerProfile(req.auth!.sub);
   const team = await EmployeeModel.find(

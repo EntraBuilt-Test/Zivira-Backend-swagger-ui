@@ -190,7 +190,7 @@ assert.deepEqual(header(gws), ["SI No", "User Name", "Listed Doctor Name", "Terr
 assert.equal(yellow(gws).length, 15);
 assert.equal((await fetch(`${base}/listed-doctor/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ columns: ["Nope"] }) })).status, 400);
 // Round 59: the generated state is kept on the server per company user; "Delete and Generate New Excel" clears it
-{ const g1 = (await (await fetch(`${base}/listed-doctor/generated`)).json() as any).data; assert.deepEqual(g1.columns, ["Hospital Name", "Fax", "Others 1"]); assert.ok(g1.generatedAt);
+{ const g1 = (await (await fetch(`${base}/listed-doctor/generated`)).json() as any).data; assert.deepEqual(g1.columns, header(gws), "the saved state is the columns the file really has (always-included ones too)"); assert.ok(g1.generatedAt);
   assert.equal((await (await fetch(`${base}/listed-doctor/generated`, { headers: { "x-user": "000000000000000000000002" } })).json() as any).data, null, "another user has no generated state");
   assert.equal((await (await fetch(`${base}/chemist/generated`)).json() as any).data, null, "per tool");
   assert.equal((await fetch(`${base}/listed-doctor/generated`, { method: "DELETE" })).status, 200); assert.equal((await (await fetch(`${base}/listed-doctor/generated`)).json() as any).data, null);
