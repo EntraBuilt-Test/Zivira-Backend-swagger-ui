@@ -10,6 +10,7 @@ const asId = (n: number) => new mongoose.Types.ObjectId(String(n).padStart(24, "
 class Q {
   constructor(private docs: any[], private model: any) {}
   select() { return this; }
+  limit(n: number) { this.docs = this.docs.slice(0, n); return this; }
   sort(spec: any) { const [k, dir] = Object.entries(spec)[0] as [string, number]; this.docs = [...this.docs].sort((a, b) => (a[k] > b[k] ? 1 : -1) * (dir < 0 ? -1 : 1)); return this; }
   populate(path: string) {
     const doctors = store["doctors"] || [];
@@ -70,7 +71,7 @@ const CH = U.getTool("chemist")!.headers;
 const chRows = [["AMITH K", "BE", "KANNUR", "E2", "City Meds", "A", "MG Road", "T1", "Mr X", "9876543210", "R1"], ["", "", "", "E9", "Ghost", "", "", "", "", "", ""], ["", "", "", "E2", "", "", "", "", "", "12", ""], ["", "", "", "E2", "City Meds", "", "", "T1", "", "", ""]];
 const c1 = await run("chemist", CH, chRows);
 assert.deepEqual([c1.total, c1.ok, c1.failed, c1.inserted], [4, 1, 3, 1]);
-assert.deepEqual(c1.errors.map((e) => [e.row, e.field]), [[3, "Employee Code"], [4, "Chemists Name"], [4, "Mobile"], [5, "(key)"]]);
+assert.deepEqual(c1.errors.map((e) => [e.row, e.field]), [[3, "Territory"], [3, "User Name"], [4, "Chemists Name"], [4, "Territory"], [4, "Mobile"], [5, "(key)"]]   /* Round 62: Territory is mandatory and the employee is the "User Name" column */);
 assert.equal(store["dealers"].length, 1); assert.equal(store["dealers"][0].employeeName, "AMITH K"); assert.equal(store["dealers"][0].commonRefNo, "R1");
 const c2 = await run("chemist", CH, chRows);
 assert.deepEqual([c2.inserted, c2.updated], [0, 1]); assert.equal(store["dealers"].length, 1);         // idempotent
