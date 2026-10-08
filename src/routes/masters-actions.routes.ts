@@ -21,6 +21,8 @@ import { LeaveApplicationModel } from "../models/leave-application.model.js";
 import { approvalLabel } from "../utils/approval-trail.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
 import { ProductModel } from "../models/product.model.js";
+import { DoctorSpecialityModel } from "../models/doctor-speciality.model.js";
+import { ProductGroupModel } from "../models/product-group.model.js";
 import { computeComplianceRows } from "../utils/compliance.js";
 import { DcrModel } from "../models/dcr.model.js";
 import { DespatchLogModel } from "../models/despatch-log.model.js";
@@ -666,8 +668,6 @@ mastersActionsRouter.delete(
 // the generic per-tenant CompanyConfig key/value store — one small number per
 // item is exactly what that store already exists for, rather than a new
 // bespoke collection.
-const SLIDE_SPECIALITY_OPTIONS = ["CMS", "CP", "CRS", "CTRCT", "ECC", "GENPHY", "GLAUCO", "GLS", "IOL", "LSK", "MSO", "NEURO", "OCLP", "OPTO", "ORBIT", "PEDOPT", "PG", "PGCRS", "PGOPT", "PGR", "PHACO", "PSUR", "RES", "RETINA", "SPL", "SUR", "UVE"];
-const SLIDE_THERAPY_OPTIONS = ["AA", "AG", "AI", "AIC", "AO", "INFLM", "TS", "WIPES"];
 
 function slidePriorityConfigKey(type: string, subDivision: string, item: string) {
   return `slidePriority:${type}:${subDivision || "-"}:${item}`;
@@ -682,13 +682,13 @@ mastersActionsRouter.get(
 
     let items: string[] = [];
     if (type === "Brand") {
-      items = (await ProductBrandModel.find({ tenantSlug, status: "ACTIVE" }).sort({ brandName: 1 }).lean()).map((b: any) => b.brandName).filter(Boolean);
+      items = (await ProductBrandModel.find({ tenantSlug, status: "ACTIVE", ...(subDivision ? { division: subDivision } : {}) }).sort({ brandName: 1 }).lean()).map((b: any) => b.brandName).filter(Boolean);
     } else if (type === "Product") {
       items = (await ProductModel.find({ tenantSlug, status: "ACTIVE" }).sort({ productName: 1 }).lean()).map((p: any) => p.productName || p.name).filter(Boolean);
     } else if (type === "Speciality") {
-      items = SLIDE_SPECIALITY_OPTIONS;
+      items = (await DoctorSpecialityModel.find({ tenantSlug, status: "ACTIVE" }).sort({ specialityName: 1 }).lean()).map((x: any) => x.specialityName).filter(Boolean);
     } else {
-      items = SLIDE_THERAPY_OPTIONS;
+      items = (await ProductGroupModel.find({ tenantSlug, status: "ACTIVE" }).lean()).map((g: any) => String(g.therapyName || "").trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
     }
 
     const prefix = `slidePriority:${type}:${subDivision || "-"}:`;
@@ -727,6 +727,25 @@ mastersActionsRouter.post(
     );
     await audit("SLIDE_PRIORITY_UPDATED", "slideUploadEDetailing", body.item, { tenantSlug, ...body });
     res.json({ data: { success: true } });
+  })
+);
+
+const slidePriorityOrderSchema = z.object({
+  type: z.enum(["Brand", "Product", "Speciality", "Therapy"]),
+  subDivision: z.string().optional().default(""),
+  items: z.array(z.string().min(1)).min(1)
+});
+// Reorder: items arrive in the new order; priority becomes 1..n
+mastersActionsRouter.post(
+  "/slideUploadEDetailing/action/priority-order",
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const body = slidePriorityOrderSchema.parse(req.body);
+    for (const [i, item] of body.items.entries()) {
+      await CompanyConfigModel.findOneAndUpdate({ tenantSlug, key: slidePriorityConfigKey(body.type, body.subDivision, item) }, { $set: { value: i + 1 } }, { upsert: true, new: true });
+    }
+    await audit("SLIDE_PRIORITY_REORDERED", "slideUploadEDetailing", body.type, { tenantSlug, ...body });
+    res.json({ data: { success: true, count: body.items.length } });
   })
 );
 

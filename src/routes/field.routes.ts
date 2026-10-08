@@ -1325,7 +1325,11 @@ fieldRouter.get("/slides", asyncHandler(async (req, res) => {
   if (typeof req.query.division === "string" && req.query.division) filter.division = req.query.division;
   if (typeof req.query.subDivision === "string" && req.query.subDivision) filter.subDivision = req.query.subDivision;
   if (typeof req.query.brand === "string" && req.query.brand) filter.brand = req.query.brand;
+  for (const [q, f] of [["product", "products"], ["speciality", "specialities"], ["therapy", "therapies"]] as const) {
+    if (typeof req.query[q] === "string" && req.query[q]) filter[f] = req.query[q];
+  }
   const rows = (await Model.find(filter).sort({ uploadedOn: -1 }).lean()) as unknown as Record<string, unknown>[];
+  rows.sort((a, b) => (Number(a.order) || 1e9) - (Number(b.order) || 1e9));     // admin Priority tab order first, then newest
   res.json({ data: rows.map(omitFileData) });
 }));
 

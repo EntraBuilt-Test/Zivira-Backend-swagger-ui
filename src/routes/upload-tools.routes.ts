@@ -9,6 +9,8 @@ import { StateModel } from "../models/state.model.js";
 import { TenantModel } from "../models/tenant.model.js";
 import { SubdivisionModel } from "../models/subdivision.model.js";
 import { ProductBrandModel } from "../models/product-brand.model.js";
+import { DoctorSpecialityModel } from "../models/doctor-speciality.model.js";
+import { ProductGroupModel } from "../models/product-group.model.js";
 import { UploadHistoryModel } from "../models/upload-history.model.js";
 import { DoctorUploadLogModel } from "../models/doctor-upload-log.model.js";   // legacy Listed Doctor log rows (kept readable)
 import { UploadLogModel } from "../models/upload-log.model.js";
@@ -271,7 +273,12 @@ uploadToolsRouter.get("/slides/meta", asyncHandler(async (req, res) => {
   // Sub Division in the slide screens is the root group (first word of the sub division names: Astra / Aura / Zivira), the value ProductBrand.division carries.
   const roots = uniq(subs.map((x) => String(x.subdivisionName || "").trim().split(/\s+/)[0]));
   const brandRows = brands.map((b) => ({ name: String(b.brandName || "").trim(), subDivision: String(b.division || "").trim() })).filter((b) => b.name);
-  res.json({ data: { division: t?.name || "", subDivisions: roots, brands: uniq(brands.map((b) => b.brandName)), brandRows, ...u, maxFileBytes: SLIDE_MAX_FILE, legacySlides: await countLegacySlides(tenant) } });
+  // Product / Speciality / Therapy pickers come from the real masters (empty master -> empty dropdown)
+  const prods = (await ProductModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
+  const productRows = prods.map((p) => ({ name: String(p.productName || p.name || "").trim(), brand: String(p.brandName || "").trim(), subDivision: String(p.subDivision || "").trim().split(/\s+/)[0] || "" })).filter((p) => p.name);
+  const specs = (await DoctorSpecialityModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
+  const groups = (await ProductGroupModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
+  res.json({ data: { division: t?.name || "", subDivisions: roots, brands: uniq(brands.map((b) => b.brandName)), brandRows, productRows, specialities: uniq(specs.map((x) => x.specialityName)), therapies: uniq(groups.map((g) => g.therapyName)), ...u, maxFileBytes: SLIDE_MAX_FILE, legacySlides: await countLegacySlides(tenant) } });
 }));
 
 // Round 60 -- explicit migration of the old base64 slides into GridFS (also runs automatically on first access of meta/list/upload). Safe to re-run.
@@ -286,8 +293,13 @@ uploadToolsRouter.get("/slides/list", asyncHandler(async (req, res) => {
   if (typeof req.query.subDivision === "string" && req.query.subDivision) filter.subDivision = req.query.subDivision;
   const brands = typeof req.query.brands === "string" ? req.query.brands.split("|").filter(Boolean) : [];
   if (brands.length) filter.brand = { $in: brands };
+  const pipe = (v: unknown) => (typeof v === "string" ? v.split("|").map((x) => x.trim()).filter(Boolean) : []);
+  const products = pipe(req.query.products), specialities = pipe(req.query.specialities), therapies = pipe(req.query.therapies);
+  if (products.length) filter.products = { $in: products };
+  if (specialities.length) filter.specialities = { $in: specialities };
+  if (therapies.length) filter.therapies = { $in: therapies };
   const rows = (await Slides.find(filter).select("-fileData").sort({ uploadedOn: -1 }).lean()) as any[];
-  res.json({ data: rows.map((r) => ({ id: String(r._id), fileName: r.fileName, brand: r.brand || "", subDivision: r.subDivision || "", division: r.division || "", uploadedOn: r.uploadedOn, pages: r.pages ?? null, size: typeof r.fileSize === "number" ? r.fileSize : null, mimeType: r.mimeType || "", order: r.order ?? null })) });
+  res.json({ data: rows.map((r) => ({ id: String(r._id), products: r.products || [], specialities: r.specialities || [], therapies: r.therapies || [], fileName: r.fileName, brand: r.brand || "", subDivision: r.subDivision || "", division: r.division || "", uploadedOn: r.uploadedOn, pages: r.pages ?? null, size: typeof r.fileSize === "number" ? r.fileSize : null, mimeType: r.mimeType || "", order: r.order ?? null })) });
 }));
 
 uploadToolsRouter.post("/slides/upload", slideUpload.array("files", 50), asyncHandler(async (req, res) => {
@@ -298,6 +310,8 @@ uploadToolsRouter.post("/slides/upload", slideUpload.array("files", 50), asyncHa
   const brands = String(req.body?.brands || req.body?.brand || "").split("|").map((b) => b.trim()).filter(Boolean);
   if (!brands.length) throw new HttpError(400, "Select the Brand first");
   const subDivision = String(req.body?.subDivision || "").trim();
+  const pipeOf = (v: unknown) => String(v || "").split("|").map((x) => x.trim()).filter(Boolean);
+  const tags = { products: pipeOf(req.body?.products), specialities: pipeOf(req.body?.specialities), therapies: pipeOf(req.body?.therapies) };
   const t = (await TenantModel.findOne({ slug: tenant }).lean()) as any;
   const Slides = getMasterModel("slideUploadEDetailing");
   const usage = await slideUsage(tenant);
@@ -310,7 +324,7 @@ uploadToolsRouter.post("/slides/upload", slideUpload.array("files", 50), asyncHa
     let pages: number | undefined;
     if (mimeType.toLowerCase() === "application/pdf") { const m = f.buffer.toString("latin1").match(/\/Type\s*\/Page(?!s)/g); if (m && m.length) pages = m.length; }
     for (const brand of brands) {
-      const set: Record<string, unknown> = { tenantSlug: tenant, division: t?.name || "", subDivision, brand, fileName: f.originalname, uploadedOn: new Date(), fileRef, mimeType, fileSize: f.size, ...(pages ? { pages } : {}) };
+      const set: Record<string, unknown> = { tenantSlug: tenant, division: t?.name || "", subDivision, brand, fileName: f.originalname, uploadedOn: new Date(), fileRef, mimeType, fileSize: f.size, ...tags, ...(pages ? { pages } : {}) };
       const existing = (await Slides.findOne({ tenantSlug: tenant, brand, subDivision, fileName: f.originalname }).select("_id fileRef").lean()) as any;
       if (existing) { await Slides.updateOne({ _id: existing._id }, { $set: set, $unset: { fileData: "" } }); if (existing.fileRef && String(existing.fileRef) !== fileRef) await releaseSlideFile(tenant, existing.fileRef); }
       else await Slides.create([set]);
@@ -318,6 +332,16 @@ uploadToolsRouter.post("/slides/upload", slideUpload.array("files", 50), asyncHa
     }
   }
   res.status(201).json({ data: { saved, usage: await slideUsage(tenant) } });
+}));
+
+// Priority tab: persist the order of a list of slides (1..n). Only the ids sent are renumbered.
+uploadToolsRouter.post("/slides/order", asyncHandler(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+  if (!ids.length) throw new HttpError(400, "No slides to order");
+  const Slides = getMasterModel("slideUploadEDetailing");
+  let n = 0;
+  for (const [i, id] of ids.entries()) { const r = await Slides.updateOne({ _id: id, tenantSlug: req.auth!.tenantSlug! }, { $set: { order: i + 1 } }); n += (r as any).matchedCount ?? (r as any).n ?? 0; }
+  res.json({ data: { ordered: n } });
 }));
 
 uploadToolsRouter.get("/slides/:id/download", asyncHandler(async (req, res) => {
