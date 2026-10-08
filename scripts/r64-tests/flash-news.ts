@@ -130,8 +130,9 @@ assert.deepEqual((await feed("kerala")).flash.map((x: any) => x.body), ["Sales m
 assert.deepEqual((await feed("chennai")).flash.map((x: any) => x.body), ["Sales meet on Friday"]);
 assert.deepEqual((await feed("abm", "manager")).flash.map((x: any) => x.body), ["Sales meet on Friday"], "manager portal sees it too");
 // the legacy home-panel endpoints are derived from the same feed
-assert.equal((await j("kerala", "GET", "/field/announcements")).body.data.flashNews.content, "Sales meet on Friday");
-assert.equal((await j("abm", "GET", "/manager/announcements")).body.data.flashNews.content, "Sales meet on Friday");
+{ const a = (await j("kerala", "GET", "/field/announcements")).body.data; assert.ok(!("flashNews" in a), "home-panel payload has no flash card (the ticker is the only flash UI)") }
+{ const a = (await j("abm", "GET", "/manager/announcements")).body.data; assert.ok(!("flashNews" in a), "manager home-panel payload has no flash card"); }
+assert.ok((await j("kerala", "GET", "/field/info-center/feed")).body.data.flash.some((x: any) => x.body === "Sales meet on Friday"), "flash still reaches the ticker feed");
 assert.equal((await j("kerala", "GET", "/field/info-center/feed")).status, 200);
 
 // 3) audience filters: designation / division / HQ, combined
@@ -175,8 +176,8 @@ await j("admin", "DELETE", `${I}/${id2}`); assert.ok(!(await bodies("abm", "mana
 store["companyconfigs"] = [{ tenantSlug: T, key: "adminSettings:flashNews", value: { content: "Testing" } }, { tenantSlug: T, key: "adminSettings:quoteOfTheWeek", value: { quote: "Testing quote" } }, { tenantSlug: T, key: "adminSettings:talkToUs", value: { content: "Call HR" } }];
 for (const kind of ["FLASH", "NOTICE", "QUOTE"]) for (const it of (await j("admin", "GET", `${I}?kind=${kind}`)).body.data) await j("admin", "DELETE", `${I}/${it.id}`);
 const empty = await feed("kerala"); assert.deepEqual([empty.flash, empty.notices, empty.quote], [[], [], null]); assert.equal(empty.talkInfo, "Call HR");
-const ann = (await j("kerala", "GET", "/field/announcements")).body.data; assert.deepEqual([ann.flashNews, ann.noticeBoard, ann.quoteOfTheWeek], [null, null, null]);
-assert.equal((await j("abm", "GET", "/manager/announcements")).body.data.flashNews, null);
+const ann = (await j("kerala", "GET", "/field/announcements")).body.data; assert.deepEqual([ann.noticeBoard, ann.quoteOfTheWeek], [null, null]);
+assert.ok(!("flashNews" in (await j("abm", "GET", "/manager/announcements")).body.data));
 
 // 7) quote + notice reach both portals; no cache header allows a stale copy
 await j("admin", "POST", I, { kind: "QUOTE", body: "Well begun is half done", author: "Aristotle" });
@@ -186,5 +187,13 @@ assert.equal((await fetch(`${base}/field/info-center/feed`, { headers: { authori
 store["users"].push(wrap({ _id: asId(79), username: "ghost", displayName: "Ghost", role: "MR", portal: "FIELD_FORCE", tenantSlug: T })); tokens.ghost = tok(79, "MR", "FIELD_FORCE");
 assert.equal((await feed("ghost")).quote.author, "Aristotle");
 assert.equal((await j("ghost", "POST", "/field/info-center/talk", { subject: "x", message: "y" })).status, 403);
+// Round 66: the home-panel payloads carry no flash card (Flash is the ticker only); notice and quote cards stay
+assert.equal((await j("admin", "POST", I, { kind: "NOTICE", title: "Audit", body: "Submit expense claims" })).status, 201);
+for (const [who, portal] of [["kerala", "field"], ["abm", "manager"]] as const) {
+  const a = (await j(who, "GET", `/${portal}/announcements`)).body.data;
+  assert.ok(!("flashNews" in a), `${portal} home-panel payload must not include flashNews`);
+  assert.equal(a.quoteOfTheWeek.quote, "Well begun is half done"); assert.match(a.noticeBoard.content1, /Audit: Submit expense claims/);
+  assert.ok((await feed(who, portal)).flash.length >= 0, "ticker feed unaffected");
+}
 console.log("flash news ok: no-claim tokens served (the live root cause), audience (designation/division/HQ, case-insensitive), windows (open-ended, expired, future, IST day), edit/deactivate/delete visible at once, legacy ghost removed, manager + field + home-panel endpoints agree");
 console.log("ALL flash-news CHECKS PASSED"); server.close(); process.exit(0);

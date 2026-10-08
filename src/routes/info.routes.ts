@@ -50,7 +50,6 @@ export async function announcementsFor(req: any) {
   const f = await feedFor(w.tenant, w.code);
   const texts = f.notices.map((n) => [n.title, n.body].filter(Boolean).join(": "));
   return {
-    flashNews: f.flash.length ? { content: f.flash.map((x) => x.body).join("   |   ") } : null,
     noticeBoard: texts.length ? { content1: texts[0] || "", content2: texts[1] || "", content3: texts[2] || "" } : null,
     quoteOfTheWeek: f.quote ? { quote: f.quote.body } : null,
     talkToUs: f.talkInfo ? { content: f.talkInfo } : null
