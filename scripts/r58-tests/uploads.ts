@@ -233,7 +233,10 @@ const hist = (await (await fetch(`${base}/target/history`)).json() as any).data;
 // ═══ 10) Slide Upload - E-Detailing (storage = base64 file inside the slideUploadEDetailing master doc; 5 GB + 2%)
 let meta = (await (await fetch(`${base}/slides/meta`)).json() as any).data;
 assert.deepEqual([meta.division, meta.subDivisions, meta.brands.includes("BEPIREX"), meta.consumedBytes, meta.allocatedBytes], ["Zivira Labs Pvt Ltd", ["Astra"], true, 0, 5 * 1024 ** 3]);
-assert.ok(Math.abs(meta.remainingBytes / 1024 ** 3 - 5.1) < 1e-9);                                              // "5.10 GB Remaining"
+assert.ok(Math.abs(meta.remainingBytes / 1024 ** 3 - 5.1) < 1e-9);
+assert.ok(meta.brandRows.some((b: any) => b.name === "BEPIREX" && typeof b.subDivision === "string"));          // brand -> sub division cascade data
+{ const ld = (await tplOf("listed-doctor")).worksheets[0]; assert.equal(header(ld).length, 15); assert.equal(yellow(ld).length, 15);   // LD template = the 15 mandatory columns
+  const ch = (await tplOf("chemist")).worksheets[0]; assert.deepEqual(header(ch), ["SI No", "User Name", "Chemist Name", "Territory"]); }                                              // "5.10 GB Remaining"
 const pdf = (n: number) => Buffer.from(`%PDF-1.4\n${Array.from({ length: n }, () => "<< /Type /Page >>").join("\n")}\n%%EOF`);
 const PF = (name: string, buf: Buffer) => ({ name, field: "files", buf, type: "application/pdf" });
 let up = await fetch(`${base}/slides/upload`, { method: "POST", body: form({ subDivision: "Astra", brands: "BEPIREX|STRIOS" }, [PF("one.pdf", pdf(3)), PF("two.pdf", pdf(5))]) });

@@ -691,6 +691,8 @@ export const GENERATE_COLUMNS: Record<string, { label: string; mandatory: boolea
     ...["Category", "Class", "Address", "Address 2", "City Name", "Pin Code", "Contact person", "Contact Person Designation", "Mobile No", "Shop landline No", "EMail ID", "Website", "Stockist ERP Code", "Chemist ERP Code", "State", "Others 1", "Others 2", "Others 3", "Others 4", "Others 5"].map((label) => ({ label, mandatory: false }))
   ]
 };
+// The "Excel Format File - Download Here" of these two tools is the mandatory-column format of their Generate Excel grid (the 66-column Listeddr dump layout and the demo-pack layouts still import).
+for (const k of ["listed-doctor", "chemist"]) { const t = getTool(k)!; t.templateHeaders = GENERATE_COLUMNS[k].filter((c) => c.mandatory).map((c) => c.label); t.templateMandatory = t.templateHeaders; }
 export function generateWorkbook(toolKey: string, selected: string[]): Promise<Buffer> {
   const all = GENERATE_COLUMNS[toolKey];
   if (!all) throw new Error(`No Generate Excel for ${toolKey}`);

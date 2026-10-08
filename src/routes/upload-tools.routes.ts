@@ -173,7 +173,10 @@ uploadToolsRouter.get("/slides/meta", asyncHandler(async (req, res) => {
   const brands = (await ProductBrandModel.find({ tenantSlug: tenant, status: "ACTIVE" }).lean()) as any[];
   const u = await slideUsage(tenant);
   const uniq = (xs: unknown[]) => [...new Set(xs.map((x) => String(x ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  res.json({ data: { division: t?.name || "", subDivisions: uniq(subs.map((x) => x.subdivisionName)), brands: uniq(brands.map((b) => b.brandName)), ...u, maxFileBytes: SLIDE_MAX_FILE } });
+  // Sub Division in the slide screens is the root group (first word of the sub division names: Astra / Aura / Zivira), the value ProductBrand.division carries.
+  const roots = uniq(subs.map((x) => String(x.subdivisionName || "").trim().split(/\s+/)[0]));
+  const brandRows = brands.map((b) => ({ name: String(b.brandName || "").trim(), subDivision: String(b.division || "").trim() })).filter((b) => b.name);
+  res.json({ data: { division: t?.name || "", subDivisions: roots, brands: uniq(brands.map((b) => b.brandName)), brandRows, ...u, maxFileBytes: SLIDE_MAX_FILE } });
 }));
 
 uploadToolsRouter.get("/slides/list", asyncHandler(async (req, res) => {
