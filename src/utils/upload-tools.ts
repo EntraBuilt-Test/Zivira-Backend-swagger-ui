@@ -130,17 +130,34 @@ function empOf(ctx: any, v: string): Emp | null {
   return named && named.length === 1 ? named[0] : null;
 }
 type Prod = { code: string; name: string; brand: string; division: string };
-async function loadProducts(tenant: string) {
-  const byCode = new Map<string, Prod>();
+/** Product codes compare case-insensitively with every separator ignored: "ZV024", "ZV-024" and "zv 024" are one code. Stored codes are never changed. */
+export const pkey = (v: unknown) => S(v).toLowerCase().replace(/[^a-z0-9]/g, "");
+type ProdMap = Map<string, Prod> & { amb: Map<string, string[]> };
+async function loadProducts(tenant: string): Promise<ProdMap> {
+  const byCode = new Map<string, Prod>() as ProdMap; byCode.amb = new Map();
+  const seen = new Map<string, Set<string>>();                         // normalised key -> distinct stored codes (case-insensitive exact)
+  const add = (code: string, p: Prod) => {
+    const k = pkey(code); if (!k) return;
+    const exact = lc(code); const set = seen.get(k) ?? new Set<string>(); seen.set(k, set);
+    if (set.has(exact)) return;                                         // same product seen via both Product and its master mirror
+    set.add(exact); if (!byCode.has(k)) byCode.set(k, p); else byCode.amb.set(k, [...set].map((x) => (x === exact ? code : x)));
+  };
   for (const p of (await ProductModel.find({ tenantSlug: tenant }).lean()) as any[]) {
-    if (p.code) byCode.set(lc(p.code), { code: p.code, name: p.productName || p.name || "", brand: p.brandName || "", division: p.division || "" });
+    if (p.code) add(p.code, { code: p.code, name: p.productName || p.name || "", brand: p.brandName || "", division: p.division || "" });
   }
   try {
     for (const p of (await getMasterModel("productMaster").find({ tenantSlug: tenant }).lean()) as any[]) {
-      if (p.productCode && !byCode.has(lc(p.productCode))) byCode.set(lc(p.productCode), { code: p.productCode, name: p.productName || "", brand: p.brand || "", division: p.division || "" });
+      if (p.productCode) add(p.productCode, { code: p.productCode, name: p.productName || "", brand: p.brand || "", division: p.division || "" });
     }
   } catch { /* master not configured */ }
   return byCode;
+}
+/** Resolve an uploaded product code against the master (separator/case-insensitive). Returns null when absent; an ambiguity is reported as an error. */
+function prodOf(products: ProdMap, code: string, errors: Er[], field: string): Prod | null {
+  const k = pkey(code); if (!k) return null;
+  const amb = products.amb.get(k);
+  if (amb) { errors.push({ field, reason: `"${code}" matches more than one product in the master (${amb.join(", ")}); make the master codes distinct or use the exact code` }); return null; }
+  return products.get(k) ?? null;
 }
 
 /** Update-or-insert on a natural-key filter. Never validates required-ness of untouched legacy fields. */
@@ -448,23 +465,29 @@ const product: Tool = {
   templateHeaders: ["Product Code", "Product Name", "Group", "Category", "Brand", "Pack", "Division", "Active"], templateMandatory: ["Product Code", "Product Name"],
   async deactivate(tenant) { const n = await ProductModel.countDocuments({ tenantSlug: tenant, status: "ACTIVE" }); await ProductModel.updateMany({ tenantSlug: tenant, status: "ACTIVE" }, { $set: { status: "INACTIVE" } }); return n; },
   note: "Key = Product Code (an existing product with the same Brand + Product Name and no code is adopted). Also mirrored into the Product Master screen.",
-  load: async () => ({}),
-  check(g) {
+  async load(tenant) { return { products: await loadProducts(tenant) }; },
+  check(g, ctx) {
     const errors: Er[] = [];
     const code = reqd(g, "Product Code", errors), name = reqd(g, "Product Name", errors), cat = g("Category");
     const act = yes(g("Active")); if (act === null) errors.push({ field: "Active", reason: `"${g("Active")}" must be Yes or No` });
-    return { errors, key: lc(code), value: { code, name, brand: g("Brand"), pack: g("Pack"), division: g("Division"), cat, group: g("Group"), active: act !== false } };
+    if (code) prodOf(ctx.products, code, errors, "Product Code");        // ambiguous in the master -> reject
+    return { errors, key: pkey(code), value: { code, name, brand: g("Brand"), pack: g("Pack"), division: g("Division"), cat, group: g("Group"), active: act !== false } };
   },
   async apply(tenant, items) {
     const Mirror = getMasterModel("productMaster");
+    const stored = new Map<string, string>();                           // normalised code -> code as stored (an upload never renames a product)
+    for (const p of (await ProductModel.find({ tenantSlug: tenant }).lean()) as any[]) if (p.code && !stored.has(pkey(p.code))) stored.set(pkey(p.code), p.code);
+    const mirrored = new Map<string, string>();
+    for (const p of (await Mirror.find({ tenantSlug: tenant }).lean()) as any[]) if (p.productCode && !mirrored.has(pkey(p.productCode))) mirrored.set(pkey(p.productCode), p.productCode);
     return catching(items, async (v) => {
+      const keep = stored.get(pkey(v.code)) ?? v.code, mkeep = mirrored.get(pkey(v.code)) ?? keep; v = { ...v, code: keep };
       let filter: any = { tenantSlug: tenant, code: v.code };
       if (!(await ProductModel.findOne(filter).lean())) {
         const legacy = (await ProductModel.findOne({ tenantSlug: tenant, productName: v.name, brandName: v.brand || null }).lean()) as any;
         if (legacy && !legacy.code) filter = { tenantSlug: tenant, _id: legacy._id };
       }
       const r = await upsert(ProductModel, filter, { code: v.code, name: v.name, productName: v.name, brandName: v.brand || null, pack: v.pack || null, division: v.division || "", category: v.cat || "", ...(v.group ? { group: v.group } : {}), status: v.active ? "ACTIVE" : "INACTIVE" });
-      await upsert(Mirror, { tenantSlug: tenant, productCode: v.code }, { productName: v.name, brand: v.brand || null, division: v.division || "", pack: v.pack || null, status: v.active ? "Active" : "Inactive" });
+      await upsert(Mirror, { tenantSlug: tenant, productCode: mkeep }, { productName: v.name, brand: v.brand || null, division: v.division || "", pack: v.pack || null, status: v.active ? "Active" : "Inactive" });
       return r;
     });
   }
@@ -488,13 +511,13 @@ const productRate: Tool = {
   check(g, ctx, _row, opts) {
     const errors: Er[] = [];
     const code = reqd(g, "Product Code", errors);
-    const p = code ? ctx.products.get(lc(code)) : null;
-    if (code && !p) errors.push({ field: "Product Code", reason: `product "${code}" not found (upload the Product first)` });
+    const nErr = errors.length; const p = code ? prodOf(ctx.products, code, errors, "Product Code") : null;
+    if (code && !p && errors.length === nErr) errors.push({ field: "Product Code", reason: `product "${code}" not found (upload the Product first)` });
     const nm = g("Product Name"); if (p && nm && lc(nm) !== lc(p.name)) errors.push({ field: "Product Name", reason: `does not match product ${code} ("${p.name}")` });
     const n = (h: string, required: boolean) => { const v = num(g(h)); if (v === null) { if (required) errors.push({ field: h, reason: "required" }); return null; } if (Number.isNaN(v) || v < 0) { errors.push({ field: h, reason: `"${g(h)}" must be a number of 0 or more` }); return null; } return v; };
     const ptr = n("PTR", true), pts = n("PTS", false), mrp = n("MRP", false);
     const eff = dateField(g, "Effective From", errors, true);
-    return { errors, key: `${lc(code)}|${eff ? iso(eff) : ""}`, value: { code: p?.code || code, name: p?.name || nm, ptr, pts, mrp, eff, state: S(opts?.state) } };
+    return { errors, key: `${pkey(code)}|${eff ? iso(eff) : ""}`, value: { code: p?.code || code, name: p?.name || nm, ptr, pts, mrp, eff, state: S(opts?.state) } };
   },
   async apply(tenant, items, _ctx, opts) {
     await ensureRateIndex();
@@ -625,8 +648,8 @@ const target: Tool = {
     const code = reqd(g, "Employee Code", errors), pc = reqd(g, "Product Code", errors);
     const emp = empOf(ctx, code);
     if (code && !emp) errors.push({ field: "Employee Code", reason: `Employee "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
-    const p = pc ? ctx.products.get(lc(pc)) : null;
-    if (pc && !p) errors.push({ field: "Product Code", reason: `product "${pc}" not found` });
+    const nErr = errors.length; const p = pc ? prodOf(ctx.products, pc, errors, "Product Code") : null;
+    if (pc && !p && errors.length === nErr) errors.push({ field: "Product Code", reason: `product "${pc}" not found` });
     const mRaw = reqd(g, "Month", errors); const m = mRaw ? parseMonth(mRaw) : null;
     if (mRaw && !m) errors.push({ field: "Month", reason: `"${mRaw}" is not a month (1-12 or name)` });
     const yRaw = g("Year"); let y = Number(yRaw);
@@ -682,7 +705,7 @@ function despatchTool(type: "SAMPLE" | "INPUT"): Tool {
       if (code && !emp) errors.push({ field: "Employee Code", reason: `Employee "${code}" not found in Field Force. Use the Employee Code or exact name from the Field Force master` });
       let item: { code: string; name: string } | null = null;
       if (it) {
-        if (type === "SAMPLE") { const p = ctx.products.get(lc(it)); if (p) item = { code: p.code, name: p.name }; }
+        if (type === "SAMPLE") { const n0 = errors.length; const p = prodOf(ctx.products, it, errors, itemHeader); if (p) item = { code: p.code, name: p.name }; else if (errors.length > n0) item = { code: it, name: it }; }
         else item = ctx.inputs.find((i: any) => lc(i.code) === lc(it) || lc(i.name) === lc(it)) || null;
         if (!item) errors.push({ field: itemHeader, reason: `"${it}" not found in the ${type === "SAMPLE" ? "Product" : "Input"} master` });
       }
