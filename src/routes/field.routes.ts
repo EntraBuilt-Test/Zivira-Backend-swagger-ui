@@ -207,7 +207,8 @@ const dcrSchema = z.object({
   gpsLocation: z.object({
     latitude:  z.number().optional(),
     longitude: z.number().optional(),
-    label:     z.string().optional()
+    label:     z.string().optional(),
+    accuracyMeters: z.number().optional()
   }).optional(),
   hospitalClinic:    z.string().optional(),
   visitDurationMinutes: z.number().min(0).optional(),
@@ -248,11 +249,9 @@ async function getFieldProfile(userId: string) {
   const user = await UserModel.findById(userId);
   if (!user?.tenantSlug) throw new HttpError(404, "Field user not found");
   const employee = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: user.username.toUpperCase() });
-  if (!employee) {
-    const fallback = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, role: "MR" });
-    if (!fallback) throw new HttpError(404, "Employee profile not found");
-    return fallback;
-  }
+  // QA-21 (Nov 2026): never fall back to another MR's profile -- that
+  // showed one rep someone else's doctors, DCRs and leave.
+  if (!employee) throw new HttpError(404, "Employee profile not found for this login. Ask admin to link your employee code.");
   return employee;
 }
 
@@ -452,10 +451,32 @@ fieldRouter.delete("/dcrs/:id", asyncHandler(async (req, res) => {
   res.json({ data: { deleted: true, id: dcrId } });
 }));
 
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const toRad = (v: number) => (v * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const body = dcrSchema.parse(req.body);
+  // QA-08 (Nov 2026, client feedback): a DCR must carry the rep's GPS
+  // location. Previously GPS was optional and calls could be filed from
+  // anywhere. Reject when latitude/longitude are missing or invalid.
+  const gpsLat = body.gpsLocation?.latitude;
+  const gpsLng = body.gpsLocation?.longitude;
+  if (
+    typeof gpsLat !== "number" || typeof gpsLng !== "number" ||
+    !Number.isFinite(gpsLat) || !Number.isFinite(gpsLng) ||
+    Math.abs(gpsLat) > 90 || Math.abs(gpsLng) > 180 ||
+    (gpsLat === 0 && gpsLng === 0)
+  ) {
+    throw new HttpError(400, "GPS location is required to submit a DCR. Turn on location and tap Refresh, then submit again.");
+  }
   const todayStr = dateOnlyUTC(new Date());
   const visitDateOnly = body.visitDate || todayStr;
   if (visitDateOnly > todayStr) throw new HttpError(400, "A DCR cannot be submitted for a future date.");
@@ -507,6 +528,23 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     const shown = await SlideViewModel.countDocuments({ tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, visitDateOnly });
     if (shown > 0) channel = "E-detailing";
   }
+  // QA-09 (Nov 2026): real geofence check against the doctor's geo-tags.
+  const GEOFENCE_RADIUS_METERS = Number(process.env.GEOFENCE_RADIUS_METERS) || 500;
+  let distanceMeters: number | null = null;
+  let geofenceStatus: "WITHIN" | "OUTSIDE" | "NO_DOCTOR_TAG" = "NO_DOCTOR_TAG";
+  if (body.doctorId && mongoose.isValidObjectId(body.doctorId)) {
+    const doc = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug }).select("geoTags").lean();
+    const tags = ((doc as any)?.geoTags ?? []) as Array<{ lat?: number; lng?: number }>;
+    for (const t of tags) {
+      if (typeof t.lat !== "number" || typeof t.lng !== "number") continue;
+      const d = haversineMeters(gpsLat, gpsLng, t.lat, t.lng);
+      if (distanceMeters === null || d < distanceMeters) distanceMeters = d;
+    }
+    if (distanceMeters !== null) {
+      distanceMeters = Math.round(distanceMeters);
+      geofenceStatus = distanceMeters <= GEOFENCE_RADIUS_METERS ? "WITHIN" : "OUTSIDE";
+    }
+  }
   const dcr = await DcrModel.create({
     tenantSlug,
     employeeCode: employee.employeeCode,
@@ -526,7 +564,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
     submissionChannel: channel,
-    gpsLocation: body.gpsLocation,
+    gpsLocation: { ...body.gpsLocation, distanceMeters, geofenceStatus },
     hospitalClinic: body.hospitalClinic,
     visitDurationMinutes: body.visitDurationMinutes,
     promotionalMaterialsShared: body.promotionalMaterialsShared,

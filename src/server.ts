@@ -59,7 +59,11 @@ app.use("/api/ess", essRouter);
 // Protected by the x-seed-secret header (SEED_SECRET env var) — see
 // src/routes/seed.routes.ts. This is how master data gets (re)seeded on
 // Render, which has no shell access to run scripts/seed-exact-10.ts directly.
-app.use("/api/seed", seedRouter);
+// QA-29 (Nov 2026): the seed routes can wipe and reload master data, so they
+// are OFF unless ALLOW_SEED_ROUTES=true is set in the environment.
+if (process.env.ALLOW_SEED_ROUTES === "true") {
+  app.use("/api/seed", seedRouter);
+}
 
 app.use(notFoundHandler);
 app.use((error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {

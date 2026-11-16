@@ -108,7 +108,11 @@ const dcrSchema = new Schema(
     gpsLocation: {
       latitude:  { type: Number, default: null },
       longitude: { type: Number, default: null },
-      label:     { type: String, default: null }
+      label:     { type: String, default: null },
+      accuracyMeters: { type: Number, default: null },
+      // QA-08/09 (Nov 2026): real geofence result computed server-side.
+      distanceMeters: { type: Number, default: null },
+      geofenceStatus: { type: String, default: null } // WITHIN | OUTSIDE | NO_DOCTOR_TAG
     },
     hospitalClinic:    { type: String, default: null },
     visitDurationMinutes: { type: Number, default: null, min: 0 },
