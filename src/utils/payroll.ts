@@ -25,6 +25,8 @@ export async function syncPayrollStatuses(
   const existingByCode = new Map(existing.map(p => [p.employeeCode, p]));
 
   const results = [];
+  const toCreate: Record<string, unknown>[] = [];
+  const toSave: Promise<unknown>[] = [];
   for (const emp of employees) {
     const compliance = complianceByCode.get(emp.employeeCode);
     if (!compliance) continue;
@@ -32,13 +34,13 @@ export async function syncPayrollStatuses(
     const holdReason = `Missed ${compliance.missedLast30Days} working-day DCR(s) in the last 30 days — chronic defaulter threshold exceeded.`;
 
     if (!record) {
-      results.push(await PayrollStatusModel.create({
+      toCreate.push({
         tenantSlug, employeeCode: emp.employeeCode, month,
         status: compliance.salaryHold ? "HOLD" : "RELEASED",
         holdReason: compliance.salaryHold ? holdReason : null,
         missedDaysSnapshot: compliance.missedLast30Days,
         releasedAt: compliance.salaryHold ? null : new Date()
-      }));
+      });
       continue;
     }
 
@@ -51,12 +53,16 @@ export async function syncPayrollStatuses(
       record.holdReason = holdReason;
       record.missedDaysSnapshot = compliance.missedLast30Days;
       record.releasedAt = null;
-      await record.save();
-    } else {
+      toSave.push(record.save());
+    } else if (record.missedDaysSnapshot !== compliance.missedLast30Days) {
       record.missedDaysSnapshot = compliance.missedLast30Days;
-      await record.save();
+      toSave.push(record.save());
     }
     results.push(record);
   }
+  // QA-37: one bulk insert + parallel saves instead of ~235 sequential writes
+  // (the admin Payroll tab and Executive Dashboard were timing out).
+  if (toCreate.length) results.push(...(await PayrollStatusModel.insertMany(toCreate, { ordered: false })));
+  await Promise.all(toSave);
   return results;
 }

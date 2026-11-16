@@ -11,6 +11,7 @@
 // out of scope for v1 — this can be layered on without changing the shape
 // of EmployeeComplianceRow.
 import { DcrModel } from "../models/dcr.model.js";
+import { EmployeeModel } from "../models/employee.model.js";
 
 function isWorkingDay(date: Date) {
   return date.getUTCDay() !== 0; // 0 = Sunday
@@ -94,6 +95,15 @@ export async function computeComplianceRows(
     { $group: { _id: { employeeCode: "$employeeCode", day: "$visitDateOnly" } } }
   ]) : [];
 
+  // QA-36: missed-DCR counting starts on the later of joinDate and the day the
+  // employee was added to the SFA system, so staff imported on go-live are not
+  // flagged as chronic defaulters (or put on salary hold) for days before they
+  // had a login.
+  const addedRows = employeeCodes.length ? await EmployeeModel.find(
+    { tenantSlug, employeeCode: { $in: employeeCodes } }, { employeeCode: 1, createdAt: 1 }
+  ).lean() : [];
+  const addedByCode = new Map(addedRows.map(r => [r.employeeCode as string, (r as { createdAt?: Date }).createdAt]));
+
   const submittedByEmployee = new Map<string, Set<string>>();
   for (const row of dcrDates as { _id: { employeeCode: string; day: string } }[]) {
     const { employeeCode: code, day } = row._id;
@@ -103,7 +113,10 @@ export async function computeComplianceRows(
 
   return employees.map(emp => {
     const submitted = submittedByEmployee.get(emp.employeeCode) ?? new Set<string>();
-    const joinDate = emp.joinDate ?? undefined;
+    const added = addedByCode.get(emp.employeeCode);
+    const addedDay = added ? new Date(Date.UTC(new Date(added).getUTCFullYear(), new Date(added).getUTCMonth(), new Date(added).getUTCDate())) : undefined;
+    const rawJoin = emp.joinDate ? new Date(emp.joinDate) : undefined;
+    const joinDate = rawJoin && addedDay ? (rawJoin > addedDay ? rawJoin : addedDay) : (rawJoin ?? addedDay);
     const effFrom = (from: Date) => (joinDate && joinDate > from ? joinDate : from);
 
     const monthWorkingDays = workingDaysBetween(effFrom(monthStart), monthWindowEnd);

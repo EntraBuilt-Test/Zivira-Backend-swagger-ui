@@ -59,7 +59,7 @@ export async function computeAlerts(tenantSlug: string, month: string): Promise<
   // ── Doctor Not Visited 90 Days — Topic 7 ───────────────────────────────
   const now = Date.now();
   const [doctors, lastVisitRows] = await Promise.all([
-    DoctorModel.find({ tenantSlug, status: "ACTIVE" }, { name: 1 }).lean(),
+    DoctorModel.find({ tenantSlug, status: "ACTIVE" }, { name: 1, createdAt: 1 }).lean(),
     DcrModel.aggregate([
       { $match: { tenantSlug, status: { $ne: "REJECTED" } } },
       { $group: { _id: "$doctorId", lastVisitDate: { $max: "$visitDate" } } }
@@ -69,6 +69,11 @@ export async function computeAlerts(tenantSlug: string, month: string): Promise<
   for (const doctor of doctors) {
     const last = lastVisitByDoctorId.get(String(doctor._id));
     const daysSince = last ? Math.floor((now - new Date(last).getTime()) / 86400000) : null;
+    // QA-36: a doctor added to the system less than 90 days ago cannot be
+    // "not visited in 90 days" yet (all real doctors were imported 16 Nov 2026).
+    const addedAt = (doctor as { createdAt?: Date }).createdAt;
+    const daysInSystem = addedAt ? Math.floor((now - new Date(addedAt).getTime()) / 86400000) : Infinity;
+    if (daysInSystem < 90 && (daysSince === null || daysSince >= 90)) continue;
     if (daysSince === null || daysSince >= 90) {
       alerts.push({
         type: "DOCTOR_NOT_VISITED_90_DAYS", severity: daysSince === null || daysSince >= 180 ? "HIGH" : "MEDIUM",

@@ -482,7 +482,7 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     Math.abs(gpsLat) > 90 || Math.abs(gpsLng) > 180 ||
     (gpsLat === 0 && gpsLng === 0)
   ) {
-    throw new HttpError(400, "GPS location is required to submit a DCR. Turn on location and tap Refresh, then submit again.");
+    throw new HttpError(400, "Location is needed to submit a DCR. Turn on location for this app/browser, then tap Submit again.");
   }
   const todayStr = dateOnlyUTC(new Date());
   const visitDateOnly = body.visitDate || todayStr;
