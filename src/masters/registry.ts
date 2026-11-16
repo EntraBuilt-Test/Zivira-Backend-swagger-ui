@@ -1770,6 +1770,7 @@ export const MASTERS: MasterConfig[] = [
       { key: "activityDate", label: "Activity Date", type: "date", detailOnly: true },
       { key: "workType", label: "Work Type", detailOnly: true },
       { key: "hospitalClinic", label: "Hospitals Met", detailOnly: true },
+      { key: "gpsCheck", label: "Location Check", detailOnly: true },
       { key: "remarks", label: "Remarks", detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ],

@@ -12,6 +12,7 @@ import { TourPlanModel } from "../models/tour-plan.model.js";
 import { ExpenseClaimModel } from "../models/expense-claim.model.js";
 import { AttendanceModel } from "../models/attendance.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { withLeaveBalances } from "../utils/leave-balance.js";
 import { audit } from "../utils/audit.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { serializeDocument } from "../utils/serialize.js";
@@ -187,7 +188,13 @@ managerRouter.get("/team", asyncHandler(async (req, res) => {
     reportingManager: mgr.employeeCode,
     status: "ACTIVE"
   }).sort({ name: 1 });
-  res.json({ data: team.map(serializeDocument) });
+  // QA-13 (Nov 2026): doctors mapped to each team member.
+  const counts = await DoctorModel.aggregate([
+    { $match: { tenantSlug: mgr.tenantSlug, status: "ACTIVE", mappedEmployeeCode: { $in: team.map((e) => e.employeeCode) } } },
+    { $group: { _id: "$mappedEmployeeCode", n: { $sum: 1 } } }
+  ]);
+  const byCode = new Map(counts.map((c: any) => [String(c._id), Number(c.n)]));
+  res.json({ data: team.map((e) => ({ ...serializeDocument(e), doctorCount: byCode.get(e.employeeCode) ?? 0 })) });
 }));
 
 managerRouter.post("/team", asyncHandler(async (req, res) => {
@@ -335,6 +342,9 @@ managerRouter.post("/dcrs/:id/approve", asyncHandler(async (req, res) => {
   const mgr = await getManagerProfile(req.auth!.sub);
   const dcr = await DcrModel.findById(req.params.id);
   if (!dcr || dcr.tenantSlug !== mgr.tenantSlug) throw new HttpError(404, "DCR not found");
+  // QA-22 (Nov 2026): only the rep's own reporting manager may decide.
+  const inTeam = await EmployeeModel.exists({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, employeeCode: dcr.employeeCode });
+  if (!inTeam) throw new HttpError(403, "This DCR does not belong to your team");
   dcr.status = "MANAGER_APPROVED";
   dcr.managerApprovedBy = mgr.employeeCode;
   dcr.managerApprovedAt = new Date();
@@ -350,6 +360,9 @@ managerRouter.post("/dcrs/:id/reject", asyncHandler(async (req, res) => {
   const mgr = await getManagerProfile(req.auth!.sub);
   const dcr = await DcrModel.findById(req.params.id);
   if (!dcr || dcr.tenantSlug !== mgr.tenantSlug) throw new HttpError(404, "DCR not found");
+  // QA-22 (Nov 2026): only the rep's own reporting manager may decide.
+  const inTeam = await EmployeeModel.exists({ tenantSlug: mgr.tenantSlug, reportingManager: mgr.employeeCode, employeeCode: dcr.employeeCode });
+  if (!inTeam) throw new HttpError(403, "This DCR does not belong to your team");
   const { reason } = z.object({ reason: z.string().optional() }).parse(req.body);
   dcr.status = "REJECTED";
   if (reason) dcr.notes = (dcr.notes ? dcr.notes + "\n[Rejected]: " : "[Rejected]: ") + reason;
@@ -479,7 +492,8 @@ managerRouter.get("/leave-entitlement", asyncHandler(async (req, res) => {
   const Model = getMasterModel("leaveEntitlementEntry");
   const rows = (await Model.find({ tenantSlug: mgr.tenantSlug }).sort({ year: -1 }).lean()) as unknown as Record<string, unknown>[];
   const teamRows = rows.filter((r) => namesByLower.has(String(r.fieldForceName ?? "").trim().toLowerCase()));
-  res.json({ data: teamRows.map((r) => ({ id: String(r._id), ...r })) });
+  const withBal = await withLeaveBalances(mgr.tenantSlug, teamRows, (r) => (namesByLower.get(String(r.fieldForceName ?? "").trim().toLowerCase()) as any)?.employeeCode ?? null);
+  res.json({ data: withBal.map((r) => ({ id: String(r._id), ...r })) });
 }));
 
 // GET /manager/dashboard

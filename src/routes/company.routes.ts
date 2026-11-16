@@ -2033,52 +2033,43 @@ companyRouter.get(
       role: { $in: ["MR", "SR_MR", "ABM", "RBM", "ZBM", "NBH", "BH"] }
     }).sort({ name: 1 });
 
-    const rows = await Promise.all(
-      employees.map(async (emp) => {
-        const [dcr, attendance] = await Promise.all([
-          DcrModel.findOne({
-            tenantSlug,
-            employeeCode: emp.employeeCode,
-            visitDate: { $gte: today }
-          })
-            .sort({ createdAt: -1 })
-            .lean(),
-          AttendanceModel.findOne({
-            tenantSlug,
-            employeeCode: emp.employeeCode,
-            attendanceDate: { $gte: today }
-          })
-            .sort({ createdAt: -1 })
-            .lean()
-        ]);
-
-        // Count calls made today
-        const callsToday = await DcrModel.countDocuments({
-          tenantSlug,
-          employeeCode: emp.employeeCode,
-          visitDate: { $gte: today }
-        });
-
-        const dcrStatus = dcr
-          ? (dcr.status as string)
-          : "NOT_SUBMITTED";
-
-        const attendanceStatus = attendance
-          ? (attendance.status as string)
-          : "ABSENT";
-
-        return {
-          employeeCode: emp.employeeCode,
-          name: emp.name,
-          territory: emp.territory,
-          role: emp.role,
-          dcrStatus,
-          attendanceStatus,
-          callsToday,
-          lastSeenAt: dcr?.updatedAt ?? null
-        };
-      })
-    );
+    // QA-34 (Nov 2026): 3 grouped queries instead of 3 queries per employee
+    // (~700 round trips with 234 staff on the free tier).
+    const codes = employees.map((e) => e.employeeCode);
+    const [todaysDcrs, todaysAttendance] = await Promise.all([
+      DcrModel.find({ tenantSlug, employeeCode: { $in: codes }, visitDate: { $gte: today } })
+        .select("employeeCode status updatedAt createdAt")
+        .sort({ createdAt: -1 })
+        .lean(),
+      AttendanceModel.find({ tenantSlug, employeeCode: { $in: codes }, attendanceDate: { $gte: today } })
+        .select("employeeCode status createdAt")
+        .sort({ createdAt: -1 })
+        .lean()
+    ]);
+    const latestDcr = new Map<string, any>();
+    const callCount = new Map<string, number>();
+    for (const d of todaysDcrs as any[]) {
+      if (!latestDcr.has(d.employeeCode)) latestDcr.set(d.employeeCode, d);
+      callCount.set(d.employeeCode, (callCount.get(d.employeeCode) ?? 0) + 1);
+    }
+    const latestAttendance = new Map<string, any>();
+    for (const a of todaysAttendance as any[]) {
+      if (!latestAttendance.has(a.employeeCode)) latestAttendance.set(a.employeeCode, a);
+    }
+    const rows = employees.map((emp) => {
+      const dcr = latestDcr.get(emp.employeeCode);
+      const attendance = latestAttendance.get(emp.employeeCode);
+      return {
+        employeeCode: emp.employeeCode,
+        name: emp.name,
+        territory: emp.territory,
+        role: emp.role,
+        dcrStatus: dcr ? String(dcr.status) : "NOT_SUBMITTED",
+        attendanceStatus: attendance ? String(attendance.status) : "ABSENT",
+        callsToday: callCount.get(emp.employeeCode) ?? 0,
+        lastSeenAt: dcr?.updatedAt ?? null
+      };
+    });
 
     res.json({ data: rows });
   })
@@ -3039,6 +3030,59 @@ companyRouter.get("/expense-claims", asyncHandler(async (req, res) => {
   const claims = await ExpenseClaimModel.find(query).sort({ createdAt: -1 }).limit(1000);
   const serialized = claims.map(serializeDocument);
   res.json({ data: await enrichWithEmployeeNames(tenantSlug, serialized, ["assignedManager"]) });
+}));
+
+// QA-25 (Nov 2026): Admin can approve / reject any expense claim (managers
+// could already approve their own team's). Writes the same fields, keeps the
+// monthly expenseApprovalActive mirror in step and notifies the rep.
+async function adminMarkExpenseMirror(tenantSlug: string, employeeName: string, month: string, status: "Approved" | "Rejected") {
+  try {
+    const [year, monthNum] = month.split("-");
+    const monthName = new Date(Date.UTC(Number(year), Number(monthNum) - 1, 1)).toLocaleString("en-US", { month: "long" });
+    const Model = getMasterModel("expenseApprovalActive");
+    await Model.updateOne({ tenantSlug, fieldForceName: employeeName, month: monthName, year }, { $set: { status, adminApprovalDate: new Date().toISOString().slice(0, 10) } });
+  } catch (err) {
+    console.error("[adminMarkExpenseMirror] failed:", err);
+  }
+}
+async function adminNotifyRep(tenantSlug: string, employeeCode: string, title: string, message: string) {
+  try {
+    const { notifyFieldRep } = await import("../utils/notify.js");
+    const emp = await EmployeeModel.findOne({ tenantSlug, employeeCode }).lean();
+    await notifyFieldRep({ tenantSlug, employeeCode, employeeEmail: (emp as any)?.email, employeeName: (emp as any)?.name, title, message });
+  } catch (err) {
+    console.error("[adminNotifyRep] failed:", err);
+  }
+}
+companyRouter.patch("/expense-claims/:claimId/approve", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const claim = await ExpenseClaimModel.findOne({ tenantSlug, claimId: req.params.claimId });
+  if (!claim) throw new HttpError(404, "Expense claim not found");
+  if (claim.status !== "SUBMITTED") throw new HttpError(400, `Claim is already ${claim.status}`);
+  claim.status = "APPROVED";
+  claim.approvedBy = "ADMIN";
+  claim.approvedAt = new Date();
+  await claim.save();
+  await audit("ADMIN_EXPENSE_CLAIM_APPROVED", "ExpenseClaim", String(claim._id), { tenantSlug, claimId: claim.claimId });
+  await adminMarkExpenseMirror(tenantSlug, claim.employeeName || claim.employeeCode, claim.month, "Approved");
+  await adminNotifyRep(tenantSlug, claim.employeeCode, `Expense claim ${claim.claimId} approved`, `Admin approved your expense claim ${claim.claimId}.`);
+  res.json({ data: serializeDocument(claim) });
+}));
+companyRouter.patch("/expense-claims/:claimId/reject", asyncHandler(async (req, res) => {
+  const tenantSlug = req.auth!.tenantSlug!;
+  const { reason } = z.object({ reason: z.string().min(1, "A rejection reason is required") }).parse(req.body);
+  const claim = await ExpenseClaimModel.findOne({ tenantSlug, claimId: req.params.claimId });
+  if (!claim) throw new HttpError(404, "Expense claim not found");
+  if (claim.status !== "SUBMITTED") throw new HttpError(400, `Claim is already ${claim.status}`);
+  claim.status = "REJECTED";
+  claim.rejectedBy = "ADMIN";
+  claim.rejectReason = reason;
+  claim.rejectedAt = new Date();
+  await claim.save();
+  await audit("ADMIN_EXPENSE_CLAIM_REJECTED", "ExpenseClaim", String(claim._id), { tenantSlug, claimId: claim.claimId, reason });
+  await adminMarkExpenseMirror(tenantSlug, claim.employeeName || claim.employeeCode, claim.month, "Rejected");
+  await adminNotifyRep(tenantSlug, claim.employeeCode, `Expense claim ${claim.claimId} rejected`, `Admin rejected your expense claim ${claim.claimId}. Reason: ${reason}`);
+  res.json({ data: serializeDocument(claim) });
 }));
 
 companyRouter.get("/expense-claims/branch-summary", asyncHandler(async (req, res) => {

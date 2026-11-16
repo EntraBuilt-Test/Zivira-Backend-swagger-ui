@@ -29,6 +29,7 @@ import { syncPayrollStatuses } from "../utils/payroll.js";
 import { PayrollStatusModel } from "../models/payroll-status.model.js";
 import { DoctorVisitExceptionModel, DOCTOR_EXCEPTION_REASONS } from "../models/doctor-visit-exception.model.js";
 import { LeaveApplicationModel } from "../models/leave-application.model.js";
+import { withLeaveBalances } from "../utils/leave-balance.js";
 import { TaskModel } from "../models/task.model.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { QuizModel } from "../models/quiz.model.js";
@@ -305,17 +306,23 @@ fieldRouter.get("/dashboard", asyncHandler(async (req, res) => {
 // MR, so filtering on exactly that combination cleanly separates
 // "came from my manager" from "posted by admin" without needing a new
 // field on the Notice model. `since` still supports polling.
+// QA-26 (Nov 2026): the field bell shows the rep's own system alerts AND
+// notices an admin posts to everyone / to MRs (not master-update spam).
+function fieldBellFilter(employeeCode: string) {
+  return {
+    $or: [
+      { postedBy: "system", audience: "MR", targetEmployeeCode: employeeCode },
+      { postedBy: { $ne: "system" }, audience: { $in: ["ALL", "MR"] }, targetEmployeeCode: null }
+    ]
+  };
+}
+
 fieldRouter.get("/notices", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const { NoticeModel } = await import("../models/notice.model.js");
   const since = typeof req.query.since === "string" ? new Date(req.query.since) : null;
-  const filter: Record<string, unknown> = {
-    tenantSlug,
-    postedBy: "system",
-    audience: "MR",
-    targetEmployeeCode: employee.employeeCode
-  };
+  const filter: Record<string, unknown> = { tenantSlug, ...fieldBellFilter(employee.employeeCode) };
   if (since && !Number.isNaN(since.getTime())) filter.createdAt = { $gt: since };
   const notices = await NoticeModel.find(filter).sort({ createdAt: -1 }).limit(50);
   res.json({ data: notices.map(serializeDocument) });
@@ -609,7 +616,11 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     activityDate: dcr.visitDate,
     workType: body.hospitalClinic ? "Field Work" : "Admin Work",
     hospitalClinic: body.hospitalClinic ?? "",
-    remarks: body.notes ?? ""
+    remarks: body.notes ?? "",
+    // QA-33 (Nov 2026): location result shown in the admin approval popup.
+    gpsCheck: geofenceStatus === "WITHIN" ? `Within geofence (${distanceMeters} m from doctor)`
+      : geofenceStatus === "OUTSIDE" ? `OUTSIDE geofence (${distanceMeters} m from doctor)`
+      : `GPS captured ${gpsLat.toFixed(5)}, ${gpsLng.toFixed(5)} - doctor not geo-tagged`
   });
   await notifyReportingManager(
     tenantSlug,
@@ -932,7 +943,19 @@ fieldRouter.get("/expense-claims", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const claims = await ExpenseClaimModel.find({ tenantSlug, employeeCode: employee.employeeCode }).sort({ createdAt: -1 });
   const serialized = claims.map(serializeDocument);
-  res.json({ data: await enrichWithEmployeeNames(tenantSlug, serialized, ["assignedManager"]) });
+  // QA-25 (Nov 2026): a readable decision label like DCR / TP / Leave have.
+  const deciderCodes = Array.from(new Set(claims.flatMap((c: any) => [c.approvedBy, c.rejectedBy]).filter((v: any) => v && v !== "ADMIN")));
+  const deciders = await EmployeeModel.find({ tenantSlug, employeeCode: { $in: deciderCodes } }).select("employeeCode name").lean();
+  const nameOf = new Map((deciders as any[]).map((d) => [d.employeeCode, d.name]));
+  const fmt = (d?: Date | null) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "");
+  const labelled = serialized.map((c: any, i: number) => {
+    const raw: any = claims[i];
+    let decisionLabel = "Pending approval";
+    if (raw.status === "APPROVED") decisionLabel = `Approved by ${raw.approvedBy === "ADMIN" ? "Admin" : `Manager ${nameOf.get(raw.approvedBy) ?? raw.approvedBy ?? ""}`.trim()}${raw.approvedAt ? ` · ${fmt(raw.approvedAt)}` : ""}`;
+    if (raw.status === "REJECTED") decisionLabel = `Rejected by ${raw.rejectedBy === "ADMIN" ? "Admin" : `Manager ${nameOf.get(raw.rejectedBy) ?? raw.rejectedBy ?? ""}`.trim()}${raw.rejectedAt ? ` · ${fmt(raw.rejectedAt)}` : ""}`;
+    return { ...c, decisionLabel };
+  });
+  res.json({ data: await enrichWithEmployeeNames(tenantSlug, labelled, ["assignedManager"]) });
 }));
 
 fieldRouter.post("/expense-claims", asyncHandler(async (req, res) => {
@@ -1518,7 +1541,8 @@ fieldRouter.get("/leave-entitlement", asyncHandler(async (req, res) => {
   const Model = getMasterModel("leaveEntitlementEntry");
   const rows = (await Model.find({ tenantSlug }).sort({ year: -1 }).lean()) as unknown as Record<string, unknown>[];
   const mine = rows.filter((r) => nameMatchesEmployee(r.fieldForceName, employee));
-  res.json({ data: mine.map((r) => ({ id: String(r._id), ...r })) });
+  const withBal = await withLeaveBalances(tenantSlug, mine, () => employee.employeeCode);
+  res.json({ data: withBal.map((r) => ({ id: String(r._id), ...r })) });
 }));
 
 // GET /field/activity-status — same fieldForceName-match read against the
@@ -1847,9 +1871,7 @@ fieldRouter.get("/notices/unread-count", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const count = await NoticeModel.countDocuments({
     tenantSlug,
-    postedBy: "system",
-    audience: "MR",
-    targetEmployeeCode: employee.employeeCode,
+    ...fieldBellFilter(employee.employeeCode),
     readBy: { $ne: employee.employeeCode }
   });
   res.json({ data: { count } });
@@ -1859,7 +1881,7 @@ fieldRouter.post("/notices/mark-read", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   await NoticeModel.updateMany(
-    { tenantSlug, postedBy: "system", audience: "MR", targetEmployeeCode: employee.employeeCode },
+    { tenantSlug, ...fieldBellFilter(employee.employeeCode) },
     { $addToSet: { readBy: employee.employeeCode } }
   );
   res.json({ data: { ok: true } });
