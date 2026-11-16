@@ -6,10 +6,18 @@ type Entry = { at: number; value: unknown };
 const store = new Map<string, Entry>();
 export const TTL_MS = 20_000;
 
+const inFlight = new Map<string, Promise<unknown>>();
+
 export async function cached<T>(key: string, load: () => Promise<T>, ttl = TTL_MS): Promise<T> {
   const hit = store.get(key);
   if (hit && Date.now() - hit.at < ttl) return hit.value as T;
-  const value = await load();
+  // QA-42: screens like the Executive Dashboard fire the same heavy report
+  // several times at once; share one computation instead of repeating it.
+  const pending = inFlight.get(key);
+  if (pending) return pending as Promise<T>;
+  const p = load().finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  const value = await p;
   store.set(key, { at: Date.now(), value });
   if (store.size > 500) store.delete(store.keys().next().value as string);
   return value;

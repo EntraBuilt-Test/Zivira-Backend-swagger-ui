@@ -243,8 +243,10 @@ mastersRouter.get(
       if (!fieldKeys.has(key) || typeof value !== "string" || !value.trim()) continue;
       filter[key] = value;
     }
-    const records = await Model.find(filter).sort({ createdAt: 1 });
-    res.json({ data: records.map(serializeDocument), schema: config });
+    // QA-40: lean() skips building a full Mongoose document per row (14,500
+    // chemists took ~27 s); the JSON sent to the screen is unchanged.
+    const records = await Model.find(filter).sort({ createdAt: 1 }).lean();
+    res.json({ data: records.map((r) => serializeDocument(r as typeof r & { _id: unknown })), schema: config });
   })
 );
 

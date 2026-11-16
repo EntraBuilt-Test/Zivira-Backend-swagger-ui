@@ -2715,8 +2715,8 @@ const dealerValidation = z.object({
 });
 
 companyRouter.get("/dealers", asyncHandler(async (req, res) => {
-  const rows = await DealerModel.find({ tenantSlug: req.auth!.tenantSlug }).sort({ sourceSNo: 1 });
-  res.json({ data: rows.map(serializeDocument) });
+  const rows = await DealerModel.find({ tenantSlug: req.auth!.tenantSlug }).sort({ sourceSNo: 1 }).lean();
+  res.json({ data: rows.map((r) => serializeDocument(r as typeof r & { _id: unknown })) });
 }));
 
 companyRouter.post("/dealers", asyncHandler(async (req, res) => {
@@ -3356,7 +3356,7 @@ companyRouter.get("/analytics/alerts", asyncHandler(async (req, res) => {
     ? req.query.month
     : `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
-  const alerts = await computeAlerts(tenantSlug, month);
+  const alerts = await cached(`alerts|${tenantSlug}|${month}`, () => computeAlerts(tenantSlug, month), 60_000);
   res.json({
     data: alerts, month,
     summary: {
