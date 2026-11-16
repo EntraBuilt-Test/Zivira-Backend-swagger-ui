@@ -9,6 +9,7 @@ import { cached, clearCache } from "../utils/ttl-cache.js";
 import { uploadToolsRouter } from "./upload-tools.routes.js";
 import { infoAdminRouter } from "./info.routes.js";
 import { mailRouter } from "./mail.routes.js";
+import { erpRouter } from "./erp.routes.js";
 import { mastersActionsRouter } from "./masters-actions.routes.js";
 import { dashboardsRouter } from "./dashboard.routes.js";
 import { quizRouter } from "./quiz.routes.js";
@@ -227,6 +228,8 @@ companyRouter.use("/masters", mastersActionsRouter);
 // moment the Options > Dashboard Builder screen tried to call it.
 companyRouter.use("/dashboards", dashboardsRouter);
 companyRouter.use("/mail", mailRouter);
+// Phase 2 ERP (ENT-ZVR-2026-P2): secondary sales statements, products & PTS, stockists.
+companyRouter.use("/erp", erpRouter);
 companyRouter.use("/quiz", quizRouter);
 
 companyRouter.get(
