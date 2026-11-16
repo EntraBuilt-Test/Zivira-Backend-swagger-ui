@@ -1891,9 +1891,11 @@ companyRouter.post(
   "/dcrs/:id/approve",
   asyncHandler(async (req, res) => {
     const dcr = await DcrModel.findOne({ _id: req.params.id, tenantSlug: req.auth!.tenantSlug });
-    if (!dcr) throw new Error("DCR not found");
+    if (!dcr) throw new HttpError(404, "DCR not found");
     dcr.status = "APPROVED";
     await dcr.save();
+    // QA-48: the older /admin/dcr approve gave the rep no notice; tell them like the other approval paths do.
+    await adminNotifyRep(req.auth!.tenantSlug!, dcr.employeeCode, "Your DCR was approved by Admin", `Admin approved your DCR (visits on ${dcr.visitDateOnly ?? String(dcr.visitDate).slice(0, 10)}).`);
     res.json({ data: serializeDocument(dcr) });
   })
 );
