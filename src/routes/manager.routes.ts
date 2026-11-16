@@ -61,7 +61,8 @@ async function getManagerProfile(userId: string) {
   if (user.portal !== "FIELD_FORCE" || !MANAGER_ROLES.includes(user.role)) {
     throw new HttpError(403, "Manager access required");
   }
-  const emp = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: user.username.toUpperCase() });
+  // Named logins (e.g. fieldzivira) point at an employee via user.employeeCode.
+  const emp = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: (user.employeeCode || user.username).toUpperCase() });
   if (!emp) throw new HttpError(404, "Employee profile not found");
   return emp;
 }
