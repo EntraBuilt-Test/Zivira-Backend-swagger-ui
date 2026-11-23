@@ -176,7 +176,7 @@ const catching = async (rows: { row: number; value: any }[], fn: (v: any) => Pro
   return { inserted, updated, errors, outcomes };
 };
 
-// ── 1. Listed Doctor (legacy 66-column Listeddr layout) ───────────────────
+// ── 1. Listed Doctor (legacy 62-column Listeddr layout) ───────────────────
 const H = LISTEDDR_HEADERS;
 const DOCTOR_CLASSES = ["A", "B", "C", "Nil"];
 /** Territory type spellings seen in real files: HQ / Headquarter, EX / Ex-HQ / Ex HQ / Ex Headquarter, OS / Out Station / OutStation. Anything else stays invalid. */
@@ -199,7 +199,7 @@ const listedDoctor: Tool = {
     "Visiting Days(Sun/Mon/)": "Visiting days", "DOB(DD/MM/YY)": "DOB", "DOW(DD/MM/YY)": "DOW", "Product Code(p1/p2/p3)": "MappedProduct"
   }),
   async deactivate(tenant) { const n = await DoctorModel.countDocuments({ tenantSlug: tenant, status: "ACTIVE" }); await DoctorModel.updateMany({ tenantSlug: tenant, status: "ACTIVE" }, { $set: { status: "INACTIVE" } }); return n; },
-  note: "Legacy Listeddr 66-column layout (same columns as the Listeddr dump, so a dump can be re-uploaded). Key = Employee Code + Unique Code (or Listed Dr Name + Territory when no Unique Code). Employee-derived columns (Fieldforce Name, Designation, HQ, DOJ, reporting levels...) are read-only context and are ignored on import.",
+  note: "Legacy Listeddr 62-column layout (same columns as the Listeddr dump, so a dump can be re-uploaded). Key = Employee Code + Unique Code (or Listed Dr Name + Territory when no Unique Code). Employee-derived columns (Fieldforce Name, Designation, HQ, DOJ, reporting levels...) are read-only context and are ignored on import.",
   load: loadEmployees,
   check(g, ctx, rowNo) {
     const errors: Er[] = [];
@@ -842,14 +842,14 @@ export const GENERATE_COLUMNS: Record<string, { label: string; mandatory: boolea
     { label: "Hospital Name", mandatory: false }, { label: "Hospital Address", mandatory: false }, { label: "DOB(DD/MM/YY)", mandatory: false }, { label: "DOW(DD/MM/YY)", mandatory: false },
     { label: "EMail ID", mandatory: true, red: true }, { label: "Phone No", mandatory: false }, { label: "Mobile No", mandatory: true, red: true },
     { label: "Gender", mandatory: true, red: true }, { label: "No of Visit", mandatory: false }, { label: "State", mandatory: true, red: true },
-    ...["Fax", "Website", "Pin Code", "Doctor Business Value", "Expected Business Value", "Product Code(p1/p2/p3)", "Country", "Hospital State", "DAY1", "DAY2", "DAY3", "Geo Tag Count", "Unique Code", "Reg No", "Avg Patient/day", "Visiting Days(Sun/Mon/)", "Others 1", "Others 2", "Others 3"].map((label) => ({ label, mandatory: false }))
+    ...["Fax", "Website", "Pin Code", "Doctor Business Value", "Expected Business Value", "Product Code(p1/p2/p3)", "Country", "Hospital State", "DAY1", "DAY2", "DAY3", "Unique Code", "Reg No", "Avg Patient/day", "Visiting Days(Sun/Mon/)", "Others 1", "Others 2", "Others 3"].map((label) => ({ label, mandatory: false }))
   ],
   chemist: [
     ...["SI No", "User Name", "Chemist Name", "Territory"].map((label) => ({ label, mandatory: true })),
     ...["Category", "Class", "Address", "Address 2", "City Name", "Pin Code", "Contact person", "Contact Person Designation", "Mobile No", "Shop landline No", "EMail ID", "Website", "Stockist ERP Code", "Chemist ERP Code", "State", "Others 1", "Others 2", "Others 3", "Others 4", "Others 5"].map((label) => ({ label, mandatory: false }))
   ]
 };
-// The "Excel Format File - Download Here" of these two tools is the mandatory-column format of their Generate Excel grid (the 66-column Listeddr dump layout and the demo-pack layouts still import).
+// The "Excel Format File - Download Here" of these two tools is the mandatory-column format of their Generate Excel grid (the 62-column Listeddr dump layout and the demo-pack layouts still import).
 for (const k of ["listed-doctor", "chemist"]) { const t = getTool(k)!; t.templateHeaders = GENERATE_COLUMNS[k].filter((c) => c.mandatory).map((c) => c.label); t.templateMandatory = t.templateHeaders; }
 export function generateWorkbook(toolKey: string, selected: string[]): Promise<Buffer> {
   const all = GENERATE_COLUMNS[toolKey];

@@ -860,7 +860,7 @@ async function seedIdentityMasters() {
 
   const doctorAdditionalRows = DOCTORS.map((d, i) => ({
     tenantSlug: TENANT, doctorCode: d.code, doctorName: d.name, birthDate: daysAgo(15000 + i * 100),
-    anniversary: daysAgo(3000 + i * 50), remarks: "Standard demo record", latitude: 12.9 + i * 0.1, longitude: 77.5 + i * 0.1, status: "Active"
+    anniversary: daysAgo(3000 + i * 50), remarks: "Standard demo record", status: "Active"
   }));
   await getMasterModel("doctorAdditionalInfo").deleteMany({ tenantSlug: TENANT });
   await getMasterModel("doctorAdditionalInfo").insertMany(doctorAdditionalRows);
@@ -1187,7 +1187,7 @@ const OPTIONS_KEYS = [
   "approvalMandatorySetup", "baseLevelSetup", "managerSetup", "managerwiseCoreDoctorMap", "orderBookingSetup",
   "homepageDashboardDisplay", "leavePolicySetup", "leaveTypeSetup", "screenAccessSetup", "screenwiseLock",
   "deviceLock", "mailFolderCreation", "otherSetup", "appSetupDynamicAppLink",
-  "gpsGeoFenceAllocation", "geoTagDeletion", "callFeedbackCreation", "callRemarksTemplates", "menuCreation", "notificationMessage",
+  "callFeedbackCreation", "callRemarksTemplates", "menuCreation", "notificationMessage",
   "mailBoxLog",
   "flashNewsSetup", "noticeBoardSetup", "quoteOfTheWeek", "talkToUsSetup",
   "homepageImageFieldForcewise",

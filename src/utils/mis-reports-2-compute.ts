@@ -195,8 +195,8 @@ export async function computeClassWiseView(tenantSlug: string, emp: OrgEmployee,
 export const DUMP_HEADERS = [
   "SLNo", "Fieldforce Name", "Designation", "HQ", "Employee Id", "DOJ", "Reporting Manager I", "Reporting Manager II", "DCR Date", "Submission Date",
   "Daywise Remarks", "Work Type", "Territory", "Saneforce Dr Code", "Customer Type", "Customer", "Address", "Session", "Time", "Category", "Speciality",
-  "Qualification", "Worked With Name", "POB", "Lat - long", "Address1", "Call Remark", "Product Detail", "Product Sample", "Product Rx", "Input Sample",
-  "Territory_As_Per_TP", "Geo tagged drs", ""
+  "Qualification", "Worked With Name", "POB", "Address1", "Call Remark", "Product Detail", "Product Sample", "Product Rx", "Input Sample",
+  "Territory_As_Per_TP", ""
 ];
 
 function hhmm(t: string | null | undefined): string {
@@ -259,18 +259,16 @@ export async function buildDcrDump(tenantSlug: string, rootCode: string, month: 
     for (const d of mine) {
       const doc = d.doctorId || {};
       const time = hhmm(d.callTime) || hhmm(d.checkInTime);
-      const gps = d.gpsLocation || {};
-      const hasGps = typeof gps.latitude === "number" && typeof gps.longitude === "number";
       const category = tierOfDoctor(doc, core, emp.name);
       rows.push({
         date: d.visitDateOnly, time,
         cells: [
           dmySlash(d.visitDateOnly), submission(d.createdAt, d.visitDateOnly), "", d.workType || "Field Work", doc.territory || emp.territory, doc.doctorCode || "", "Listed Doctor",
           doc.name || "", doc.address1 || doc.location || doc.city || "", sessionOfCall(time, d.callSession), time, category, doc.specialty || "", doc.qualification || "",
-          workedWith(d), String(round2(docPobValue(d, rates))), hasGps ? `${gps.latitude} - ${gps.longitude}` : "0.0 - 0.0", "NA", d.notes || "",
+          workedWith(d), String(round2(docPobValue(d, rates))), "NA", d.notes || "",
           (d.productsDetailed || []).join(";"), (d.samplesGiven || []).map((s: any) => `${s.productName} - ${Number(s.qty || 0).toFixed(2)}`).join(";"),
           (d.rxItems || []).map((r: any) => `${r.productName} - ${Number(r.qty || 0).toFixed(2)}`).join(";"),
-          (d.inputsGiven || []).map((i: any) => i.inputName).join(";"), plannedTerritory(d.visitDateOnly), hasGps ? "YES" : "NO"
+          (d.inputsGiven || []).map((i: any) => i.inputName).join(";"), plannedTerritory(d.visitDateOnly)
         ]
       });
     }
@@ -282,19 +280,17 @@ export async function buildDcrDump(tenantSlug: string, rootCode: string, month: 
         cells: [
           dmySlash(c.visitDateOnly), submission(c.createdAt, c.visitDateOnly), "", "Field Work", emp.territory, dealer?.sourceSNo != null ? String(dealer.sourceSNo) : "", "Chemist",
           c.chemistName || dealer?.dealerName || "", dealer?.address || dealer?.city || "", "", time, "", "", "", "",
-          String(round2(docPobValue(c, rates))), "0.0 - 0.0", "NA", "", "", "", "", "", plannedTerritory(c.visitDateOnly), "NO"
+          String(round2(docPobValue(c, rates))), "NA", "", "", "", "", "", plannedTerritory(c.visitDateOnly)
         ]
       });
     }
     for (const l of myLogs) {
       const time = hhmm(l.checkInTime);
-      const gps = l.gpsLocation || {};
-      const hasGps = typeof gps.latitude === "number" && typeof gps.longitude === "number";
       rows.push({
         date: l.visitDateOnly, time,
         cells: [
           dmySlash(l.visitDateOnly), submission(l.createdAt, l.visitDateOnly), "", "Field Work", emp.territory, "", l.visitType === "Stockist" ? "Stockist" : l.visitType === "UnlistedDoctor" ? "Unlisted Doctor" : l.visitType === "Hospital" ? "Hospital" : l.visitType,
-          l.entityName || "", "", "", time, "", "", "", "", "0", hasGps ? `${gps.latitude} - ${gps.longitude}` : "0.0 - 0.0", "NA", l.notes || "", "", "", "", "", plannedTerritory(l.visitDateOnly), hasGps ? "YES" : "NO"
+          l.entityName || "", "", "", time, "", "", "", "", "0", "NA", l.notes || "", "", "", "", "", plannedTerritory(l.visitDateOnly)
         ]
       });
     }
@@ -306,14 +302,14 @@ export async function buildDcrDump(tenantSlug: string, rootCode: string, month: 
         if (date < from || date > to || date < monthStart || !wanted(date) || dates.has(date)) continue;
         rows.push({
           date, time: "",
-          cells: [dmySlash(date), dmySlash(ymd(lv.createdAt) || date), lv.reason || lv.leaveType || "", "Leave", ...Array<string>(11).fill(""), "0", ...Array<string>(9).fill("")]
+          cells: [dmySlash(date), dmySlash(ymd(lv.createdAt) || date), lv.reason || lv.leaveType || "", "Leave", ...Array<string>(11).fill(""), "0", ...Array<string>(7).fill("")]
         });
       }
     }
     rows.sort((a, b) => (a.date === b.date ? a.time.localeCompare(b.time) : a.date.localeCompare(b.date)));
     for (const r of rows) {
       sl++;
-      // cells layout: [DCR Date .. Geo tagged]; head fills cols 2-8, SLNo col 1.
+      // cells layout: [DCR Date .. Territory_As_Per_TP]; head fills cols 2-8, SLNo col 1.
       const line = [String(sl), ...head, ...r.cells, ""];
       out.push(line.map(clean));
     }

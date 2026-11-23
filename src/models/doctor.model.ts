@@ -75,8 +75,6 @@ const doctorSchema = new Schema(
     // P0..P5 priority products (index = priority) and mapped products.
     priorityProducts: { type: [String], default: [] },
     mappedProducts: { type: [String], default: [] },
-    // Field geo-tag captures (the latest is the doctor's mapped location).
-    geoTags: { type: [new Schema({ lat: Number, lng: Number, address: { type: String, default: "" }, taggedAt: { type: Date, default: Date.now }, employeeCode: { type: String, default: "" } }, { _id: false })], default: [] },
     supportiveChemists: { type: [new Schema({ dealerId: { type: String, required: true }, dealerName: { type: String, default: "" } }, { _id: false })], default: [] }
   },
   { timestamps: true }

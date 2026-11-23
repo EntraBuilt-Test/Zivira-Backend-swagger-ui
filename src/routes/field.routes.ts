@@ -205,12 +205,6 @@ const dcrSchema = z.object({
   // them, same soft-capture philosophy as everything else on this form) ──
   checkInTime:      z.string().optional(),
   checkOutTime:      z.string().optional(),
-  gpsLocation: z.object({
-    latitude:  z.number().optional(),
-    longitude: z.number().optional(),
-    label:     z.string().optional(),
-    accuracyMeters: z.number().optional()
-  }).optional(),
   hospitalClinic:    z.string().optional(),
   visitDurationMinutes: z.number().min(0).optional(),
   promotionalMaterialsShared: z.array(z.string()).default([]),
@@ -459,32 +453,10 @@ fieldRouter.delete("/dcrs/:id", asyncHandler(async (req, res) => {
   res.json({ data: { deleted: true, id: dcrId } });
 }));
 
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000;
-  const toRad = (v: number) => (v * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
 fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const employee = await getFieldProfile(req.auth!.sub);
   const body = dcrSchema.parse(req.body);
-  // QA-08 (Nov 2026, client feedback): a DCR must carry the rep's GPS
-  // location. Previously GPS was optional and calls could be filed from
-  // anywhere. Reject when latitude/longitude are missing or invalid.
-  const gpsLat = body.gpsLocation?.latitude;
-  const gpsLng = body.gpsLocation?.longitude;
-  if (
-    typeof gpsLat !== "number" || typeof gpsLng !== "number" ||
-    !Number.isFinite(gpsLat) || !Number.isFinite(gpsLng) ||
-    Math.abs(gpsLat) > 90 || Math.abs(gpsLng) > 180 ||
-    (gpsLat === 0 && gpsLng === 0)
-  ) {
-    throw new HttpError(400, "Location is needed to submit a DCR. Turn on location for this app/browser, then tap Submit again.");
-  }
   const todayStr = dateOnlyUTC(new Date());
   const visitDateOnly = body.visitDate || todayStr;
   if (visitDateOnly > todayStr) throw new HttpError(400, "A DCR cannot be submitted for a future date.");
@@ -536,23 +508,6 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     const shown = await SlideViewModel.countDocuments({ tenantSlug, employeeCode: employee.employeeCode, doctorId: body.doctorId, visitDateOnly });
     if (shown > 0) channel = "E-detailing";
   }
-  // QA-09 (Nov 2026): real geofence check against the doctor's geo-tags.
-  const GEOFENCE_RADIUS_METERS = Number(process.env.GEOFENCE_RADIUS_METERS) || 500;
-  let distanceMeters: number | null = null;
-  let geofenceStatus: "WITHIN" | "OUTSIDE" | "NO_DOCTOR_TAG" = "NO_DOCTOR_TAG";
-  if (body.doctorId && mongoose.isValidObjectId(body.doctorId)) {
-    const doc = await DoctorModel.findOne({ _id: body.doctorId, tenantSlug }).select("geoTags").lean();
-    const tags = ((doc as any)?.geoTags ?? []) as Array<{ lat?: number; lng?: number }>;
-    for (const t of tags) {
-      if (typeof t.lat !== "number" || typeof t.lng !== "number") continue;
-      const d = haversineMeters(gpsLat, gpsLng, t.lat, t.lng);
-      if (distanceMeters === null || d < distanceMeters) distanceMeters = d;
-    }
-    if (distanceMeters !== null) {
-      distanceMeters = Math.round(distanceMeters);
-      geofenceStatus = distanceMeters <= GEOFENCE_RADIUS_METERS ? "WITHIN" : "OUTSIDE";
-    }
-  }
   const dcr = await DcrModel.create({
     tenantSlug,
     employeeCode: employee.employeeCode,
@@ -572,7 +527,6 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
     submissionChannel: channel,
-    gpsLocation: { ...body.gpsLocation, distanceMeters, geofenceStatus },
     hospitalClinic: body.hospitalClinic,
     visitDurationMinutes: body.visitDurationMinutes,
     promotionalMaterialsShared: body.promotionalMaterialsShared,
@@ -618,10 +572,6 @@ fieldRouter.post("/dcrs", asyncHandler(async (req, res) => {
     workType: body.hospitalClinic ? "Field Work" : "Admin Work",
     hospitalClinic: body.hospitalClinic ?? "",
     remarks: body.notes ?? "",
-    // QA-33 (Nov 2026): location result shown in the admin approval popup.
-    gpsCheck: geofenceStatus === "WITHIN" ? `Within geofence (${distanceMeters} m from doctor)`
-      : geofenceStatus === "OUTSIDE" ? `OUTSIDE geofence (${distanceMeters} m from doctor)`
-      : `GPS captured ${gpsLat.toFixed(5)}, ${gpsLng.toFixed(5)} - doctor not geo-tagged`
   });
   await notifyReportingManager(
     tenantSlug,
@@ -1433,23 +1383,6 @@ fieldRouter.post("/slides/:id/mark-downloaded", asyncHandler(async (req, res) =>
   );
   await audit("FIELD_SLIDE_DOWNLOADED", "SlideDownload", String(record._id), { tenantSlug, employeeCode: employee.employeeCode, slideId: req.params.id });
   res.status(201).json({ data: serializeDocument(record) });
-}));
-
-// Round 46 -- field geo-tag capture for a listed doctor (feeds the Listeddr dump).
-const geoTagSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), address: z.string().max(300).optional() });
-fieldRouter.post("/doctors/:id/geo-tag", asyncHandler(async (req, res) => {
-  const tenantSlug = req.auth!.tenantSlug!;
-  const employee = await getFieldProfile(req.auth!.sub);
-  const body = geoTagSchema.parse(req.body);
-  if (!mongoose.isValidObjectId(req.params.id)) throw new HttpError(400, "Invalid doctor reference.");
-  const doctor = await DoctorModel.findOneAndUpdate(
-    { _id: req.params.id, tenantSlug, mappedEmployeeCode: employee.employeeCode },
-    { $push: { geoTags: { lat: body.lat, lng: body.lng, address: body.address || "", taggedAt: new Date(), employeeCode: employee.employeeCode } } },
-    { new: true }
-  );
-  if (!doctor) throw new HttpError(404, "Doctor not found in your list");
-  await audit("FIELD_DOCTOR_GEO_TAGGED", "Doctor", String(doctor._id), { tenantSlug, employeeCode: employee.employeeCode });
-  res.status(201).json({ data: { id: String(doctor._id), geoTagCount: (doctor as any).geoTags?.length ?? 1 } });
 }));
 
 // Round 45 -- "Present slides": one row per slide shown to a listed doctor.

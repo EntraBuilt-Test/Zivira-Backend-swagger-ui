@@ -1,7 +1,7 @@
 // Round 46 -- MIS Reports dumps and result screens:
 //   Dump II > RCPA (xls + csv), Dump II > Product Exposure Analysis [SKU wise
 //   detailing secs] (tab-separated .xls), Dump > Visit - Drs, Secondary Sale,
-//   Listeddr (66-column CSV), Chemist, Transit Bills, Listed Stockist,
+//   Listeddr (62-column CSV), Chemist, Transit Bills, Listed Stockist,
 //   Options > Resigned User Status, Join/Left Details, TP - Deviation For
 //   Baselevel. Layouts follow the legacy sample files byte for byte where a
 //   sample exists (header text, order, sheet name, title row, merges, widths).
@@ -260,8 +260,8 @@ export async function buildSsRows(tenantSlug: string, code: string, month: strin
   ]);
 }
 
-// ═══ 5. Listeddr dump (66-column fully-quoted CSV) ═══════════════════════
-export const LISTEDDR_HEADERS = ["sno", "Saneforce code", "Fieldforce Name", "Designation", "HQ", "Employee Code", "DOJ", "StateName", "Division Name", "SubDivision", "Reporting_leve1", "Reporting_HQ_leve1", "Reporting_leve2", "Reporting_HQ_leve2", "Reporting_leve3", "Reporting_HQ_leve3", "SLVNo", "Unique Code", "Listed Dr Name", "Created Date", "ListedDr_Address1", "Address2", "Address3", "Category", "Speciality", "Qualification", "Class", "Doctor_Type", "Territory", "Territory_type", "City Name", "Hospital Name", "Hospital Address", "DOB", "DOW", "Mobile", "Email", "Gender", "Pincode", "Register Number", "Telephone No", "Dr_Potential", "Business Value", "Exp Business Value", "Current Business", "Communication", "Working Place", "Visiting days", "IUI Cycle", "Average Number of Patients Per Day", "Class of Patients", "Time Of Meeting", "Consultation_Fees", "campaign", "P0", "P1", "P2", "P3", "P4", "P5", "MappedProduct", "MappedChemist", "Geo Tag Count", "lat", "long", "Geoaddrs"];
+// ═══ 5. Listeddr dump (62-column fully-quoted CSV) ═══════════════════════
+export const LISTEDDR_HEADERS = ["sno", "Saneforce code", "Fieldforce Name", "Designation", "HQ", "Employee Code", "DOJ", "StateName", "Division Name", "SubDivision", "Reporting_leve1", "Reporting_HQ_leve1", "Reporting_leve2", "Reporting_HQ_leve2", "Reporting_leve3", "Reporting_HQ_leve3", "SLVNo", "Unique Code", "Listed Dr Name", "Created Date", "ListedDr_Address1", "Address2", "Address3", "Category", "Speciality", "Qualification", "Class", "Doctor_Type", "Territory", "Territory_type", "City Name", "Hospital Name", "Hospital Address", "DOB", "DOW", "Mobile", "Email", "Gender", "Pincode", "Register Number", "Telephone No", "Dr_Potential", "Business Value", "Exp Business Value", "Current Business", "Communication", "Working Place", "Visiting days", "IUI Cycle", "Average Number of Patients Per Day", "Class of Patients", "Time Of Meeting", "Consultation_Fees", "campaign", "P0", "P1", "P2", "P3", "P4", "P5", "MappedProduct", "MappedChemist"];
 
 export async function buildListeddrRows(tenantSlug: string, code: string): Promise<string[][]> {
   const { list } = await teamScope(tenantSlug, code);
@@ -282,8 +282,6 @@ export async function buildListeddrRows(tenantSlug: string, code: string): Promi
     for (const d of mine) {
       sno++;
       const prio = (i: number) => sstr(d.priorityProducts?.[i]);
-      const tags: any[] = d.geoTags || [];
-      const last = tags[tags.length - 1];
       out.push([
         String(sno), sstr((e as any).sfCode), e.name, e.designation, e.territory, e.employeeCode, dmyOf(e.joinDate), sstr(e.state), sstr(tenant?.name), sstr((e as any).division),
         sstr(chain[0]?.name), sstr(chain[0]?.territory), sstr(chain[1]?.name), sstr(chain[1]?.territory), sstr(chain[2]?.name), sstr(chain[2]?.territory),
@@ -292,8 +290,7 @@ export async function buildListeddrRows(tenantSlug: string, code: string): Promi
         dmyOf(d.dob), dmyOf(d.anniversaryDate), sstr(d.phone), sstr(d.email).toUpperCase(), sstr(d.gender), sstr(d.postalCode), sstr(d.registrationNo), sstr(d.telephone),
         sstr(d.drPotential), sstr(d.businessValue), sstr(d.expBusinessValue), sstr(d.currentBusiness), sstr(d.communication), sstr(d.workingPlace), sstr(d.visitingDays), sstr(d.iuiCycle),
         sstr(d.avgPatientsPerDay), sstr(d.classOfPatients), sstr(d.timeOfMeeting), sstr(d.consultationFees), sstr(d.campaign),
-        prio(0), prio(1), prio(2), prio(3), prio(4), prio(5), (d.mappedProducts || []).join(","), (d.supportiveChemists || []).map((c: any) => c.dealerName).join(","),
-        String(tags.length), last ? String(last.lat) : "", last ? String(last.lng) : "", sstr(last?.address)
+        prio(0), prio(1), prio(2), prio(3), prio(4), prio(5), (d.mappedProducts || []).join(","), (d.supportiveChemists || []).map((c: any) => c.dealerName).join(",")
       ]);
     }
   }

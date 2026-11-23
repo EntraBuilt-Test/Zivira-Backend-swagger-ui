@@ -25,11 +25,6 @@ const fieldVisitLogSchema = new Schema(
     entityName: { type: String, required: true, trim: true },
     checkInTime: { type: String, default: null }, // "HH:MM"
     checkOutTime: { type: String, default: null },
-    gpsLocation: {
-      latitude: { type: Number, default: null },
-      longitude: { type: Number, default: null },
-      label: { type: String, default: null }
-    },
     visitDate: { type: Date, required: true, index: true },
     visitDateOnly: { type: String, index: true }, // 'YYYY-MM-DD', derived server-side
     notes: { type: String, trim: true, default: null },

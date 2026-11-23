@@ -80,12 +80,12 @@ export async function computeQuizResult(tenantSlug: string, code: string, scope:
 
 // ═══ Items 2 + 3 -- Day Wise Report Dump / Call Report Dump ══════════════
 export const DAYWISE_HEADERS = ["ECODE", "sf_name", "hq", "desg", "Date", "Day", "Day_Type", "CallType", "AreaName", "Territory_code", "Type", "Worked_with_Name", "MSL_No", "Doctor_Chemist_StockistName", "Date_of_Met", "Time_of_Met", "Doctor_Speciality", "Doctor_Category", "Doctor_Type", "ProductName_With_Sample", "Input Given", "FeedBack", "Activity_Remarks", "DRClass", "Agreed_to_Prescribe", "POB", "Remarks"];
-export const CALL_REPORT_HEADERS = ["Field Force Name", "Employee Code", "hq", "Designation", "Date", "Day", "Day_Type", "CallType", "AreaName", "Territory_code", "Type", "Worked_with_Name", "MSL_No", "Dr/Ch/Stck Code", "Doctor_Chemist_StockistName", "Dr/Ch/Stck Clinic Address", "Last Visit Date", "Date_of_Met", "Time_of_Met", "Doctor_Speciality", "Doctor_Category", "Doctor_Type", "ProductName_With_Sample", "Sample Qty", "Input Given", "Input Qty", "FeedBack", "Activity_Remarks", "DRClass", "Agreed_to_Prescribe", "POB", "Remarks", "Actual Reporting Location", "Division"];
+export const CALL_REPORT_HEADERS = ["Field Force Name", "Employee Code", "hq", "Designation", "Date", "Day", "Day_Type", "CallType", "AreaName", "Territory_code", "Type", "Worked_with_Name", "MSL_No", "Dr/Ch/Stck Code", "Doctor_Chemist_StockistName", "Dr/Ch/Stck Clinic Address", "Last Visit Date", "Date_of_Met", "Time_of_Met", "Doctor_Speciality", "Doctor_Category", "Doctor_Type", "ProductName_With_Sample", "Sample Qty", "Input Given", "Input Qty", "FeedBack", "Activity_Remarks", "DRClass", "Agreed_to_Prescribe", "POB", "Remarks", "Division"];
 
 export type CallLine = {
   emp: OrgEmployee; date: string; time: string; dayType: string; callType: string; area: string; terrCode: string; type: string; workedWith: string;
   msl: string; code: string; name: string; address: string; lastVisit: string; met: string; timeMet: string; speciality: string; category: string; doctorType: string;
-  products: string; sampleQty: string; inputGiven: string; inputQty: string; feedback: string; activity: string; drClass: string; agreed: string; pob: string; remarks: string; loc: string;
+  products: string; sampleQty: string; inputGiven: string; inputQty: string; feedback: string; activity: string; drClass: string; agreed: string; pob: string; remarks: string;
 };
 
 // callAt is a server timestamp (UTC); the legacy dumps show Indian clock time.
@@ -97,7 +97,6 @@ function clockOf(callAt: unknown, hhmm: string | undefined | null): string {
   const m = /(\d{1,2}):(\d{2})/.exec(hhmm || "");
   return m ? `${p2(Number(m[1]))}:${m[2]}:00` : "";
 }
-const locOf = (g: any) => (g && typeof g.latitude === "number" && typeof g.longitude === "number" ? `${g.latitude} ; ${g.longitude}` : "0.0 ; 0.0");
 
 export async function buildCallLines(tenantSlug: string, code: string, month: string, days: number[], includeVacant: boolean, everyDay: boolean): Promise<{ lines: CallLine[]; division: string }> {
   const { list } = await resolveScope(tenantSlug, code && code !== "admin" ? code : "", includeVacant);
@@ -135,7 +134,7 @@ export async function buildCallLines(tenantSlug: string, code: string, month: st
   for (const emp of scope) {
     const base = (date: string, time: string): CallLine => ({
       emp, date, time, dayType: "Field Work", callType: "", area: "", terrCode: "", type: "", workedWith: "", msl: "", code: "", name: "", address: "", lastVisit: "", met: "",
-      timeMet: "", speciality: "", category: "", doctorType: "", products: "", sampleQty: "", inputGiven: "", inputQty: "", feedback: "", activity: "", drClass: "", agreed: "", pob: "", remarks: "", loc: "0.0 ; 0.0"
+      timeMet: "", speciality: "", category: "", doctorType: "", products: "", sampleQty: "", inputGiven: "", inputQty: "", feedback: "", activity: "", drClass: "", agreed: "", pob: "", remarks: ""
     });
     const mine: CallLine[] = [];
     for (const d of dcrs.filter((x) => x.employeeCode === emp.employeeCode && wanted(x.visitDateOnly))) {
@@ -155,7 +154,7 @@ export async function buildCallLines(tenantSlug: string, code: string, month: st
         products: parts.join(";"), sampleQty: sampleTotal ? String(sampleTotal) : "", inputGiven: (d.inputsGiven || []).map((i: any) => i.inputName).join(";"),
         inputQty: String((d.inputsGiven || []).reduce((s: number, x: any) => s + Number(x.qty || 0), 0)), feedback: d.productFeedback || "", activity: "",
         drClass: classByCode.get(doc.doctorCode) || doc.category || "", agreed: d.prescriptionInterest === "HIGH" || d.prescriptionInterest === "MEDIUM" ? "Yes" : d.prescriptionInterest === "LOW" || d.prescriptionInterest === "NONE" ? "No" : "",
-        pob: num(docPobValue(d, rates)), remarks: d.notes || "", loc: locOf(d.gpsLocation)
+        pob: num(docPobValue(d, rates)), remarks: d.notes || ""
       });
       mine.push(l);
     }
@@ -165,14 +164,14 @@ export async function buildCallLines(tenantSlug: string, code: string, month: st
       const l = base(c.visitDateOnly, timeMet);
       const sno = dealer?.sourceSNo != null ? String(dealer.sourceSNo) : "";
       Object.assign(l, { callType: "Chemist", area: dealer?.patchName || emp.territory, terrCode: patchCode.get(lc(dealer?.patchName || emp.territory)) || "", type: "HQ", msl: sno, code: sno,
-        name: c.chemistName || dealer?.dealerName || "", met: dmySlash(c.visitDateOnly), timeMet, pob: num(docPobValue(c, rates)), loc: locOf(c.gpsLocation) });
+        name: c.chemistName || dealer?.dealerName || "", met: dmySlash(c.visitDateOnly), timeMet, pob: num(docPobValue(c, rates)) });
       mine.push(l);
     }
     for (const g of logs.filter((x) => x.employeeCode === emp.employeeCode && wanted(x.visitDateOnly))) {
       const timeMet = clockOf(null, g.checkInTime);
       const l = base(g.visitDateOnly, timeMet);
       Object.assign(l, { callType: g.visitType === "Stockist" ? "Stockist" : g.visitType === "UnlistedDoctor" ? "UnListeddr" : g.visitType, area: emp.territory, terrCode: patchCode.get(lc(emp.territory)) || "", type: "HQ",
-        name: g.entityName || "", met: dmySlash(g.visitDateOnly), timeMet, remarks: g.notes || "", loc: locOf(g.gpsLocation) });
+        name: g.entityName || "", met: dmySlash(g.visitDateOnly), timeMet, remarks: g.notes || "" });
       mine.push(l);
     }
     const have = new Set(mine.map((l) => l.date));
@@ -201,7 +200,7 @@ export const dayWiseCells = (l: CallLine): string[] => [
 ].map(clean);
 export const callReportCells = (l: CallLine, division: string): string[] => [
   l.emp.name, l.emp.employeeCode, l.emp.territory, l.emp.designation, mdy(l.date), WD_FULL[dowOf(l.date)], l.dayType, l.callType, l.area, l.terrCode, l.type, l.workedWith, l.msl, l.code, l.name,
-  l.address, l.lastVisit, l.met, l.timeMet, l.speciality, l.category, l.doctorType, l.products, l.sampleQty, l.inputGiven, l.inputQty, l.feedback, l.activity, l.drClass, l.agreed, l.pob, l.remarks, l.loc, division
+  l.address, l.lastVisit, l.met, l.timeMet, l.speciality, l.category, l.doctorType, l.products, l.sampleQty, l.inputGiven, l.inputQty, l.feedback, l.activity, l.drClass, l.agreed, l.pob, l.remarks, division
 ].map(clean);
 
 export function callReportCsv(lines: CallLine[], division: string): string {

@@ -3,8 +3,8 @@
 // Topic 6 — Joint Field Work Analysis
 //
 // "Joint Visit" (docx's proposed Visit ID / Manager ID / MR ID / Doctor ID /
-// Date / GPS / Duration table) is already captured on every DCR via
-// jointWork + Topic 1's checkInTime/gpsLocation/visitDurationMinutes — no
+// Date / Duration table) is already captured on every DCR via
+// jointWork + Topic 1's checkInTime/visitDurationMinutes — no
 // separate collection needed, this just aggregates DcrModel where
 // jointWork.accompanyingManager is set. Joint-work attribution uses the
 // employee's actual reportingManager (Employee model), not the free-text

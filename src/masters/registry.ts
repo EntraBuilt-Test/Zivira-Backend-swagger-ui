@@ -408,8 +408,6 @@ export const ZIVIRA_MENU_PATH_OPTIONS: string[] = [
   "Call Remarks Templates (division-dashboard/division-navigation-tabs/division-options/app-setup/call-remarks-templates)",
   "Menu Creation (division-dashboard/division-navigation-tabs/division-options/app-setup/menu-creation)",
   "Notification Message (division-dashboard/division-navigation-tabs/division-options/app-setup/notification-message)",
-  "Gps/Geo Fence User Allocation (division-dashboard/division-navigation-tabs/division-options/app-setup/gps-geofence-tagg-deletion)",
-  "Geo Tag Deletion (division-dashboard/division-navigation-tabs/division-options/app-setup/geo-tag-deletion)",
   "Dynamic App Link (division-dashboard/division-navigation-tabs/division-options/app-setup/dynamic-app-link)",
   "Mail Box (division-dashboard/division-navigation-tabs/division-options/mail-box)",
   "Customer Upload (division-dashboard/division-navigation-tabs/division-options/customer-upload)",
@@ -477,7 +475,6 @@ export const ZIVIRA_MENU_PATH_OPTIONS: string[] = [
   "Survey Engine (system-utilities/survey-engine)",
   "Approval Workflow System (system-utilities/approval-workflow-system)",
   "Notification Engine (system-utilities/notification-engine)",
-  "Geofence & GPS Controls (system-utilities/geofence-gps-controls)",
   "Device Management (system-utilities/device-management)",
   "Upload Management (system-utilities/upload-management)",
   "Analytics & MIS Engine (system-utilities/analytics-mis-engine)",
@@ -803,8 +800,6 @@ export const MASTERS: MasterConfig[] = [
       { key: "birthDate", label: "Birth Date", type: "date" },
       { key: "anniversary", label: "Anniversary", type: "date" },
       { key: "remarks", label: "Remarks" },
-      { key: "latitude", label: "Latitude", type: "number" },
-      { key: "longitude", label: "Longitude", type: "number" },
       { key: "status", label: "Status", options: ACTIVE_INACTIVE }
     ]
   },
@@ -860,7 +855,6 @@ export const MASTERS: MasterConfig[] = [
       { key: "attendanceType", label: "Attendance Type", options: ["Field Work", "Office", "Half Day", "Meeting", "Leave", "Admin"] },
       { key: "checkIn", label: "Check In" },
       { key: "checkOut", label: "Check Out" },
-      { key: "gps", label: "GPS" },
       { key: "remarks", label: "Remarks" }
     ]
   },
@@ -1353,8 +1347,6 @@ export const MASTERS: MasterConfig[] = [
       { key: "checkIn", label: "Check In" },
       { key: "checkOut", label: "Check Out" },
       { key: "totalWorkingHours", label: "Total Working Hours" },
-      { key: "gpsCheckIn", label: "GPS Check-In" },
-      { key: "gpsCheckOut", label: "GPS Check-Out" },
       { key: "managerApproval", label: "Manager Approval", options: ["Approved", "Pending", "Rejected"] },
       { key: "remarks", label: "Remarks" }
     ]
@@ -1770,7 +1762,6 @@ export const MASTERS: MasterConfig[] = [
       { key: "activityDate", label: "Activity Date", type: "date", detailOnly: true },
       { key: "workType", label: "Work Type", detailOnly: true },
       { key: "hospitalClinic", label: "Hospitals Met", detailOnly: true },
-      { key: "gpsCheck", label: "Location Check", detailOnly: true },
       { key: "remarks", label: "Remarks", detailOnly: true },
       { key: "approvalStatus", label: "Approval Status", options: ["Pending", "Approved", "Rejected"] }
     ],
@@ -2799,31 +2790,6 @@ export const MASTERS: MasterConfig[] = [
       { key: "effectiveFrom", label: "Effective From", type: "date" },
       { key: "effectiveTo", label: "Effective To", type: "date" },
       { key: "status", label: "Status", options: ["Draft", "Sent"] }
-    ]
-  },
-  {
-    key: "gpsGeoFenceAllocation",
-    title: "Gps/Geo Fence User Allocation",
-    keyFields: ["fieldForceName"],
-    fields: [
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "hq", label: "HQ", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "territory" } },
-      { key: "designation", label: "Designation", computed: { fromField: "fieldForceName", sourceMaster: "employees", lookupField: "name", displayField: "designation" } },
-      { key: "gps", label: "GPS", options: ["Yes", "No"] },
-      { key: "geoFencingDoctor", label: "Geo Fencing Doctor", options: ["Yes", "No"] },
-      { key: "geoFencingChemist", label: "Geo Fencing Chemist", options: ["Yes", "No"] },
-      { key: "geoFencingStockist", label: "Geo Fencing Stockist", options: ["Yes", "No"] }
-    ]
-  },
-  {
-    key: "geoTagDeletion",
-    title: "Geo Tag Deletion",
-    keyFields: ["entityType", "fieldForceName"],
-    fields: [
-      { key: "entityType", label: "Entity Type", options: ["Doctor", "Chemist", "Stockist"] },
-      { key: "fieldForceName", label: "Field Force Name", sourceMaster: "employees", sourceField: "name" },
-      { key: "deletedOn", label: "Deleted On", type: "date" },
-      { key: "status", label: "Status", options: ["Pending", "Deleted"] }
     ]
   },
   {

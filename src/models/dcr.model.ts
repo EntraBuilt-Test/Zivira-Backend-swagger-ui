@@ -102,18 +102,9 @@ const dcrSchema = new Schema(
       managerObservations: { type: String }
     },
     // ── Zivira_Project_Basic.docx Topic 1 — DCR Management Module ──────
-    // "Visit Information": check-in/out, GPS, hospital/clinic, duration.
+    // "Visit Information": check-in/out, hospital/clinic, duration.
     checkInTime:      { type: String, default: null },   // "HH:MM"
     checkOutTime:      { type: String, default: null },
-    gpsLocation: {
-      latitude:  { type: Number, default: null },
-      longitude: { type: Number, default: null },
-      label:     { type: String, default: null },
-      accuracyMeters: { type: Number, default: null },
-      // QA-08/09 (Nov 2026): real geofence result computed server-side.
-      distanceMeters: { type: Number, default: null },
-      geofenceStatus: { type: String, default: null } // WITHIN | OUTSIDE | NO_DOCTOR_TAG
-    },
     hospitalClinic:    { type: String, default: null },
     visitDurationMinutes: { type: Number, default: null, min: 0 },
     // "Product Promotion": materials/visual aids beyond samples/gifts.

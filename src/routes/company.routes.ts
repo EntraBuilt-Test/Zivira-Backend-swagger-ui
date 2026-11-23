@@ -1458,9 +1458,9 @@ companyRouter.get(
 );
 
 // Item 6 -- DCR > Checkin-Checkout. Round 41: every mode is real now --
-// Doctor (DcrModel gps + times), Chemist (ChemistCall check-in/out times),
+// Doctor (DcrModel check-in/out times), Chemist (ChemistCall check-in/out times),
 // and Stockist / Unlisted Doctor / CIP / Hospital (FieldVisitLog rows the
-// field app writes). Chemist calls carry no GPS stamp, so lat/lng stay blank.
+// field app writes). Location is not collected anywhere in the platform.
 companyRouter.get(
   "/reports/dcr-checkin-checkout",
   asyncHandler(async (req, res) => {
@@ -1475,12 +1475,10 @@ companyRouter.get(
 
     if (mode === "Doctor") {
       const dcrs = await DcrModel.find({
-        tenantSlug, employeeCode, month,
-        "gpsLocation.latitude": { $ne: null }
+        tenantSlug, employeeCode, month
       }).populate("doctorId").lean();
       const rows = (dcrs as any[]).map((d) => ({
-        date: d.visitDateOnly, name: d.doctorId?.name || "", checkIn: d.checkInTime || "-", checkOut: d.checkOutTime || "-",
-        lat: d.gpsLocation?.latitude, lng: d.gpsLocation?.longitude
+        date: d.visitDateOnly, name: d.doctorId?.name || "", checkIn: d.checkInTime || "-", checkOut: d.checkOutTime || "-"
       }));
       res.json({ data: { mode, rows, unsupported: false } });
       return;
@@ -1488,7 +1486,7 @@ companyRouter.get(
     if (mode === "Chemist") {
       // Round 41 item 1 -- chemist calls carry real check-in / check-out times.
       const calls = (await ChemistCallModel.find({ tenantSlug, employeeCode, visitDateOnly: { $regex: `^${month}` } }).sort({ visitDateOnly: 1 }).lean()) as any[];
-      res.json({ data: { mode, rows: calls.map((c) => ({ date: c.visitDateOnly, name: c.chemistName || "", checkIn: c.checkInTime || "-", checkOut: c.checkOutTime || "-", lat: null, lng: null })), unsupported: false } });
+      res.json({ data: { mode, rows: calls.map((c) => ({ date: c.visitDateOnly, name: c.chemistName || "", checkIn: c.checkInTime || "-", checkOut: c.checkOutTime || "-" })), unsupported: false } });
       return;
     }
     // Stockist / Unlisted Doctor / CIP / Hospital -- real FieldVisitLog rows.
@@ -1496,7 +1494,7 @@ companyRouter.get(
     const logType = typeByMode[mode];
     if (logType) {
       const logs = (await FieldVisitLogModel.find({ tenantSlug, employeeCode, visitType: logType, visitDateOnly: { $regex: `^${month}` } }).sort({ visitDateOnly: 1 }).lean()) as any[];
-      res.json({ data: { mode, rows: logs.map((l) => ({ date: l.visitDateOnly, name: l.entityName, checkIn: l.checkInTime || "-", checkOut: l.checkOutTime || "-", lat: l.gpsLocation?.latitude ?? null, lng: l.gpsLocation?.longitude ?? null })), unsupported: false } });
+      res.json({ data: { mode, rows: logs.map((l) => ({ date: l.visitDateOnly, name: l.entityName, checkIn: l.checkInTime || "-", checkOut: l.checkOutTime || "-" })), unsupported: false } });
       return;
     }
     res.json({ data: { mode, rows: [], unsupported: false } });
@@ -3379,11 +3377,8 @@ companyRouter.get("/analytics/alerts", asyncHandler(async (req, res) => {
 // ever read from Mongo). This endpoint replaces every one of those numbers
 // with a real, live aggregation. Two things were investigated and found to
 // have NO real backing data anywhere in this codebase, so they are
-// reported here rather than faked: (1) a registered clinic/chemist GPS
-// coordinate to diff a rep's capture against (no Doctor/Chemist model has
-// a lat/lng field) — "gpsNotCapturedToday" is the closest honest proxy
-// (DCRs submitted today with no gpsLocation at all), not a "mismatch
-// distance"; (2) any e-detailing session-duration tracking (no model
+// not reported: (1) GPS — location is not collected anywhere in the
+// platform; (2) any e-detailing session-duration tracking (no model
 // anywhere stores minutes/seconds per VA session) — there is no real
 // "Avg E-Detailing mins" to report, so it is omitted entirely rather than
 // shown as a fake average.
@@ -3510,8 +3505,6 @@ companyRouter.get("/activities/summary", asyncHandler(async (req, res) => {
     callsToday,
     callsYesterday,
     doctorDetailingToday,
-    gpsNotCapturedToday,
-    gpsNotCapturedDetailingToday,
     chemistCallsToday,
     pendingLeave,
     pendingExpense,
@@ -3521,8 +3514,6 @@ companyRouter.get("/activities/summary", asyncHandler(async (req, res) => {
     DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr }),
     DcrModel.countDocuments({ tenantSlug, visitDateOnly: yesterdayStr }),
     DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr, productsDetailed: { $exists: true, $not: { $size: 0 } } }),
-    DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr, "gpsLocation.latitude": null }),
-    DcrModel.countDocuments({ tenantSlug, visitDateOnly: todayStr, productsDetailed: { $exists: true, $not: { $size: 0 } }, "gpsLocation.latitude": null }),
     ChemistCallModel.find({ tenantSlug, visitDateOnly: todayStr }, { pob: 1 }).lean(),
     LeaveApplicationModel.countDocuments({ tenantSlug, status: "PENDING" }),
     ExpenseClaimModel.countDocuments({ tenantSlug, status: "SUBMITTED" }),
@@ -3572,8 +3563,6 @@ companyRouter.get("/activities/summary", asyncHandler(async (req, res) => {
       totalCallsLoggedYesterday: callsYesterday,
       callsDeltaPct: callsYesterday > 0 ? Math.round(((callsToday - callsYesterday) / callsYesterday) * 1000) / 10 : null,
       doctorDetailingVisitsToday: doctorDetailingToday,
-      gpsNotCapturedToday,
-      gpsNotCapturedDetailingToday,
       chemistStockistOrdersToday: chemistOrderCount,
       chemistStockistOrderQtyToday: chemistOrderQty,
       chemistStockistOrderValueToday: Math.round(chemistOrderValue),

@@ -142,7 +142,7 @@ export async function runBaseSeed() {
     ["field-intelligence", "Field Intelligence", "Live tracking, route replay, geo alerts, and heatmaps.", "FIELD"],
     ["reporting-engine", "Reporting Engine", "Standard reports, builders, export queues, and schedules.", "REPORTING"],
     ["sample-management", "Sample Management", "Sample allocation, issue, consumption, balance, and audit.", "COMPLIANCE"],
-    ["expense-management", "Expense Management", "Claims, GPS distance, approval, and finance dashboard.", "ADMIN"]
+    ["expense-management", "Expense Management", "Claims, approval, and finance dashboard.", "ADMIN"]
   ] as const;
 
   for (const [key, name, description, category] of modules) {
