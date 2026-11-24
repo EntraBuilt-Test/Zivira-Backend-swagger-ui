@@ -244,7 +244,7 @@ async function getFieldProfile(userId: string) {
   const user = await UserModel.findById(userId);
   if (!user?.tenantSlug) throw new HttpError(404, "Field user not found");
   // Named logins (e.g. fieldzivira) point at an employee via user.employeeCode.
-  const employee = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: (user.employeeCode || user.username).toUpperCase() });
+  const employee = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: { $in: [user.employeeCode || user.username, (user.employeeCode || user.username).toUpperCase()] } });
   // QA-21 (Nov 2026): never fall back to another MR's profile -- that
   // showed one rep someone else's doctors, DCRs and leave.
   if (!employee) throw new HttpError(404, "Employee profile not found for this login. Ask admin to link your employee code.");

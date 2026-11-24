@@ -129,7 +129,8 @@ function parsePagination(req: { query: Record<string, unknown> }, opts: { defaul
 
 const employeeSchema = z.object({
   name: z.string().min(2),
-  employeeCode: z.string().min(2),
+  // stored in capitals: the field/manager apps look employees up by the upper-cased code
+  employeeCode: z.string().trim().min(2).transform((v) => v.toUpperCase()),
   designation: z.string().min(2),
   division: z.string().min(2),
   reportingManager: z.string().optional(),

@@ -9,6 +9,7 @@ import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { EmployeeModel } from "../models/employee.model.js";
 import { UserModel } from "../models/user.model.js";
+import { ensureEmployeeLoginAccount } from "./credentials.js";
 import { DoctorModel } from "../models/doctor.model.js";
 import { DealerModel } from "../models/dealer.model.js";
 import { StockistModel } from "../models/stockist.model.js";
@@ -445,14 +446,25 @@ const salesforce: Tool = {
     }
     if (skippedPlaceholders.size) warnings.push({ row: 0, reason: `manager value(s) ${[...skippedPlaceholders].map((x) => `"${x}"`).join(", ")} look like placeholders, not people - no manager stub was created for them` });
     if (merged.length) warnings.push({ row: 0, reason: `${merged.length} pending manager(s) completed by this file: ${merged.map((m) => `${m.name} -> ${m.code}`).join("; ")}` });
+    let loginsCreated = 0;
     const res = await catching(ok, (v) => {
       const row = items.find((i) => i.value === v)!.row;
       return upsert(EmployeeModel, { tenantSlug: tenant, employeeCode: v.code }, {
         name: v.name, designation: v.desig, territory: v.hq, role: v.role, division: v.division || "General", state: v.state, joinDate: v.doj || undefined,
         reportingManager: mgr.get(row) || null, phone: v.mob || null, email: v.mail ? v.mail.toLowerCase() : null,
         ...(opts?.deactivate ? { status: "ACTIVE" } : {})
-      }).then(async (r) => { if (r === "inserted") await EmployeeModel.updateOne({ tenantSlug: tenant, employeeCode: v.code }, { $set: { status: "ACTIVE" } }); return r; });
+      }).then(async (r) => {
+        if (r === "inserted") await EmployeeModel.updateOne({ tenantSlug: tenant, employeeCode: v.code }, { $set: { status: "ACTIVE" } });
+        // Give an uploaded employee a Field/Manager portal login right away (username = employee code, standard default
+        // password) -- but ONLY when no account with that username exists yet, so re-uploading never resets anyone's password.
+        if (!(await UserModel.exists({ username: String(v.code).toLowerCase() }))) {
+          await ensureEmployeeLoginAccount({ employeeCode: v.code, name: v.name, role: v.role, tenantSlug: tenant });
+          loginsCreated++;
+        }
+        return r;
+      });
     });
+    if (loginsCreated) warnings.push({ row: 0, reason: `${loginsCreated} new login account(s) created (username = employee code, default password)` });
     return { inserted: res.inserted, updated: res.updated, errors: [...errors, ...res.errors], warnings, autoCreated, merged };
   }
 };

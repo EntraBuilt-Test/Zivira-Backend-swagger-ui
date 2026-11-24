@@ -62,7 +62,7 @@ async function getManagerProfile(userId: string) {
     throw new HttpError(403, "Manager access required");
   }
   // Named logins (e.g. fieldzivira) point at an employee via user.employeeCode.
-  const emp = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: (user.employeeCode || user.username).toUpperCase() });
+  const emp = await EmployeeModel.findOne({ tenantSlug: user.tenantSlug, employeeCode: { $in: [user.employeeCode || user.username, (user.employeeCode || user.username).toUpperCase()] } });
   if (!emp) throw new HttpError(404, "Employee profile not found");
   return emp;
 }

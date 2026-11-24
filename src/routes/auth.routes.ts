@@ -80,7 +80,7 @@ authRouter.post("/change-password", requireAuth, asyncHandler(async (req, res) =
   if (!user) throw new HttpError(404, "User not found");
 
   const valid = await bcrypt.compare(body.currentPassword, user.passwordHash);
-  if (!valid) throw new HttpError(401, "Current password is incorrect");
+  if (!valid) throw new HttpError(400, "Current password is incorrect");
 
   user.passwordHash = await bcrypt.hash(body.newPassword, 12);
   user.mustChangePassword = false;

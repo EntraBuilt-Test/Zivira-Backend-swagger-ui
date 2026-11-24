@@ -105,7 +105,7 @@ mastersActionsRouter.post(
       users.map((u) => bcrypt.compare(body.oldPassword, u.passwordHash))
     );
     if (!oldPasswordMatches.some(Boolean)) {
-      throw new HttpError(401, "Old Password is incorrect");
+      throw new HttpError(400, "Old Password is incorrect");
     }
 
     const passwordHash = await bcrypt.hash(body.newPassword, 12);
@@ -195,7 +195,7 @@ mastersActionsRouter.post(
     // Not a fake pass-through: an admin who types the wrong password here
     // is refused, exactly like a real login would refuse it.
     const passwordMatches = await bcrypt.compare(body.password, user.passwordHash);
-    if (!passwordMatches) throw new HttpError(401, "Incorrect password");
+    if (!passwordMatches) throw new HttpError(400, "Incorrect password");
 
     const token = signToken({
       sub: String(user._id),
