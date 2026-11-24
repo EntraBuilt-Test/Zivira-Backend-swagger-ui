@@ -35,6 +35,7 @@
 // to run it on demand without a redeploy).
 
 import { connectMongo } from "../db.js";
+import { repairReportingManagers } from "../utils/reporting-manager.js";
 import { getMasterModel } from "../models/master-record.model.js";
 import { MASTERS } from "../masters/registry.js";
 import { EmployeeModel } from "../models/employee.model.js";
@@ -442,6 +443,7 @@ export async function runDataCorrections() {
   await backfillProductGroups();
   await removeUploadLogPlaceholderRows();
   await fixStaleExpenseClaimAssignedManagers();
+  await repairReportingManagers();
 
   console.log("\nDone.");
 }

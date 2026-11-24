@@ -1,3 +1,4 @@
+import { resolveReportingManagerCode } from "../utils/reporting-manager.js";
 import { Router } from "express";
 import mongoose from "mongoose";
 import { z } from "zod";
@@ -286,6 +287,11 @@ companyRouter.post(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = employeeSchema.parse(req.body);
+    if (body.reportingManager !== undefined) {
+      const rm = await resolveReportingManagerCode(tenantSlug, body.reportingManager);
+      if (rm.error) throw new HttpError(400, rm.error);
+      body.reportingManager = rm.code ?? undefined;
+    }
     const employee = await EmployeeModel.create({ ...body, tenantSlug });
     await audit("EMPLOYEE_CREATED", "Employee", String(employee._id), { tenantSlug, employeeCode: employee.employeeCode });
     res.status(201).json({ data: serializeDocument(employee) });
@@ -301,6 +307,11 @@ companyRouter.patch(
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = employeeSchema.partial().parse(req.body);
+    if (body.reportingManager) {
+      const rm = await resolveReportingManagerCode(tenantSlug, body.reportingManager);
+      if (rm.error) throw new HttpError(400, rm.error);
+      body.reportingManager = rm.code ?? undefined;
+    }
     const patch: Record<string, unknown> = { ...body };
     // Round 60 -- "Complete details" of an auto-created manager stub: setting the real employeeCode renames the stub and re-links every
     // report (reportingManager) in one step. Only a "code pending" stub may change its code.
