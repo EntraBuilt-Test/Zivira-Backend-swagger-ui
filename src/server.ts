@@ -22,6 +22,7 @@ import { startManagerDigestJob } from "./jobs/manager-digest.job.js";
 import { startDcrLockJob } from "./jobs/dcr-lock.job.js";
 import { runRound41Upgrade } from "./migrations/round41-upgrade.js";
 import { runDataCorrections } from "./seed/fix-data-corrections.js";
+import { repairReportingManagers } from "./utils/reporting-manager.js";
 
 const app = express();
 
@@ -96,6 +97,13 @@ function startBackground() {
   setTimeout(() => {
     runRound41Upgrade().catch((err) => console.error("Round 41 upgrade failed (server is serving):", err));
   }, 8000);
+  // Re-link employees whose reporting manager was typed as a name or in small letters. Runs on its
+  // own (not inside the corrections chain above) so a failure there can never skip it.
+  setTimeout(() => {
+    repairReportingManagers()
+      .then((n) => console.log(`Reporting-manager repair: ${n} employee(s) re-linked`))
+      .catch((err) => console.error("Reporting-manager repair failed (server is serving):", err));
+  }, 12000);
   startDcrLockJob();
   startAutoApproveJob();
   startManagerDigestJob();

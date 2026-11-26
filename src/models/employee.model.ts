@@ -25,6 +25,11 @@ const employeeSchema = new Schema(
     // inbox isn't set up yet.
     personalEmail: { type: String, trim: true, lowercase: true, default: null },
     phone: { type: String, trim: true, default: null },
+    secondaryPhone: { type: String, trim: true, default: null },
+    gender: { type: String, trim: true, default: null },
+    department: { type: String, trim: true, default: null },
+    // Probation / Trainee / Confirmed (Add Employee form). Not the same as `status`.
+    employmentStatus: { type: String, enum: ["PROBATION", "TRAINEE", "CONFIRMED", null], default: null },
     joinDate: { type: Date, default: null },
     address1: { type: String, trim: true, default: null },
     landmark: { type: String, trim: true, default: null },

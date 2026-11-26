@@ -154,7 +154,17 @@ const employeeSchema = z.object({
   personalEmail: z.string().email().optional().nullable(),
   // Round 46 -- separation tracking + legacy Saneforce code.
   leftDate: z.string().optional().nullable(),
-  sfCode: z.string().trim().optional().nullable()
+  sfCode: z.string().trim().optional().nullable(),
+  // Add Employee form: personal details + Probation/Trainee/Confirmed.
+  // employmentStatus is separate from `status` (ACTIVE/INACTIVE), which
+  // still controls logins and team lists.
+  gender: z.string().trim().optional().nullable(),
+  dob: z.string().optional().nullable(),
+  phone: z.string().trim().optional().nullable(),
+  secondaryPhone: z.string().trim().optional().nullable(),
+  state: z.string().trim().optional().nullable(),
+  department: z.string().trim().optional().nullable(),
+  employmentStatus: z.enum(["PROBATION", "TRAINEE", "CONFIRMED"]).optional().nullable()
 });
 
 const doctorSchema = z.object({
@@ -2738,17 +2748,29 @@ companyRouter.post("/dealers", asyncHandler(async (req, res) => {
   const tenantSlug = req.auth!.tenantSlug!;
   const body = dealerValidation.parse(req.body);
   const sourceSNo = body.sourceSNo !== undefined ? Number(body.sourceSNo) : undefined;
-  if (sourceSNo !== undefined) {
-    const dupe = await DealerModel.findOne({ tenantSlug, sourceSNo });
-    if (dupe) throw new HttpError(409, "A chemist with this code already exists");
-  }
   // Round 46 -- the chemist form only sends the field force NAME; resolve the code so
   // Chemist Dump / RCPA Dump / coverage reports (all keyed on employeeCode) include it.
   if (!body.employeeCode && body.employeeName) {
     const owner = await EmployeeModel.findOne({ tenantSlug, name: body.employeeName }).select("employeeCode").lean() as any;
     if (owner) body.employeeCode = owner.employeeCode;
   }
-  const dealer = await DealerModel.create({ ...body, sourceSNo, tenantSlug });
+  // The chemist code (sourceSNo) suggested by the admin screen can already be taken, so the
+  // server picks the next free number itself and retries on a clash instead of failing the save.
+  const nextFreeSNo = async () => {
+    const top = (await DealerModel.find({ tenantSlug, sourceSNo: { $type: "number" } }).sort({ sourceSNo: -1 }).limit(1).select("sourceSNo").lean()) as any[];
+    return (Number(top[0]?.sourceSNo) || 0) + 1;
+  };
+  let code = sourceSNo !== undefined && Number.isFinite(sourceSNo) ? sourceSNo : await nextFreeSNo();
+  let dealer: any = null;
+  for (let attempt = 0; attempt < 5 && !dealer; attempt++) {
+    try {
+      dealer = await DealerModel.create({ ...body, sourceSNo: code, tenantSlug });
+    } catch (err: any) {
+      if (err?.code !== 11000 || !(err.keyValue && "sourceSNo" in err.keyValue)) throw err;
+      code = await nextFreeSNo() + attempt;
+    }
+  }
+  if (!dealer) throw new HttpError(409, "Could not assign a free chemist code. Please try again.");
   await audit("DEALER_CREATED", "Dealer", String(dealer._id), { tenantSlug });
   res.status(201).json({ data: serializeDocument(dealer) });
 }));

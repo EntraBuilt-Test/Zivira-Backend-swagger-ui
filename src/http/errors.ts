@@ -29,7 +29,9 @@ function isMongoDuplicateKeyError(error: unknown): error is { code: number; keyV
 
 export function errorHandler(error: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (isMongoDuplicateKeyError(error)) {
-    const field = error.keyValue ? Object.keys(error.keyValue)[0] : undefined;
+    // name the field that actually clashed: the first key of a compound index is usually tenantSlug, which means nothing to a user
+    const keys = error.keyValue ? Object.keys(error.keyValue) : [];
+    const field = keys.find((k) => k !== "tenantSlug") ?? keys[0];
     res.status(409).json({
       error: {
         message: field ? `A record with this ${field} already exists.` : "This record already exists.",

@@ -1028,6 +1028,7 @@ fieldRouter.post("/attendance/check-out", asyncHandler(async (req, res) => {
     return;
   }
   const openDate = dateOnlyUTC(openAttendance.attendanceDate);
+  await closeVisitsAlreadyReported(tenantSlug, employee.employeeCode, openDate);
   const outstanding = await CampaignVisitModel.find({
     tenantSlug, employeeCode: employee.employeeCode, visitDate: openDate, status: "Planned"
   }).select("doctorName");
@@ -1069,6 +1070,7 @@ fieldRouter.get("/checkout-status", asyncHandler(async (req, res) => {
     return;
   }
   const openDate = dateOnlyUTC(openAttendance.attendanceDate);
+  await closeVisitsAlreadyReported(tenantSlug, employee.employeeCode, openDate);
   const outstanding = await CampaignVisitModel.find({
     tenantSlug, employeeCode: employee.employeeCode, visitDate: openDate, status: "Planned"
   }).select("doctorName");
@@ -1856,6 +1858,23 @@ fieldRouter.get("/campaigns", asyncHandler(async (req, res) => {
   res.json({ data: rows.map((r) => ({ id: String((r as any)._id), ...r })) });
 }));
 
+// A planned doctor visit whose DCR was filed BEFORE the visit was planned never got closed (the close-out
+// only runs when a DCR is submitted). Close any such visits: a non-rejected DCR for the same doctor on the
+// same day means the visit happened.
+async function closeVisitsAlreadyReported(tenantSlug: string, employeeCode: string, date?: string) {
+  try {
+    const q: Record<string, unknown> = { tenantSlug, employeeCode, status: "Planned", doctorId: { $ne: null } };
+    if (date) q.visitDate = date;
+    const open = (await CampaignVisitModel.find(q).select("doctorId visitDate").lean()) as any[];
+    for (const v of open) {
+      const dcr = (await DcrModel.findOne({ tenantSlug, employeeCode, doctorId: v.doctorId, visitDateOnly: v.visitDate, status: { $ne: "REJECTED" } }).select("_id").lean()) as any;
+      if (dcr) await CampaignVisitModel.updateOne({ _id: v._id, status: "Planned" }, { $set: { status: "Completed", dcrId: String(dcr._id) } });
+    }
+  } catch (err) {
+    console.error("[Field] closeVisitsAlreadyReported failed:", err);
+  }
+}
+
 // GET /field/campaign-visits — this employee's own planned (or, later,
 // deviation) campaign visits. `date=YYYY-MM-DD` scopes to one day (used by
 // Campaign Execution's "Today's Campaign" — the same rows Campaign
@@ -1866,6 +1885,7 @@ fieldRouter.get("/campaign-visits", asyncHandler(async (req, res) => {
   const employee = await getFieldProfile(req.auth!.sub);
   const filter: Record<string, unknown> = { tenantSlug, employeeCode: employee.employeeCode };
   if (typeof req.query.date === "string" && req.query.date.trim()) filter.visitDate = req.query.date.trim();
+  await closeVisitsAlreadyReported(tenantSlug, employee.employeeCode, typeof filter.visitDate === "string" ? filter.visitDate : undefined);
   const rows = await CampaignVisitModel.find(filter).sort({ visitDate: -1, createdAt: -1 });
   res.json({ data: rows.map(serializeDocument) });
 }));
@@ -1931,6 +1951,7 @@ fieldRouter.post("/campaign-visits", asyncHandler(async (req, res) => {
     status: "Planned",
     notes: body.notes
   });
+  if (row.doctorId) await closeVisitsAlreadyReported(tenantSlug, employee.employeeCode, body.visitDate);
 
   // Admin visibility mirror — same write-through pattern already used for
   // Camp/Market Survey (mirrorApprovalRow) — real source of truth stays
