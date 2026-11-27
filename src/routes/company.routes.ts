@@ -92,6 +92,7 @@ import { ArrearModel } from "../models/arrear.model.js";
 import { StatutoryRuleModel } from "../models/statutory-rule.model.js";
 import { CompOffModel } from "../models/comp-off.model.js";
 import { UserModel } from "../models/user.model.js";
+import { ensureEmployeeLoginAccount, DEFAULT_EMPLOYEE_PASSWORD } from "../utils/credentials.js";
 import bcrypt from "bcryptjs";
 import { computeRepAnalysisRows, computeManagerJointWorkRows } from "../utils/rep-manager-analysis.js";
 import { DoctorVisitExceptionModel } from "../models/doctor-visit-exception.model.js";
@@ -292,8 +293,18 @@ companyRouter.get(
   })
 );
 
+// Employee add / edit / resign / login reset is HR work. Admin and HR log in
+// with the same COMPANY_ADMIN account, so the HR app marks its requests with
+// the "X-Zivira-App: hr" header; the Admin app does not send it and can only
+// view employees. 403 (not 401) so the Admin app does not log out.
+function hrOnly(req: import("express").Request, _res: import("express").Response, next: import("express").NextFunction) {
+  if (String(req.headers["x-zivira-app"] ?? "").trim().toLowerCase() === "hr") return next();
+  next(new HttpError(403, "Employee changes are done in the HR app (Field Force Employees tab). Admin can only view employees."));
+}
+
 companyRouter.post(
   "/employees",
+  hrOnly,
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = employeeSchema.parse(req.body);
@@ -314,6 +325,7 @@ companyRouter.post(
 // changed, everything else on the employee record is left exactly as-is.
 companyRouter.patch(
   "/employees/:employeeCode",
+  hrOnly,
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = employeeSchema.partial().parse(req.body);
@@ -357,6 +369,7 @@ companyRouter.patch(
 // (deactivatedAt = now) so Resigned User Status / Join-Left Details are real.
 companyRouter.post(
   "/employees/:employeeCode/resign",
+  hrOnly,
   asyncHandler(async (req, res) => {
     const tenantSlug = req.auth!.tenantSlug!;
     const body = z.object({ leftDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(req.body);
@@ -368,6 +381,24 @@ companyRouter.post(
     if (!employee) throw new HttpError(404, "Employee not found");
     await audit("EMPLOYEE_RESIGNED", "Employee", String(employee._id), { tenantSlug, employeeCode: employee.employeeCode, leftDate: body.leftDate });
     res.json({ data: serializeDocument(employee) });
+  })
+);
+
+// HR: create the employee's Field/Manager app login if it is missing, or reset
+// it back to the standard password. Username = employee code (lower case).
+companyRouter.post(
+  "/employees/:employeeCode/reset-login",
+  hrOnly,
+  asyncHandler(async (req, res) => {
+    const tenantSlug = req.auth!.tenantSlug!;
+    const code = String(req.params.employeeCode).trim();
+    const employee = await EmployeeModel.findOne({ tenantSlug, employeeCode: { $in: [code, code.toUpperCase()] } }).lean() as any;
+    if (!employee) throw new HttpError(404, "Employee not found");
+    if (employee.status === "INACTIVE") throw new HttpError(400, "This employee is inactive (resigned). Login cannot be reset.");
+    const existed = Boolean(await UserModel.exists({ username: String(employee.employeeCode).toLowerCase() }));
+    await ensureEmployeeLoginAccount({ employeeCode: employee.employeeCode, name: employee.name, role: employee.role, tenantSlug });
+    await audit("EMPLOYEE_LOGIN_RESET", "Employee", String(employee._id), { tenantSlug, employeeCode: employee.employeeCode, created: !existed });
+    res.json({ data: { username: String(employee.employeeCode).toLowerCase(), password: DEFAULT_EMPLOYEE_PASSWORD, created: !existed } });
   })
 );
 
