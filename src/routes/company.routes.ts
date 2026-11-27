@@ -229,6 +229,15 @@ export const companyRouter = Router();
 companyRouter.use(requireAuth, requireCompanyAdmin);
 // Round 48 Part C -- any write clears the short-TTL list cache (see utils/ttl-cache.ts).
 companyRouter.use((req, _res, next) => { if (req.method !== "GET") clearCache(); next(); });
+// HR-only work (see hrOnly below): employee master writes, Change Password,
+// and the employee / leave / holiday bulk uploads. Admin can still view them.
+const HR_UPLOAD_TOOLS = new Set(["field-force", "leave-bulk-upload", "holiday-fixation"]);
+companyRouter.use("/masters/employees", (req, res, next) => (req.method === "GET" ? next() : hrOnly(req, res, next)));
+companyRouter.use("/masters/optionsChangePassword", (req, res, next) => (req.method === "GET" ? next() : hrOnly(req, res, next)));
+companyRouter.use("/upload-tools", (req, res, next) => {
+  const m = /^\/([^/]+)\/import\/?$/.exec(req.path);
+  return req.method === "POST" && m && HR_UPLOAD_TOOLS.has(m[1]) ? hrOnly(req, res, next) : next();
+});
 companyRouter.use("/masters", mastersRouter);
 companyRouter.use("/masters", uploadsRouter);
 companyRouter.use("/upload-tools", uploadToolsRouter);
@@ -299,7 +308,7 @@ companyRouter.get(
 // view employees. 403 (not 401) so the Admin app does not log out.
 function hrOnly(req: import("express").Request, _res: import("express").Response, next: import("express").NextFunction) {
   if (String(req.headers["x-zivira-app"] ?? "").trim().toLowerCase() === "hr") return next();
-  next(new HttpError(403, "Employee changes are done in the HR app (Field Force Employees tab). Admin can only view employees."));
+  next(new HttpError(403, "This is done in the HR portal (Employee Directory). Admin can only view employees."));
 }
 
 companyRouter.post(
